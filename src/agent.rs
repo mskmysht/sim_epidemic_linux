@@ -1,62 +1,62 @@
-use crate::contract::*;
-use crate::{
-    common_types::*,
-    world::{WarpInfo, World},
-};
-use std::sync::{Arc, Mutex};
+use crate::common_types::*;
+use crate::contact::*;
+use crate::iter::Next;
 
-use rand::{self, Rng};
+use std::sync::{Arc, Mutex, MutexGuard};
+
+use rand::{self, prelude::ThreadRng, Rng};
 use std::f64;
 
 static AGENT_RADIUS: f64 = 0.75;
-static AGENT_SIZE: f64 = 0.665;
+// static AGENT_SIZE: f64 = 0.665;
 
 static AVOIDANCE: f64 = 0.2;
 
-pub type AgentId = u32;
+pub type Ref<Agent> = Arc<Mutex<Agent>>;
 
 #[derive(Default, Debug)]
 pub struct Agent {
-    pub prev: Option<AgentId>,
-    pub next: Option<AgentId>,
+    pub prev: Option<Ref<Agent>>,
+    pub next: Option<Ref<Agent>>,
     pub id: i32,
-    // struct AgentRec *prev, *next;
     app: f64,
     prf: f64,
     pub x: f64,
     pub y: f64,
-    vx: f64,
-    vy: f64,
+    pub vx: f64,
+    pub vy: f64,
     pub fx: f64,
     pub fy: f64,
-    org_pt: Point,
-    days_infected: f64,
-    days_diseased: f64,
-    days_to_recover: f64,
-    days_to_onset: f64,
-    days_to_die: f64,
-    im_expr: f64,
+    pub org_pt: Point,
+    pub days_infected: f64,
+    pub days_diseased: f64,
+    pub days_to_recover: f64,
+    pub days_to_onset: f64,
+    pub days_to_die: f64,
+    pub im_expr: f64,
     pub health: HealthType,
-    new_health: HealthType,
+    pub new_health: HealthType,
     pub n_infects: i32,
-    new_n_infects: i32,
+    pub new_n_infects: i32,
     pub distancing: bool,
     pub is_out_of_field: bool,
     pub is_warping: bool,
     pub got_at_hospital: bool,
     pub in_test_queue: bool,
     pub last_tested: i32,
-    best: Option<AgentId>,
+    pub best: Option<Ref<Agent>>,
     best_dist: f64,
-    pub contact_info_head: Option<ContactInfoId>,
-    pub contact_info_tail: Option<ContactInfoId>,
+    pub contact_info_head: Option<ContactInfoRef>,
+    pub contact_info_tail: Option<ContactInfoRef>,
+}
+
+impl Next<Agent> for Agent {
+    fn n(&self) -> Option<Ref<Agent>> {
+        self.next.clone()
+    }
 }
 
 impl Agent {
-    pub fn new() -> Agent {
-        Agent::default()
-    }
-
     pub fn reset(&mut self, wp: &WorldParams) {
         let mut rng = rand::thread_rng();
         self.app = rng.gen();
@@ -71,7 +71,14 @@ impl Agent {
         self.is_out_of_field = true;
         self.last_tested = -999999;
     }
-    pub fn reset_days(&mut self, rp: &RuntimeParams) {}
+
+    pub fn reset_days(&mut self, rp: &RuntimeParams) {
+        let mut gauss = Gaussian::new();
+        self.days_to_recover = gauss.my_random(&rp.recov);
+        self.days_to_onset = gauss.my_random(&rp.incub);
+        self.days_to_die = gauss.my_random(&rp.fatal) + self.days_to_onset;
+        self.im_expr = gauss.my_random(&rp.immun);
+    }
 
     pub fn index_in_pop(&self, wp: &WorldParams) -> i32 {
         let ix = get_index(self.x, wp);
@@ -87,12 +94,60 @@ impl Agent {
         self.new_health = self.health;
     }
 
-    fn attracted(&self, b: &Agent, wp: &WorldParams, rp: &RuntimeParams, d: f64) {
+    pub fn attracted(
+        ar: &Ref<Agent>,
+        br: &Ref<Agent>,
+        wp: &WorldParams,
+        rp: &RuntimeParams,
+        d: f64,
+        cs: &mut MutexGuard<ContactState>,
+    ) {
         // add_new_cinfo
+        let a = &mut ar.lock().unwrap();
+        let b = &mut br.lock().unwrap();
+        let mut x = (b.app - a.prf).abs();
+        let spd = wp.steps_per_day as f64;
+        x = (if x < 0.5 { x } else { 1.0 - x }) * 2.0;
+        if a.best_dist > x {
+            a.best_dist = x;
+            a.best = Some(br.clone());
+        }
+        // check contact and infection
+        if d < rp.infec_dst {
+            if was_hit(spd, rp.cntct_trc / 100.) {
+                cs.add_new_cinfo(ar, br, rp.step);
+            }
+            if a.health == HealthType::Susceptible
+                && b.is_infected()
+                && b.days_infected > rp.contag_delay
+            {
+                let time_factor = (1.0 as f64).min(
+                    (b.days_infected - rp.contag_delay)
+                        / (b.days_infected - rp.contag_peak.min(b.days_to_onset)),
+                );
+                let distance_factor = ((rp.infec_dst - d) / 2.).powf(2.).min(1.);
+                if was_hit(spd, rp.infec / 100. * time_factor * distance_factor) {
+                    a.new_health = HealthType::Asymptomatic;
+                    if a.n_infects < 0 {
+                        a.new_n_infects = 1;
+                    }
+                    b.new_n_infects += 1;
+                }
+            }
+        }
     }
-    pub fn interacts(&mut self, b: &mut Agent, wp: &WorldParams, rp: &RuntimeParams) {
-        let dx = b.x - self.x;
-        let dy = b.y - self.y;
+
+    pub fn interacts(
+        ar: &Ref<Agent>,
+        br: &Ref<Agent>,
+        wp: &WorldParams,
+        rp: &RuntimeParams,
+        cs: &mut MutexGuard<ContactState>,
+    ) {
+        let a = &mut ar.lock().unwrap();
+        let b = &mut br.lock().unwrap();
+        let dx = b.x - a.x;
+        let dy = b.y - a.y;
         let d2 = (dx * dx + dy * dy).max(1e-4);
         let d = d2.sqrt();
         let view_range = wp.world_size as f64 / wp.mesh as f64;
@@ -110,205 +165,145 @@ impl Agent {
             / 50.;
         let ax = dx * dd;
         let ay = dy * dd;
-        self.fx -= ax;
-        self.fy -= ay;
+        a.fx -= ax;
+        a.fy -= ay;
         b.fx += ax;
         b.fy += ay;
-        self.attracted(b, wp, rp, d);
-        b.attracted(self, wp, rp, d);
+        Agent::attracted(ar, br, wp, rp, d, cs);
+        Agent::attracted(br, ar, wp, rp, d, cs);
     }
 
     pub fn is_infected(&self) -> bool {
         self.health == HealthType::Asymptomatic || self.health == HealthType::Symptomatic
     }
 
-    fn starts_warping(self_: Arc<Mutex<Agent>>, mode: WarpType, new_pt: Point, world: &mut World) {
-        world.add_new_warp(Arc::new(WarpInfo::new(self_.clone(), new_pt, mode)));
-    }
-
-    fn died(self_: Arc<Mutex<Agent>>, mode: WarpType, wp: &WorldParams, world: &mut World) {
-        let mut a = self_.lock().unwrap();
-        a.new_health = HealthType::Died;
+    pub fn get_new_pt(&self, ws: f64, mob_dist: &DistInfo) -> Point {
         let mut rng = rand::thread_rng();
-        Agent::starts_warping(
-            self_.clone(),
-            mode,
-            Point {
-                x: (rng.gen::<f64>() * 0.248 + 1.001) * wp.world_size as f64,
-                y: (rng.gen::<f64>() * 0.468 + 0.001) * wp.world_size as f64,
-            },
-            world,
-        );
-    }
-    fn patient_step(
-        self_: Arc<Mutex<Agent>>,
-        wp: &WorldParams,
-        in_quarantine: bool,
-        world: &mut World,
-    ) -> bool {
-        let mut a = self_.lock().unwrap();
-        if f64::MAX == a.days_to_die {
-            // in the recovery phase
-            if a.days_infected >= a.days_to_recover {
-                if a.health == HealthType::Symptomatic {
-                    cummulate_histgrm(&mut world.recov_p_hist, a.days_diseased);
-                }
-                a.new_health = HealthType::Recovered;
-                a.days_infected = 0.;
-            }
-        } else if a.days_infected > a.days_to_recover {
-            // starts recovery
-            a.days_to_recover *= 1. + 10. / a.days_to_die;
-            a.days_to_die = f64::MAX;
-        } else if a.days_infected >= a.days_to_die {
-            cummulate_histgrm(&mut world.death_p_hist, a.days_diseased);
-            Agent::died(
-                self_.clone(),
-                if in_quarantine {
-                    WarpType::WarpToCemeteryH
-                } else {
-                    WarpType::WarpToCemeteryF
-                },
-                wp,
-                world,
-            );
-            return true;
-        } else if a.health == HealthType::Asymptomatic && a.days_infected >= a.days_to_onset {
-            a.new_health = HealthType::Symptomatic;
-            cummulate_histgrm(&mut world.incub_p_hist, a.days_infected);
+        let mut gauss = Gaussian::new();
+        let dst = gauss.my_random(mob_dist) * ws / 100.;
+        let th = rng.gen::<f64>() * f64::consts::PI * 2.;
+        let mut new_pt = Point {
+            x: self.x + th.cos() * dst,
+            y: self.y + th.sin() * dst,
+        };
+        if new_pt.x < 3. {
+            new_pt.x = 3. - new_pt.x;
+        } else if new_pt.x > ws - 3. {
+            new_pt.x = (ws - 3.) * 2. - new_pt.x;
         }
-        return false;
-    }
+        if new_pt.y < 3. {
+            new_pt.y = 3. - new_pt.y;
+        } else if new_pt.y > ws - 3. {
+            new_pt.y = (ws - 3.) * 2. - new_pt.y;
+        }
 
-    pub fn step_agent(
-        self_: Arc<Mutex<Agent>>,
-        rp: &RuntimeParams,
-        wp: &WorldParams,
-        world: &mut World,
-    ) {
+        new_pt
+    }
+    pub fn update_position(&mut self, wp: &WorldParams, rp: &RuntimeParams) {
         let ws = wp.world_size as f64;
         let spd = wp.steps_per_day as f64;
-        let mut a = self_.lock().unwrap();
-        match a.health {
-            HealthType::Asymptomatic => {
-                a.days_infected += 1. / spd;
-                if Agent::patient_step(self_.clone(), wp, false, world) {
-                    return;
-                }
-            }
-            HealthType::Symptomatic => {
-                a.days_infected += 1. / spd;
-                a.days_diseased += 1. / spd;
-                if Agent::patient_step(self_.clone(), wp, false, world) {
-                    return;
-                } else if a.days_diseased >= rp.tst_delay && was_hit(wp, rp.tst_sbj_sym / 100.) {
-                    world.test_infection_of_agent(&a, TestType::TestAsSymptom);
-                }
-            }
-            HealthType::Recovered => {
-                a.days_infected += 1. / spd;
-                if a.days_infected > a.im_expr {
-                    a.new_health = HealthType::Susceptible;
-                    a.days_infected = 0.;
-                    a.days_diseased = 0.;
-                    a.reset_days(rp);
-                }
-            }
-            _ => {}
+        if self.distancing {
+            let dst = 1.0 + rp.dst_st / 5.0;
+            self.fx *= dst;
+            self.fy *= dst;
         }
-        if a.health != HealthType::Symptomatic && was_hit(wp, rp.tst_sbj_asy / 100.) {
-            world.test_infection_of_agent(&a, TestType::TestAsSuspected);
-        }
-        let org_idx = a.index_in_pop(wp);
-        if a.health != HealthType::Symptomatic && was_hit(wp, rp.mob_fr / 1000.) {
-            let mut rng = rand::thread_rng();
-            let dst = my_random(&rp.mob_dist) * ws / 100.;
-            let th = rng.gen::<f64>() * f64::consts::PI * 2.;
-            let mut new_pt = Point {
-                x: a.x + th.cos() * dst,
-                y: a.y + th.sin() * dst,
-            };
-            if new_pt.x < 3. {
-                new_pt.x = 3. - new_pt.x;
-            } else if new_pt.x > ws - 3. {
-                new_pt.x = (ws - 3.) * 2. - new_pt.x;
-            }
-            if new_pt.y < 3. {
-                new_pt.y = 3. - new_pt.y;
-            } else if new_pt.y > ws - 3. {
-                new_pt.y = (ws - 3.) * 2. - new_pt.y;
-            }
-            Agent::starts_warping(self_.clone(), WarpType::WarpInside, new_pt, world);
-            return;
+        self.fx += wall(self.x) - wall(ws - self.x);
+        self.fy += wall(self.y) - wall(ws - self.y);
+        let mass = (if self.health == HealthType::Symptomatic {
+            200.
         } else {
-            if a.distancing {
-                let dst = 1.0 + rp.dst_st / 5.0;
-                a.fx *= dst;
-                a.fy *= dst;
-            }
-            a.fx += wall(a.x) - wall(ws - a.x);
-            a.fy += wall(a.y) - wall(ws - a.y);
-            let mass = (if a.health == HealthType::Symptomatic {
-                200.
-            } else {
-                10.
-            }) * rp.mass
-                / 100.;
-            if let Some(p) = a.best {
-                let best = &world.agents.lock().unwrap()[p as usize];
-                if !a.distancing {
-                    let dx = best.x - a.x;
-                    let dy = best.y - a.y;
-                    let d = dx.hypot(dy).max(0.01) * 20.;
-                    a.fx += dx / d;
-                    a.fy += dy / d;
-                }
-            }
-            let fric = (1. - 0.5 * rp.friction / 100.).powf(1. / spd);
-            a.vx = a.vx * fric + a.fx / mass / spd;
-            a.vy = a.vy * fric + a.fy / mass / spd;
-            let v = a.vx.hypot(a.vy);
-            let max_v = 80.0 / spd;
-            if v > max_v {
-                a.vx *= max_v / v;
-                a.vy *= max_v / v;
-            }
-            a.x += a.vx / spd;
-            a.y += a.vy / spd;
-            if a.x < AGENT_RADIUS {
-                a.x = AGENT_RADIUS * 2. - a.x;
-            } else if a.x > ws - AGENT_RADIUS {
-                a.x = (ws - AGENT_RADIUS) * 2. - a.x;
-            }
-            if a.y < AGENT_RADIUS {
-                a.y = AGENT_RADIUS * 2. - a.y;
-            } else if a.y > ws - AGENT_RADIUS {
-                a.y = (ws - AGENT_RADIUS) * 2. - a.y;
+            10.
+        }) * rp.mass
+            / 100.;
+        if let Some(abest) = &self.best {
+            let best = abest.lock().unwrap();
+            if !self.distancing {
+                let dx = best.x - self.x;
+                let dy = best.y - self.y;
+                let d = dx.hypot(dy).max(0.01) * 20.;
+                self.fx += dx / d;
+                self.fy += dy / d;
             }
         }
-        let new_idx = a.index_in_pop(wp);
-        if new_idx != org_idx {
-            world.remove_from_pop(org_idx as usize);
-            world.add_to_pop(new_idx as usize);
+        let fric = (1. - 0.5 * rp.friction / 100.).powf(1. / spd);
+        self.vx = self.vx * fric + self.fx / mass / spd;
+        self.vy = self.vy * fric + self.fy / mass / spd;
+        let v = self.vx.hypot(self.vy);
+        let max_v = 80.0 / spd;
+        if v > max_v {
+            self.vx *= max_v / v;
+            self.vy *= max_v / v;
+        }
+        self.x += self.vx / spd;
+        self.y += self.vy / spd;
+        if self.x < AGENT_RADIUS {
+            self.x = AGENT_RADIUS * 2. - self.x;
+        } else if self.x > ws - AGENT_RADIUS {
+            self.x = (ws - AGENT_RADIUS) * 2. - self.x;
+        }
+        if self.y < AGENT_RADIUS {
+            self.y = AGENT_RADIUS * 2. - self.y;
+        } else if self.y > ws - AGENT_RADIUS {
+            self.y = (ws - AGENT_RADIUS) * 2. - self.y;
         }
     }
 }
 
-fn wall(d: f64) -> f64 {
+pub fn add_agent(ar: &Ref<Agent>, pop: &mut MutexGuard<Vec<Option<Ref<Agent>>>>, wp: &WorldParams) {
+    let a = ar.lock().unwrap();
+    let k = a.index_in_pop(wp) as usize;
+    add_to_list(ar, &mut pop[k])
+}
+
+pub fn remove_agent(
+    ar: &Ref<Agent>,
+    pop: &mut MutexGuard<Vec<Option<Ref<Agent>>>>,
+    wp: &WorldParams,
+) {
+    todo!();
+}
+
+pub fn add_to_list(
+    ar: &Ref<Agent>,
+    opt_br: &mut Option<Ref<Agent>>, //  idx: usize
+) {
+    let a = &mut ar.lock().unwrap();
+    a.next = opt_br.clone();
+    a.prev = None;
+    if let Some(br) = &opt_br {
+        let b = &mut br.lock().unwrap();
+        b.prev = Some(ar.clone());
+    }
+    *opt_br = Some(ar.clone());
+}
+
+pub fn remove_from_list(ar: &Ref<Agent>, opt_ar: &mut Option<Ref<Agent>>) {
+    let a = &mut ar.lock().unwrap();
+    if let Some(nr) = &a.prev {
+        nr.lock().unwrap().prev = a.next.clone();
+    } else {
+        *opt_ar = a.next.clone();
+    }
+    if let Some(nr) = &a.next {
+        nr.lock().unwrap().next = a.prev.clone();
+    }
+}
+
+pub fn wall(d: f64) -> f64 {
     let d = if d < 0.02 { 0.02 } else { d };
     AVOIDANCE * 20. / d / d
 }
 
-fn was_hit(wp: &WorldParams, prob: f64) -> bool {
+pub fn was_hit(spd: f64, prob: f64) -> bool {
     let mut rng = rand::thread_rng();
-    rng.gen::<f64>() > (1. - prob).powf(1. / wp.steps_per_day as f64)
+    rng.gen::<f64>() > (1. - prob).powf(1. / spd) //wp.steps_per_day as f64)
 }
 
-fn cummulate_histgrm(h: &mut Vec<MyCounter>, d: f64) {
+pub fn cummulate_histgrm(h: &mut Vec<MyCounter>, d: f64) {
     let ds = d.floor() as usize;
     if h.len() <= ds {
         let n = ds - h.len();
-        for i in 0..=n {
+        for _ in 0..=n {
             h.push(MyCounter::new());
         }
     }
@@ -326,24 +321,51 @@ fn get_index(p: f64, wp: &WorldParams) -> i32 {
     }
 }
 
-pub fn my_random(p: &DistInfo) -> f64 {
-    todo!();
+pub struct Gaussian {
+    z: f64,
+    second_time: bool,
+    rng: ThreadRng,
 }
-// CGFloat my_random(DistInfo *p) {
-// 	if (p->mode == p->min) return (pow(EXP_BASE, random() / (CGFloat)0x7fffffff) - EXP_BASE)
-// 		/ (1. - EXP_BASE) * (p->max - p->min) + p->min;
-// 	else if (p->mode == p->max) return (1. - pow(EXP_BASE, random() / (CGFloat)0x7fffffff))
-// 		/ (1. - EXP_BASE) * (p->max - p->min) + p->min;
-// 	CGFloat x = random_guassian(.5, .166667);
-// 	if (x < 0.) x += floor(1. - x);
-// 	else if (x > 1.) x -= floor(x);
-// //	if (kurtosis != 0.) {
-// //		CGFloat b = pow(2., -kurtosis);
-// //		/* x = (x < .5)? b * x / ((b - 1) * x * 2. + 1.) :
-// //			(x - .5) / ((x + b - b * x) * 2. - 1.) + .5;  */
-// //		x = (x < .5)? pow(x * 2., b) * .5 : 1. - pow(2. - x * 2., b) * .5;
-// //	}
-// //	if (x < 0.) x = 0.; else if (x > 1.) x = 1.;
-// 	CGFloat a = (p->mode - p->min) / (p->max - p->mode);
-// 	return a * x / ((a - 1.) * x + 1.) * (p->max - p->min) + p->min;
-// }
+
+static EXP_BASE: f64 = 0.02;
+impl Gaussian {
+    pub fn new() -> Gaussian {
+        Gaussian {
+            z: 0.,
+            second_time: false,
+            rng: rand::thread_rng(),
+        }
+    }
+
+    fn gen(&mut self, mu: f64, sigma: f64) -> f64 {
+        let x = if self.second_time {
+            self.second_time = false;
+            self.z
+        } else {
+            self.second_time = true;
+            let r = (-2. * self.rng.gen::<f64>().ln()).sqrt();
+            let th = self.rng.gen::<f64>() * f64::consts::PI * 2.;
+            self.z = r * th.cos();
+            r * th.sin()
+        };
+        x * sigma + mu
+    }
+
+    pub fn my_random(&mut self, p: &DistInfo) -> f64 {
+        if p.mode == p.min {
+            EXP_BASE.powf(self.rng.gen::<f64>() - EXP_BASE) / (1. - EXP_BASE) * (p.max - p.min)
+                + p.min
+        } else if p.mode == p.max {
+            1. - EXP_BASE.powf(self.rng.gen::<f64>()) / (1. - EXP_BASE) * (p.max - p.min) + p.min
+        } else {
+            let mut x = self.gen(0.5, 0.166667);
+            if x < 0. {
+                x += (1.0 - x).floor();
+            } else if x > 1. {
+                x -= x.floor();
+            }
+            let a = (p.mode - p.min) / (p.max - p.mode);
+            a * x / ((a - 1.) * x + 1.) * (p.max - p.min) + p.min
+        }
+    }
+}

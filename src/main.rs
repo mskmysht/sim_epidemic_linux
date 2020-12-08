@@ -1,3 +1,4 @@
+use common_types::MRef;
 use regex::Regex;
 use std::collections::HashMap;
 use std::io::{self, Write};
@@ -7,8 +8,9 @@ use std::thread;
 
 mod agent;
 mod common_types;
-mod contract;
+mod contact;
 mod gathering;
+mod iter;
 mod stat;
 mod world;
 
@@ -29,7 +31,7 @@ enum Message<T> {
 }
 
 fn main() {
-    let worlds: HashMap<i32, Arc<Mutex<World>>> = HashMap::new();
+    let worlds: HashMap<i32, MRef<World>> = HashMap::new();
     let aws = Arc::new(Mutex::new(worlds));
     let (tx, rx) = mpsc::channel();
 
@@ -95,7 +97,9 @@ fn main() {
                     }
                 }
                 Command::Stop(id) => match cws.lock().unwrap().get(&id) {
-                    Some(cw) => cw.lock().unwrap().stop(),
+                    Some(_) => {
+                        // cw.lock().unwrap().stop()
+                    }
                     None => println!("{} does not exist.", id),
                 },
                 Command::Resume(id) => match cws.lock().unwrap().get(&id) {
@@ -107,7 +111,9 @@ fn main() {
                 Command::Delete(id) => {
                     let mut ws = cws.lock().unwrap();
                     match ws.remove(&id) {
-                        Some(cw) => cw.lock().unwrap().stop(),
+                        Some(_) => {
+                            // cw.lock().unwrap().stop(),
+                        }
                         None => println!("{} does not exist.", id),
                     }
                 }

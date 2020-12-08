@@ -3,6 +3,11 @@ use crate::world::*;
 
 use enum_map::EnumMap;
 
+pub struct InfectionCntInfo {
+    pub org_v: i32,
+    pub new_v: i32,
+}
+
 pub struct TimeEvoInfo {
     idx_bits: i32,
     n_indexes: i32,

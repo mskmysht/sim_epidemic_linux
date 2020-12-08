@@ -1,5 +1,5 @@
 use rand::Rng;
-use std::collections::HashMap;
+use std::{collections::HashMap, sync::MutexGuard};
 
 use std::sync::Arc;
 use std::sync::Mutex;
@@ -25,12 +25,10 @@ impl Gathering {
     fn record_gat(
         amg: &Arc<Mutex<Gathering>>,
         map: &mut GatheringMap,
-        // cell_idxs: &mut Vec<i32>,
         row: i32,
         left: i32,
         right: i32,
     ) {
-        // let amg = Rc::downgrade(rrg);
         for ix in left..right {
             let num = row + ix;
             {
@@ -54,10 +52,11 @@ impl Gathering {
         rp: &RuntimeParams,
     ) -> Arc<Mutex<Gathering>> {
         let mut rng = rand::thread_rng();
+        let mut gauss = Gaussian::new();
         let gat = Gathering {
-            size: my_random(&rp.gat_sz),
-            duration: my_random(&rp.gat_dr),
-            strength: my_random(&rp.gat_st),
+            size: gauss.my_random(&rp.gat_sz),
+            duration: gauss.my_random(&rp.gat_dr),
+            strength: gauss.my_random(&rp.gat_st),
             cell_idxs: vec![],
             ..Gathering::default()
         };
@@ -87,14 +86,12 @@ impl Gathering {
         };
 
         let amg = Arc::new(Mutex::new(gat));
-        // let boxed_gat = Box::new(gat);
         for iy in bottom..center {
             let dy = p.y - (iy + 1) as f64 * grid;
             let dx = (r * r - dy * dy).sqrt();
             Gathering::record_gat(
                 &amg,
                 map,
-                // &mut self.cell_idxs,
                 iy * wp.mesh,
                 ((p.x - dx).max(0.) / grid).floor() as i32,
                 ((p.x + dx).min(wp.world_size as f64) / grid).ceil() as i32,
@@ -106,7 +103,6 @@ impl Gathering {
             Gathering::record_gat(
                 &amg,
                 map,
-                // &mut self.cell_idxs,
                 iy * wp.mesh,
                 ((p.x - dx).max(0.) / grid).floor() as i32,
                 ((p.x + dx).min(wp.world_size as f64) / grid).ceil() as i32,
@@ -129,7 +125,7 @@ impl Gathering {
             }
         }
     }
-    pub fn affect_to_agent(&self, a: &mut Agent) {
+    pub fn affect_to_agent(&self, a: &mut MutexGuard<Agent>) {
         let dx = self.p.x - a.x;
         let dy = self.p.y - a.y;
         let d = f64::hypot(dx, dy);
@@ -151,7 +147,7 @@ impl Gathering {
 }
 
 pub fn manage_gatherings(
-    gatherings: &mut Vec<Arc<Mutex<Gathering>>>,
+    gatherings: &mut Vec<MRef<Gathering>>,
     gat_map: &mut GatheringMap,
     wp: &WorldParams,
     rp: &RuntimeParams,

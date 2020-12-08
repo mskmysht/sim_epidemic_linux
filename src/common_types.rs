@@ -1,10 +1,14 @@
+use std::sync::{Arc, Mutex};
+
 use enum_map::{Enum, EnumMap};
+
+pub type MRef<T> = Arc<Mutex<T>>;
 
 #[derive(Default, Debug)]
 pub struct DistInfo {
-    min: f64,
-    max: f64,
-    mode: f64,
+    pub min: f64,
+    pub max: f64,
+    pub mode: f64,
 }
 
 #[derive(Default, Debug)]
@@ -85,13 +89,13 @@ pub const N_INT_INDEXES: usize = HealthType::NStateIndexes as usize + N_INT_TEST
 pub const N_ALL_INDEXES: usize =
     HealthType::NStateIndexes as usize + TestType::NAllTestTypes as usize;
 
-#[derive(Default, PartialEq, Debug)]
+#[derive(Default, PartialEq, Clone, Copy, Debug)]
 pub struct Point {
     pub x: f64,
     pub y: f64,
 }
 
-#[derive(Default, Debug)]
+#[derive(Default, Clone, Debug)]
 pub struct Range {
     pub length: i32,
     pub location: i32,
@@ -106,7 +110,7 @@ pub struct WorldParams {
     pub steps_per_day: i32,
 }
 
-#[derive(Debug)]
+#[derive(Clone, Copy, Debug)]
 pub enum WarpType {
     WarpInside,
     WarpToHospital,
@@ -155,9 +159,11 @@ impl MyCounter {
     }
     pub fn inc(&mut self) {
         self.cnt += 1;
+        todo!();
     }
 
     fn dec(&mut self) {
         self.cnt -= 1;
+        todo!();
     }
 }
