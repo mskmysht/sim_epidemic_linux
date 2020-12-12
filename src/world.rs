@@ -519,7 +519,7 @@ impl World {
         }
     }
 
-    fn step_agent_in_quarantine(&mut self, ar: &Ref<Agent>) {
+    fn step_agent_in_quarantine(&mut self, ar: &MRef<Agent>) {
         let spd = self.world_params.steps_per_day as f64;
         let mut a = ar.lock().unwrap();
         match a.health {

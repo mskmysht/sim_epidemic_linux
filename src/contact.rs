@@ -6,12 +6,10 @@ use crate::{
     iter::{MyIter, Next, Prev},
 };
 
-pub type ContactInfoRef = Arc<Mutex<ContactInfo>>;
-
 #[derive(Default, Debug)]
 pub struct ContactInfo {
-    pub prev: Option<ContactInfoRef>,
-    pub next: Option<ContactInfoRef>,
+    pub prev: Option<MRef<ContactInfo>>,
+    pub next: Option<MRef<ContactInfo>>,
     time_stamp: i32,
     agent: MRef<Agent>,
 }
@@ -26,13 +24,13 @@ impl ContactInfo {
 }
 
 impl Next<ContactInfo> for ContactInfo {
-    fn n(&self) -> Option<ContactInfoRef> {
+    fn n(&self) -> Option<MRef<ContactInfo>> {
         self.next.clone()
     }
 }
 
 impl Prev<ContactInfo> for ContactInfo {
-    fn p(&self) -> Option<ContactInfoRef> {
+    fn p(&self) -> Option<MRef<ContactInfo>> {
         self.prev.clone()
     }
 }
@@ -41,13 +39,13 @@ static ALLOC_UNIT: usize = 2048;
 
 #[derive(Default)]
 pub struct ContactState {
-    cinfos: Vec<ContactInfoRef>,
-    pub free_cinfo: Option<ContactInfoRef>,
+    cinfos: Vec<MRef<ContactInfo>>,
+    pub free_cinfo: Option<MRef<ContactInfo>>,
     idx: usize,
 }
 
 impl ContactState {
-    fn new_cinfo(&mut self, a: MRef<Agent>, tm: i32) -> ContactInfoRef {
+    fn new_cinfo(&mut self, a: MRef<Agent>, tm: i32) -> MRef<ContactInfo> {
         if self.idx == self.cinfos.len() {
             self.cinfos.reserve_exact(ALLOC_UNIT);
             for _ in 0..ALLOC_UNIT - 1 {

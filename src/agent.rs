@@ -12,12 +12,10 @@ static AGENT_RADIUS: f64 = 0.75;
 
 static AVOIDANCE: f64 = 0.2;
 
-pub type Ref<Agent> = Arc<Mutex<Agent>>;
-
 #[derive(Default, Debug)]
 pub struct Agent {
-    pub prev: Option<Ref<Agent>>,
-    pub next: Option<Ref<Agent>>,
+    pub prev: Option<MRef<Agent>>,
+    pub next: Option<MRef<Agent>>,
     pub id: i32,
     app: f64,
     prf: f64,
@@ -44,14 +42,14 @@ pub struct Agent {
     pub got_at_hospital: bool,
     pub in_test_queue: bool,
     pub last_tested: i32,
-    pub best: Option<Ref<Agent>>,
+    pub best: Option<MRef<Agent>>,
     best_dist: f64,
-    pub contact_info_head: Option<ContactInfoRef>,
-    pub contact_info_tail: Option<ContactInfoRef>,
+    pub contact_info_head: Option<MRef<ContactInfo>>,
+    pub contact_info_tail: Option<MRef<ContactInfo>>,
 }
 
 impl Next<Agent> for Agent {
-    fn n(&self) -> Option<Ref<Agent>> {
+    fn n(&self) -> Option<MRef<Agent>> {
         self.next.clone()
     }
 }
@@ -95,8 +93,8 @@ impl Agent {
     }
 
     pub fn attracted(
-        ar: &Ref<Agent>,
-        br: &Ref<Agent>,
+        ar: &MRef<Agent>,
+        br: &MRef<Agent>,
         wp: &WorldParams,
         rp: &RuntimeParams,
         d: f64,
@@ -138,8 +136,8 @@ impl Agent {
     }
 
     pub fn interacts(
-        ar: &Ref<Agent>,
-        br: &Ref<Agent>,
+        ar: &MRef<Agent>,
+        br: &MRef<Agent>,
         wp: &WorldParams,
         rp: &RuntimeParams,
         cs: &mut MutexGuard<ContactState>,
@@ -249,23 +247,27 @@ impl Agent {
     }
 }
 
-pub fn add_agent(ar: &Ref<Agent>, pop: &mut MutexGuard<Vec<Option<Ref<Agent>>>>, wp: &WorldParams) {
+pub fn add_agent(
+    ar: &MRef<Agent>,
+    pop: &mut MutexGuard<Vec<Option<MRef<Agent>>>>,
+    wp: &WorldParams,
+) {
     let a = ar.lock().unwrap();
     let k = a.index_in_pop(wp) as usize;
     add_to_list(ar, &mut pop[k])
 }
 
 pub fn remove_agent(
-    ar: &Ref<Agent>,
-    pop: &mut MutexGuard<Vec<Option<Ref<Agent>>>>,
+    ar: &MRef<Agent>,
+    pop: &mut MutexGuard<Vec<Option<MRef<Agent>>>>,
     wp: &WorldParams,
 ) {
     todo!();
 }
 
 pub fn add_to_list(
-    ar: &Ref<Agent>,
-    opt_br: &mut Option<Ref<Agent>>, //  idx: usize
+    ar: &MRef<Agent>,
+    opt_br: &mut Option<MRef<Agent>>, //  idx: usize
 ) {
     let a = &mut ar.lock().unwrap();
     a.next = opt_br.clone();
@@ -277,7 +279,7 @@ pub fn add_to_list(
     *opt_br = Some(ar.clone());
 }
 
-pub fn remove_from_list(ar: &Ref<Agent>, opt_ar: &mut Option<Ref<Agent>>) {
+pub fn remove_from_list(ar: &MRef<Agent>, opt_ar: &mut Option<MRef<Agent>>) {
     let a = &mut ar.lock().unwrap();
     if let Some(nr) = &a.prev {
         nr.lock().unwrap().prev = a.next.clone();
