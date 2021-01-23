@@ -1,7 +1,7 @@
-# SimEpidemic
+# SimEpidemic for Linux
 Individual-based Epidemic Simulator (2020-21)
 
-- Developed by Tatsuo Unemi, under cooperation with Saki Nawata and Masaaki Miyashita.
+- As a part of a [project](http://www.intlab.soka.ac.jp/~unemi/SimEpidemic1/info/) by Tatsuo Unemi, under cooperation with Saki Nawata and Masaaki Miyashita.
 - Supported by Cabinet Secretariat of Japanese Government.
 
 This is an individual-based simulator to help understanding the dynamics of epidemic, spread of infectous disease, mainly targetting SARS-CoV-2.
@@ -25,6 +25,6 @@ This repository includes a program rewritten in Rust which is designed to run th
   - `delete {number}`: not yet implemented
   - [for development] `debug {number}`: execute some debug process for the world of a given number
 - All parameters are set to a world in which is created via `WorldParams` structure and `RuntimeParams` structure.
-- You can find more detail at [http://www.intlab.soka.ac.jp/~unemi/SimEpidemic1/info/](http://www.intlab.soka.ac.jp/~unemi/SimEpidemic1/info/).
+- You can find more detail at http://www.intlab.soka.ac.jp/~unemi/SimEpidemic1/info/simepidemic-docs.html.
 
 &copy; Masaaki Miyashita and Tatsuo Unemi, 2020-21, All rights reserved.
