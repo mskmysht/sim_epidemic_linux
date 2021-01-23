@@ -6,7 +6,7 @@ Individual-based Epidemic Simulator (2020-21)
 
 This is an individual-based simulator to help understanding the dynamics of epidemic, spread of infectous disease, mainly targetting SARS-CoV-2.
 
-This repository includes a program rewritten in Rust which is designed to run the HTTP server version application of https://github.com/unemi/SimEpidemic on Linux. This project has source codes only. You need to build this project using Cargo, the Rust package manager.
+This repository includes a program rewritten in Rust which is designed to run the HTTP server version application of [SimEpidemic](https://github.com/unemi/SimEpidemic) on Linux. This project has source codes only. You need to build this project using Cargo, the Rust package manager.
 
 ## About
 ### Implementation
