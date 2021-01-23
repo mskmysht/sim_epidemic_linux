@@ -1,17 +1,27 @@
 use std::sync::{Arc, Mutex};
 
-use enum_map::{Enum, EnumMap};
+use crate::{
+    agent::Agent,
+    enum_map::{Enum, EnumMap},
+    iter::Next,
+};
 
 pub type MRef<T> = Arc<Mutex<T>>;
 
 #[derive(Default, Debug)]
 pub struct DistInfo {
     pub min: f64,
-    pub max: f64,
     pub mode: f64,
+    pub max: f64,
 }
 
-#[derive(Default, Debug)]
+impl DistInfo {
+    pub fn new(min: f64, mode: f64, max: f64) -> DistInfo {
+        DistInfo { min, mode, max }
+    }
+}
+
+#[derive(Debug)]
 pub struct RuntimeParams {
     pub mass: f64,
     pub friction: f64,
@@ -19,7 +29,7 @@ pub struct RuntimeParams {
     // contagion delay and peak;
     pub contag_delay: f64,
     pub contag_peak: f64,
-    // infection probability and distance
+    // infection probability (%) and distance
     pub infec: f64,
     pub infec_dst: f64,
     // Distancing strength and obedience
@@ -54,7 +64,7 @@ pub struct RuntimeParams {
     pub step: i32,
 }
 
-#[derive(Enum, Clone, Copy, PartialEq, Debug)]
+#[derive(Eq, Hash, Enum, Clone, Copy, PartialEq, Debug)]
 pub enum HealthType {
     Susceptible,
     Asymptomatic,
@@ -73,6 +83,7 @@ impl Default for HealthType {
     }
 }
 
+#[derive(Eq, PartialEq, Hash, Copy, Clone, Enum, Debug)]
 pub enum TestType {
     TestTotal,
     TestAsSymptom,
@@ -83,6 +94,28 @@ pub enum TestType {
     TestPositiveRate,
     NAllTestTypes,
 }
+
+pub type UnionMap<K0, K1, V> = (EnumMap<K0, V>, EnumMap<K1, V>);
+
+/*
+#[derive(Eq, PartialEq, Hash, Debug)]
+pub enum HealthOrTest {
+    HealthType(HealthType),
+    TestType(TestType),
+}
+
+impl HealthType {
+    pub fn to_stat(self) -> HealthOrTest {
+        HealthOrTest::HealthType(self)
+    }
+}
+
+impl TestType {
+    pub fn to_stat(self) -> HealthOrTest {
+        HealthOrTest::TestType(self)
+    }
+}
+*/
 
 pub const N_INT_TEST_TYPES: TestType = TestType::TestPositiveRate;
 pub const N_INT_INDEXES: usize = HealthType::NStateIndexes as usize + N_INT_TEST_TYPES as usize;
@@ -127,12 +160,26 @@ impl Default for WarpType {
 
 #[derive(Default, Debug)]
 pub struct StatData {
-    next: Box<StatData>,
-    pub cnt: EnumMap<HealthType, i32>, // [i32; N_INT_INDEXES],
-    p_rate: f64,
+    pub next: Option<MRef<StatData>>,
+    pub cnt: UnionMap<HealthType, TestType, u32>, // [u32; N_INT_INDEXES],
+    pub p_rate: f64,
 }
 
-#[derive(Clone, Copy, Debug)]
+impl StatData {
+    pub fn reset(&mut self) {
+        self.p_rate = 0.0;
+        self.cnt = Default::default();
+        self.next = None;
+    }
+}
+
+impl Next<MRef<StatData>> for MRef<StatData> {
+    fn next(&self) -> Option<MRef<StatData>> {
+        self.lock().unwrap().next.clone()
+    }
+}
+
+#[derive(Clone, Copy, PartialEq, Debug)]
 pub enum LoopMode {
     LoopNone,
     LoopRunning,
@@ -157,13 +204,31 @@ impl MyCounter {
     pub fn new() -> MyCounter {
         MyCounter { cnt: 0 }
     }
+
     pub fn inc(&mut self) {
         self.cnt += 1;
-        todo!();
     }
 
-    fn dec(&mut self) {
+    pub fn dec(&mut self) {
         self.cnt -= 1;
-        todo!();
+    }
+
+    pub fn description(&self) -> String {
+        format!("<MyCounter: cnt={}>", self.cnt)
+    }
+}
+
+#[derive(Default)]
+pub struct TestEntry {
+    pub prev: Option<MRef<TestEntry>>,
+    pub next: Option<MRef<TestEntry>>,
+    pub time_stamp: i32,
+    pub is_positive: bool,
+    pub agent: Option<MRef<Agent>>,
+}
+
+impl Next<MRef<TestEntry>> for MRef<TestEntry> {
+    fn next(&self) -> Option<MRef<TestEntry>> {
+        self.lock().unwrap().next.clone()
     }
 }

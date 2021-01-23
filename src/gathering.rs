@@ -114,7 +114,7 @@ impl Gathering {
         self.duration -= 24.;
         return (self.duration / steps_per_day as f64) <= 0.;
     }
-    fn remove_from_map(&self, gat_map: &mut GatheringMap) {
+    pub fn remove_from_map(&self, gat_map: &mut GatheringMap) {
         for num in self.cell_idxs.iter() {
             if let Some(gs) = gat_map.get_mut(num) {
                 if gs.len() > 1 {
@@ -143,28 +143,5 @@ impl Gathering {
             });
         a.fx += dx / d * f;
         a.fy += dy / d * f;
-    }
-}
-
-pub fn manage_gatherings(
-    gatherings: &mut Vec<MRef<Gathering>>,
-    gat_map: &mut GatheringMap,
-    wp: &WorldParams,
-    rp: &RuntimeParams,
-) {
-    gatherings.retain(|amg| {
-        let mut g = amg.lock().unwrap();
-        g.remove_from_map(gat_map);
-        !g.step(wp.steps_per_day)
-    });
-    //	caliculate the numner of gathering circles
-    //	using random number in exponetial distribution.
-    let mut rng = rand::thread_rng();
-    let n_new_gat = (rp.gat_fr / wp.steps_per_day as f64 * (wp.world_size * wp.world_size) as f64
-        / 1e5
-        * (-(rng.gen::<f64>() * 0.9999 + 0.0001).ln()))
-    .round() as i32;
-    for _ in 0..n_new_gat {
-        gatherings.push(Gathering::new(gat_map, wp, rp));
     }
 }

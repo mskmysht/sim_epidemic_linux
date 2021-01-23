@@ -9,5 +9,6 @@ edition = "2018"
 [dependencies]
 regex = "1"
 rand = "0"
-enum-map = "0.6"
+# enum-map = "0.6"
 rayon = "1.5"
+custom_macro = { path = "./custom_macro" }

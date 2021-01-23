@@ -11,7 +11,7 @@ pub struct ContactInfo {
     pub prev: Option<MRef<ContactInfo>>,
     pub next: Option<MRef<ContactInfo>>,
     time_stamp: i32,
-    agent: MRef<Agent>,
+    pub agent: MRef<Agent>,
 }
 
 impl ContactInfo {
@@ -23,25 +23,26 @@ impl ContactInfo {
     }
 }
 
-impl Next<ContactInfo> for ContactInfo {
-    fn n(&self) -> Option<MRef<ContactInfo>> {
-        self.next.clone()
+impl Next<MRef<ContactInfo>> for MRef<ContactInfo> {
+    fn next(&self) -> Option<MRef<ContactInfo>> {
+        self.lock().unwrap().next.clone()
     }
 }
 
-impl Prev<ContactInfo> for ContactInfo {
-    fn p(&self) -> Option<MRef<ContactInfo>> {
-        self.prev.clone()
+impl Prev<MRef<ContactInfo>> for MRef<ContactInfo> {
+    fn prev(&self) -> Option<MRef<ContactInfo>> {
+        self.lock().unwrap().prev.clone()
     }
 }
 
 static ALLOC_UNIT: usize = 2048;
 
+// todo: replace to DynStruct
 #[derive(Default)]
 pub struct ContactState {
     cinfos: Vec<MRef<ContactInfo>>,
     pub free_cinfo: Option<MRef<ContactInfo>>,
-    idx: usize,
+    pub idx: usize,
 }
 
 impl ContactState {
@@ -61,26 +62,35 @@ impl ContactState {
         self.idx += 1;
         cr.clone()
     }
-    pub fn add_new_cinfo(&mut self, ar: &MRef<Agent>, br: &MRef<Agent>, tm: i32) {
+
+    pub fn add_new_cinfo(&mut self, ar: MRef<Agent>, br: MRef<Agent>, tm: i32) {
         // let c = &mut self.cinfos[p];
-        let cr = self.new_cinfo(br.clone(), tm);
         let a = &mut ar.lock().unwrap();
-        match &mut a.contact_info_head {
+        let cr = match &a.contact_info_head {
             None => {
-                a.contact_info_head = Some(cr.clone());
+                let cr = self.new_cinfo(br.clone(), tm);
+                // a.contact_info_head = Some(cr.clone());
                 a.contact_info_tail = Some(cr.clone());
+                cr
             }
             Some(hr) => {
-                let c = &mut cr.lock().unwrap();
-                c.next = Some(hr.clone());
-                *hr = cr.clone(); // a.contact_info_head = Some(cr.clone());
-                let h = &mut hr.lock().unwrap();
-                h.prev = Some(cr.clone());
+                let cr = self.new_cinfo(br.clone(), tm);
+                {
+                    let c = &mut cr.lock().unwrap();
+                    c.next = Some(hr.clone());
+                }
+                {
+                    let h = &mut hr.lock().unwrap();
+                    h.prev = Some(cr.clone());
+                }
+                // *hr = cr.clone(); // a.contact_info_head = Some(cr.clone());
+                cr
             }
-        }
+        };
+        a.contact_info_head = Some(cr.clone());
     }
 
-    pub fn remove_old_cinfo(&mut self, ar: &MRef<Agent>, tm: i32) {
+    pub fn remove_old_cinfo(&mut self, ar: MRef<Agent>, tm: i32) {
         let a = &mut ar.lock().unwrap();
         let ah = a.contact_info_head.clone();
         let at = a.contact_info_tail.clone();
