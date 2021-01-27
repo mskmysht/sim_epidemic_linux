@@ -642,7 +642,6 @@ pub fn start(
     let wr = wr.clone();
     thread::spawn(move || {
         running_loop(&wr);
-        println!("loop end");
     })
 }
 
