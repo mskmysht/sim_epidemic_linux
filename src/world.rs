@@ -2,7 +2,7 @@ use crate::commons::*;
 use crate::contact::*;
 use crate::enum_map::*;
 use crate::gathering::*;
-use std::{error::Error, fs::File};
+use std::error::Error;
 
 use crate::stat::*;
 use crate::{agent::*, dyn_struct::DynStruct};
@@ -127,7 +127,7 @@ impl World {
     // fn running(&self) -> bool {
     //     self.loop_mode == LoopMode::LoopRunning
     // }
-    pub fn reset_pop(&mut self) {
+    fn reset_pop(&mut self) {
         let mut rng = rand::thread_rng();
         let wp = &self.world_params;
         let rp = &self.runtime_params;
@@ -608,7 +608,7 @@ impl World {
         }
     }
 
-    pub fn debug(&self) {
+    fn debug(&self) {
         self.stat_info.lock().unwrap().debug_show();
     }
 }
@@ -624,52 +624,74 @@ fn remove_agent(ar: &MRef<Agent>, pop: &mut Vec<VecDeque<MRef<Agent>>>, wp: &Wor
 }
 
 pub fn start(
-    wr: MRef<World>,
+    wr: &MRef<World>,
     stop_at: i32, /*, max_sps: f64, prio: f64*/
 ) -> thread::JoinHandle<()> {
-    {
-        let world = &mut wr.lock().unwrap();
-        if world.loop_mode == LoopMode::LoopRunning {
-            return thread::spawn(|| {});
-        }
-        if stop_at > 0 {
-            world.stop_at_n_days = stop_at;
-        }
-        // world.max_sps = max_sps;
-        world.go_ahead();
-        world.loop_mode = LoopMode::LoopRunning;
-    }
     let wr = wr.clone();
     thread::spawn(move || {
+        {
+            let world = &mut wr.lock().unwrap();
+            if world.loop_mode == LoopMode::LoopRunning {
+                return;
+            }
+            if stop_at > 0 {
+                world.stop_at_n_days = stop_at;
+            }
+            // world.max_sps = max_sps;
+            world.go_ahead();
+            world.loop_mode = LoopMode::LoopRunning;
+        }
         running_loop(&wr);
     })
 }
 
-pub fn step(wr: &MRef<World>) {
-    let world = &mut wr.lock().unwrap();
-    match world.loop_mode {
-        LoopMode::LoopRunning => {}
-        LoopMode::LoopFinished | LoopMode::LoopEndByCondition => {
-            world.go_ahead();
+pub fn step(wr: &MRef<World>) -> thread::JoinHandle<()> {
+    let wr = wr.clone();
+    thread::spawn(move || {
+        {
+            let world = &mut wr.lock().unwrap();
+            match world.loop_mode {
+                LoopMode::LoopRunning => return,
+                LoopMode::LoopFinished | LoopMode::LoopEndByCondition => {
+                    world.go_ahead();
+                }
+                _ => {}
+            }
         }
-        _ => World::do_one_step(wr),
-    }
-    world.loop_mode = LoopMode::LoopEndByUser;
+        World::do_one_step(&wr);
+        wr.lock().unwrap().loop_mode = LoopMode::LoopEndByUser;
+    })
     // [self forAllReporters:^(PeriodicReporter *rep) { [rep sendReport]; }];
 }
 
-pub fn stop(wr: &MRef<World>) {
-    let world = &mut wr.lock().unwrap();
-    if world.loop_mode == LoopMode::LoopRunning {
-        world.loop_mode = LoopMode::LoopEndByUser;
-    }
+pub fn stop(wr: &MRef<World>) -> thread::JoinHandle<()> {
+    let wr = wr.clone();
+    thread::spawn(move || {
+        let world = &mut wr.lock().unwrap();
+        if world.loop_mode == LoopMode::LoopRunning {
+            world.loop_mode = LoopMode::LoopEndByUser;
+        }
+    })
 }
 
-pub fn export(wr: &MRef<World>, wtr: &mut Writer<File>) -> Result<(), Box<dyn Error>> {
+pub fn reset(wr: &MRef<World>) -> thread::JoinHandle<()> {
+    let wr = wr.clone();
+    thread::spawn(move || {
+        wr.lock().unwrap().reset_pop();
+    })
+}
+
+pub fn export(wr: &MRef<World>, path: &str) -> Result<(), Box<dyn Error>> {
     let world = &mut wr.lock().unwrap();
     let stat_info = world.stat_info.lock().unwrap();
-    stat_info.write_statistics(wtr)?;
+    let mut wtr = Writer::from_path(path)?;
+    stat_info.write_statistics(&mut wtr)?;
+    wtr.flush()?;
     Ok(())
+}
+
+pub fn debug(wr: &MRef<World>) {
+    wr.lock().unwrap().debug();
 }
 
 fn running_loop(wr: &MRef<World>) {

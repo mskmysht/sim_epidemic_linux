@@ -1,6 +1,6 @@
 use commons::{DistInfo, MRef, RuntimeParams, WorldParams};
-use csv::Writer;
-use regex::Regex;
+
+use peg::parser;
 use std::collections::HashMap;
 use std::io::{self, Write};
 use std::sync::mpsc;
@@ -18,7 +18,7 @@ mod world;
 
 use world::*;
 
-enum Command {
+pub enum Command {
     Quit,
     List,
     New(i32),
@@ -36,17 +36,43 @@ enum Message<T> {
     Run(T),
 }
 
+parser! {
+    grammar parse() for str {
+        pub rule expr() -> Command = _ c:command() _ eof() { c }
+        rule command() -> Command
+            = quit()
+            / list()
+            / new()
+            / start()
+            / step()
+            / stop()
+            / reset()
+            / delete()
+            / export()
+            / debug()
+
+        rule quit() -> Command = ":q" { Command::Quit }
+        rule list() -> Command = "list" { Command::List }
+        rule new() -> Command = "new" _ id:number() { Command::New(id) }
+        rule start() -> Command = "start" _ id:number() _ days:number() { Command::Start(id, days) }
+        rule step() -> Command = "step" _ id:number() { Command::Step(id) }
+        rule stop() -> Command = "stop" _ id:number() { Command::Stop(id) }
+        rule reset() -> Command = "reset" _ id:number() { Command::Reset(id) }
+        rule delete() -> Command = "delete" _ id:number() { Command::Delete(id) }
+        rule export() -> Command = "export" _ id:number() _ path:string() { Command::Export(id, path) }
+        rule debug() -> Command = "debug" _ id:number() { Command::Debug(id) }
+
+        rule _() = quiet!{ [' ' | '\t']* }
+        rule eof() = quiet!{ ['\n'] }
+        rule number() -> i32 = n:$(['0'..='9']+) { n.parse().unwrap() }
+        rule string() -> String = s:$(['!'..='~'] [' '..='~']*) { String::from(s) }
+    }
+}
+
 fn main() {
     let worlds: HashMap<i32, MRef<World>> = HashMap::new();
     let aws = Arc::new(Mutex::new(worlds));
     let (tx, rx) = mpsc::channel();
-
-    let re = Regex::new(
-        r"(?x)
-    ^\s*(?P<c>new|start|step|stop|reset|delete|export|list|:q|debug)(\s+(?P<id>\d+))?(\s+(?P<days>\d+)|\s+(?P<path>.+))?\s*$
-    ",
-    )
-    .unwrap();
 
     let if_handle = thread::spawn(move || loop {
         let cws = aws.clone();
@@ -57,53 +83,8 @@ fn main() {
         io::stdout().flush().unwrap();
         io::stdin().read_line(&mut input).unwrap();
 
-        let cmd_opt = if let Some(caps) = re.captures(input.as_str()) {
-            match (
-                caps.name("c"),
-                caps.name("id"),
-                caps.name("days"),
-                caps.name("path"),
-            ) {
-                (Some(c), None, None, None) => match c.as_str() {
-                    "list" => Some(Command::List),
-                    ":q" => Some(Command::Quit),
-                    _ => None,
-                },
-                (Some(c), Some(sid), None, None) => {
-                    let id: i32 = sid.as_str().parse().unwrap();
-                    match c.as_str() {
-                        "new" => Some(Command::New(id)),
-                        "step" => Some(Command::Step(id)),
-                        "stop" => Some(Command::Stop(id)),
-                        "reset" => Some(Command::Reset(id)),
-                        "delete" => Some(Command::Delete(id)),
-                        "debug" => Some(Command::Debug(id)),
-                        _ => None,
-                    }
-                }
-                (Some(c), Some(sid), Some(sdays), None) => {
-                    let id = sid.as_str().parse::<i32>().unwrap();
-                    let days = sdays.as_str().parse::<i32>().unwrap();
-                    match c.as_str() {
-                        "start" => Some(Command::Start(id, days)),
-                        _ => None,
-                    }
-                }
-                (Some(c), Some(sid), None, Some(path)) => {
-                    let id = sid.as_str().parse::<i32>().unwrap();
-                    match c.as_str() {
-                        "export" => Some(Command::Export(id, String::from(path.as_str()))),
-                        _ => None,
-                    }
-                }
-                _ => None,
-            }
-        } else {
-            None
-        };
-
-        if let Some(cmd) = cmd_opt {
-            match cmd {
+        match parse::expr(input.as_str()) {
+            Ok(cmd) => match cmd {
                 Command::Quit => {
                     tx.send(Message::Quit).unwrap();
                     break;
@@ -162,7 +143,7 @@ fn main() {
                 }
                 Command::Start(id, days) => match cws.lock().unwrap().get(&id) {
                     Some(wr) => {
-                        tx.send(Message::Run(start(wr.clone(), days))).unwrap();
+                        tx.send(Message::Run(start(wr, days))).unwrap();
                     }
                     None => {
                         println!("{} does not exist.", id);
@@ -170,19 +151,19 @@ fn main() {
                 },
                 Command::Step(id) => match cws.lock().unwrap().get(&id) {
                     Some(wr) => {
-                        step(wr);
+                        tx.send(Message::Run(step(wr))).unwrap();
                     }
                     None => println!("{} does not exist.", id),
                 },
                 Command::Stop(id) => match cws.lock().unwrap().get(&id) {
                     Some(wr) => {
-                        stop(wr);
+                        tx.send(Message::Run(stop(wr))).unwrap();
                     }
                     None => println!("{} does not exist.", id),
                 },
                 Command::Reset(id) => match cws.lock().unwrap().get(&id) {
                     Some(wr) => {
-                        wr.lock().unwrap().reset_pop();
+                        tx.send(Message::Run(reset(wr))).unwrap();
                     }
                     None => {
                         println!("{} does not exist.", id);
@@ -192,29 +173,28 @@ fn main() {
                     let mut ws = cws.lock().unwrap();
                     match &ws.remove(&id) {
                         Some(wr) => {
-                            stop(wr);
+                            tx.send(Message::Run(stop(wr))).unwrap();
                         }
                         None => println!("{} does not exist.", id),
                     }
                 }
                 Command::Export(id, path) => match cws.lock().unwrap().get(&id) {
-                    Some(wr) => {
-                        let mut wtr = Writer::from_path(path).unwrap();
-                        export(wr, &mut wtr).unwrap();
-                        wtr.flush().unwrap();
-                    }
+                    Some(wr) => match export(wr, path.as_str()) {
+                        Ok(_) => println!("{} was successfully exported", path),
+                        Err(e) => println!("{}", e),
+                    },
                     None => {
                         println!("{} does not exist.", id);
                     }
                 },
                 Command::Debug(id) => match cws.lock().unwrap().get(&id) {
                     Some(wr) => {
-                        let w = wr.lock().unwrap();
-                        w.debug();
+                        debug(wr);
                     }
                     None => println!("{} does not exist.", id),
                 },
-            }
+            },
+            Err(e) => println!("{}", e),
         }
     });
 
