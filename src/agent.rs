@@ -1,11 +1,10 @@
-use crate::contact::*;
-use crate::iter::Next;
 use crate::{
-    common_types::*,
+    commons::*,
     world::{WarpInfo, World},
 };
+use crate::{contact::*, dyn_struct::DynStruct};
 
-use std::sync::Arc;
+use std::{collections::VecDeque, sync::Arc};
 
 use rand::{self, prelude::ThreadRng, Rng};
 use std::f64;
@@ -17,8 +16,6 @@ static AVOIDANCE: f64 = 0.2;
 
 #[derive(Default, Debug)]
 pub struct Agent {
-    pub prev: Option<MRef<Agent>>,
-    pub next: Option<MRef<Agent>>,
     pub id: i32,
     app: f64,
     prf: f64,
@@ -47,18 +44,11 @@ pub struct Agent {
     pub last_tested: i32,
     pub best: Option<MRef<Agent>>,
     best_dist: f64,
-    pub contact_info_head: Option<MRef<ContactInfo>>,
-    pub contact_info_tail: Option<MRef<ContactInfo>>,
-}
-
-impl Next<MRef<Agent>> for MRef<Agent> {
-    fn next(&self) -> Option<MRef<Agent>> {
-        self.lock().unwrap().next.clone()
-    }
+    pub contact_info_list: VecDeque<MRef<ContactInfo>>,
 }
 
 impl Agent {
-    pub fn reset(&mut self, world_size: f64) {
+    pub fn reset(&mut self, world_size: f64, rp: &RuntimeParams) {
         let mut rng = rand::thread_rng();
         self.app = rng.gen();
         self.prf = rng.gen();
@@ -71,6 +61,7 @@ impl Agent {
         self.n_infects = -1;
         self.is_out_of_field = true;
         self.last_tested = -999999;
+        self.reset_days(rp)
     }
 
     pub fn reset_days(&mut self, rp: &RuntimeParams) {
@@ -101,7 +92,7 @@ impl Agent {
         wp: &WorldParams,
         rp: &RuntimeParams,
         d: f64,
-        cs: &mut ContactState,
+        dsc: &mut DynStruct<ContactInfo>,
     ) {
         let spd = wp.steps_per_day as f64;
         let x = {
@@ -120,7 +111,7 @@ impl Agent {
         // check contact and infection
         if d < rp.infec_dst {
             if was_hit(spd, rp.cntct_trc / 100.) {
-                cs.add_new_cinfo(ar.clone(), br.clone(), rp.step);
+                add_new_cinfo(dsc, ar.clone(), br.clone(), rp.step);
             }
             let a = &mut ar.lock().unwrap();
             let b = &mut br.lock().unwrap();
@@ -149,7 +140,7 @@ impl Agent {
         br: MRef<Agent>,
         wp: &WorldParams,
         rp: &RuntimeParams,
-        cs: &mut ContactState,
+        dsc: &mut DynStruct<ContactInfo>,
     ) {
         let d = {
             let a = &mut ar.lock().unwrap();
@@ -179,8 +170,8 @@ impl Agent {
             b.fy += ay;
             d
         };
-        Agent::attracted(ar.clone(), br.clone(), wp, rp, d, cs);
-        Agent::attracted(br.clone(), ar.clone(), wp, rp, d, cs);
+        Agent::attracted(ar.clone(), br.clone(), wp, rp, d, dsc);
+        Agent::attracted(br.clone(), ar.clone(), wp, rp, d, dsc);
     }
 
     pub fn is_infected(&self) -> bool {
@@ -258,13 +249,10 @@ impl Agent {
         }
     }
 
-    // fn starts_warping(wr: &MRef<World>, ar: &MRef<Agent>, mode: WarpType, new_pt: Point) {
     fn starts_warping(world: &mut World, ar: MRef<Agent>, mode: WarpType, new_pt: Point) {
-        // let w = &mut wr.lock().unwrap();
         world.add_new_warp(Arc::new(WarpInfo::new(ar.clone(), new_pt, mode)));
     }
 
-    // fn died(world: &MRef<World>, ar: &MRef<Agent>, mode: WarpType) {
     fn died(world: &mut World, ar: MRef<Agent>, mode: WarpType) {
         {
             let mut a = ar.lock().unwrap();
@@ -283,7 +271,6 @@ impl Agent {
         );
     }
 
-    // fn patient_step(wr: &MRef<World>, ar: &MRef<Agent>, in_quarantine: bool) -> bool {
     fn patient_step(world: &mut World, ar: MRef<Agent>, in_quarantine: bool) -> bool {
         let is_died = {
             let a = &mut ar.lock().unwrap();
@@ -292,7 +279,6 @@ impl Agent {
         if is_died {
             {
                 let a = ar.lock().unwrap();
-                // let w = &mut wr.lock().unwrap();
                 cummulate_histgrm(&mut world.death_p_hist, a.days_diseased);
             }
             Agent::died(
@@ -307,7 +293,6 @@ impl Agent {
             true
         } else {
             let mut a = ar.lock().unwrap();
-            // let w = &mut wr.lock().unwrap();
             if f64::MAX == a.days_to_die {
                 // in the recovery phase
                 if a.days_infected >= a.days_to_recover {
@@ -329,10 +314,8 @@ impl Agent {
         }
     }
 
-    pub fn step_agent(wr: MRef<World>, ar: MRef<Agent>) {
+    pub fn step_agent(wr: &MRef<World>, ar: &MRef<Agent>) {
         let world = &mut wr.lock().unwrap();
-        // let wp = &world.world_params;
-        // let rp = &world.runtime_params;
         let ws = world.world_params.world_size as f64;
         let spd = world.world_params.steps_per_day as f64;
 
@@ -396,18 +379,16 @@ impl Agent {
                     .update_position(&world.world_params, &world.runtime_params);
             }
         };
-        let new_idx = {
-            // let wp = &wr.lock().unwrap().world_params;
-            ar.lock().unwrap().index_in_pop(&world.world_params)
-        };
+        let new_idx = { ar.lock().unwrap().index_in_pop(&world.world_params) };
         if new_idx != org_idx {
-            let pop = &mut world._pop.lock().unwrap(); //.lock().unwrap();
-            remove_from_list(&mut ar.lock().unwrap(), &mut pop[org_idx as usize]);
-            add_to_list(ar, &mut pop[new_idx as usize]);
+            let pop = &mut world._pop.lock().unwrap();
+            pop[org_idx as usize].remove_p(ar);
+            pop[new_idx as usize].push_front(ar.clone());
         }
     }
 
-    pub fn step_agent_in_quarantine(world: &mut World, ar: MRef<Agent>) {
+    pub fn step_agent_in_quarantine(wr: MRef<World>, ar: MRef<Agent>) {
+        let world = &mut wr.lock().unwrap();
         let spd = world.world_params.steps_per_day as f64;
         let health = ar.lock().unwrap().health;
         match health {
@@ -432,52 +413,6 @@ impl Agent {
     }
 }
 
-pub fn add_agent(ar: MRef<Agent>, pop: &mut Vec<Option<MRef<Agent>>>, wp: &WorldParams) {
-    let k = ar.lock().unwrap().index_in_pop(wp) as usize;
-    add_to_list(ar, &mut pop[k]);
-}
-
-pub fn remove_agent(
-    a: &mut Agent, /* &MRef<Agent> */
-    pop: &mut Vec<Option<MRef<Agent>>>,
-    wp: &WorldParams,
-) {
-    let k = /*ar.lock().unwrap()*/a.index_in_pop(wp) as usize;
-    remove_from_list(a, &mut pop[k]);
-}
-
-pub fn add_to_list(
-    ar: MRef<Agent>,
-    opt_br: &mut Option<MRef<Agent>>, //  idx: usize
-) {
-    {
-        let a = &mut ar.lock().unwrap();
-        // println!("add_to_list: a.id={}", a.id);
-        a.next = opt_br.clone();
-        a.prev = None;
-    }
-    if let Some(br) = &opt_br {
-        let b = &mut br.lock().unwrap();
-        // println!("add_to_list: b.id={}", b.id);
-        b.prev = Some(ar.clone());
-    }
-    *opt_br = Some(ar.clone());
-}
-
-pub fn remove_from_list(a: &mut Agent /*r: &MRef<Agent> */, opt_ar: &mut Option<MRef<Agent>>) {
-    // let a = &mut ar.lock().unwrap();
-    if let Some(pr) = &a.prev {
-        let p = &mut pr.lock().unwrap();
-        p.next = a.next.clone();
-    } else {
-        *opt_ar = a.next.clone();
-    }
-    if let Some(nr) = &a.next {
-        let n = &mut nr.lock().unwrap();
-        n.prev = a.prev.clone();
-    }
-}
-
 pub fn wall(d: f64) -> f64 {
     let d = if d < 0.02 { 0.02 } else { d };
     AVOIDANCE * 20. / d / d
@@ -485,7 +420,7 @@ pub fn wall(d: f64) -> f64 {
 
 pub fn was_hit(spd: f64, prob: f64) -> bool {
     let mut rng = rand::thread_rng();
-    rng.gen::<f64>() > (1. - prob).powf(1. / spd) //wp.steps_per_day as f64)
+    rng.gen::<f64>() > (1. - prob).powf(1. / spd)
 }
 
 pub fn cummulate_histgrm(h: &mut Vec<MyCounter>, d: f64) {

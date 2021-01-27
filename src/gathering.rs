@@ -5,7 +5,7 @@ use std::sync::Arc;
 use std::sync::Mutex;
 
 use crate::agent::*;
-use crate::common_types::*;
+use crate::commons::*;
 
 static SURROUND: f64 = 5.;
 static GATHERING_FORCE: f64 = 5.;
@@ -22,35 +22,24 @@ pub struct Gathering {
 }
 
 impl Gathering {
-    fn record_gat(
-        amg: &Arc<Mutex<Gathering>>,
-        map: &mut GatheringMap,
-        row: i32,
-        left: i32,
-        right: i32,
-    ) {
+    fn record_gat(gr: &MRef<Gathering>, map: &mut GatheringMap, row: i32, left: i32, right: i32) {
         for ix in left..right {
             let num = row + ix;
             {
-                let mut g = amg.lock().unwrap();
+                let mut g = gr.lock().unwrap();
                 g.cell_idxs.push(num);
             }
             match map.get_mut(&num) {
                 Some(g) => {
-                    g.push(amg.clone());
+                    g.push(gr.clone());
                 }
                 None => {
-                    map.insert(num, vec![amg.clone()]);
+                    map.insert(num, vec![gr.clone()]);
                 }
             }
         }
     }
-    pub fn new(
-        // &'a mut self,
-        map: &mut GatheringMap,
-        wp: &WorldParams,
-        rp: &RuntimeParams,
-    ) -> Arc<Mutex<Gathering>> {
+    pub fn new(map: &mut GatheringMap, wp: &WorldParams, rp: &RuntimeParams) -> MRef<Gathering> {
         let mut rng = rand::thread_rng();
         let mut gauss = Gaussian::new();
         let gat = Gathering {
@@ -85,12 +74,12 @@ impl Gathering {
             }
         };
 
-        let amg = Arc::new(Mutex::new(gat));
+        let gr = Arc::new(Mutex::new(gat));
         for iy in bottom..center {
             let dy = p.y - (iy + 1) as f64 * grid;
             let dx = (r * r - dy * dy).sqrt();
             Gathering::record_gat(
-                &amg,
+                &gr,
                 map,
                 iy * wp.mesh,
                 ((p.x - dx).max(0.) / grid).floor() as i32,
@@ -101,24 +90,25 @@ impl Gathering {
             let dy = p.y - iy as f64 * grid;
             let dx = (r * r - dy * dy).sqrt();
             Gathering::record_gat(
-                &amg,
+                &gr,
                 map,
                 iy * wp.mesh,
                 ((p.x - dx).max(0.) / grid).floor() as i32,
                 ((p.x + dx).min(wp.world_size as f64) / grid).ceil() as i32,
             );
         }
-        amg
+        gr
     }
     pub fn step(&mut self, steps_per_day: i32) -> bool {
         self.duration -= 24.;
         return (self.duration / steps_per_day as f64) <= 0.;
     }
-    pub fn remove_from_map(&self, gat_map: &mut GatheringMap) {
-        for num in self.cell_idxs.iter() {
+    pub fn remove_from_map(gr: &MRef<Gathering>, gat_map: &mut GatheringMap) {
+        let g = gr.lock().unwrap();
+        for num in g.cell_idxs.iter() {
             if let Some(gs) = gat_map.get_mut(num) {
                 if gs.len() > 1 {
-                    gs.retain(|amg| &(*amg.lock().unwrap()) != self);
+                    gs.remove_p(gr);
                 } else {
                     gat_map.remove(num);
                 }

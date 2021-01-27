@@ -1,9 +1,15 @@
-use std::sync::{Arc, Mutex};
+use std::{collections::VecDeque, error::Error, fs::File};
 
-use crate::{agent::Agent, dyn_struct::DynStruct, world::*};
-use crate::{common_types::*, iter::MyIter};
+use csv::Writer;
 
-use crate::enum_map::EnumMap;
+use crate::commons::*;
+use crate::{
+    agent::Agent,
+    dyn_struct::{DynStruct, Reset},
+    world::*,
+};
+
+use crate::enum_map::{Enum, EnumMap};
 
 const IMG_WIDTH: i32 = 320 * 4;
 // const IMG_HEIGHT: i32 = 320;
@@ -28,7 +34,6 @@ pub struct TestResultCount {
     pub negative: i32,
 }
 
-// #[derive(Default)]
 pub struct StatInfo {
     max_counts: UnionMap<HealthType, TestType, u32>,
     max_transit: UnionMap<HealthType, TestType, u32>,
@@ -40,7 +45,7 @@ pub struct StatInfo {
     stat_cumm: StatData,
     trans_daily: StatData,
     trans_cumm: StatData,
-    test_cumm: EnumMap<TestType, u32>, // [u32; N_INT_TEST_TYPES as usize],
+    test_cumm: EnumMap<TestType, u32>,
     test_results_w: [TestResultCount; 7],
     test_result_cnt: TestResultCount,
     max_step_p_rate: f64,
@@ -49,8 +54,8 @@ pub struct StatInfo {
     // phase_info: Vec<i32>,
     n_infects_hist: Vec<MyCounter>,
     // scenario_phases: Vec<i32>,
-    statistics: Option<MRef<StatData>>, // StatData,
-    transit: Option<MRef<StatData>>,
+    statistics: VecDeque<MRef<StatData>>,
+    transit: VecDeque<MRef<StatData>>,
     ds: DynStruct<StatData>,
 }
 
@@ -76,8 +81,8 @@ impl StatInfo {
             // phase_info: vec![],
             n_infects_hist: vec![],
             // scenario_phases: vec![],
-            statistics: None,
-            transit: None,
+            statistics: Default::default(),
+            transit: Default::default(),
             ds: Default::default(),
         }
     }
@@ -93,10 +98,15 @@ impl StatInfo {
         let n_not_inf = (n_pop - n_init_infec) as u32;
         self.max_counts.0[HealthType::Susceptible] = n_not_inf;
         self.max_counts.0[HealthType::Asymptomatic] = n_not_inf;
-        if let Some(sr) = &self.statistics {
+        self.ds.restore_all(&mut self.transit);
+        self.ds.restore_all(&mut self.statistics);
+        self.statistics = Default::default();
+        {
+            let sr = self.ds.new();
             let s = &mut sr.lock().unwrap();
             s.cnt.0[HealthType::Susceptible] = n_not_inf;
             s.cnt.0[HealthType::Asymptomatic] = n_init_infec as u32;
+            self.statistics.push_front(sr.clone());
         }
         self.steps = 0;
         self.days = 0;
@@ -104,7 +114,6 @@ impl StatInfo {
         self.skip_days = 1;
         self.pop_size = n_pop;
 
-        // ------
         // incub_p_hist.clear();
     }
     pub fn calc_stat_with_test(
@@ -113,7 +122,6 @@ impl StatInfo {
         test_count: &EnumMap<TestType, u32>,
         infectors: &Vec<InfectionCntInfo>,
     ) -> bool {
-        // let w = &wr.lock().unwrap();
         let pop = &w._pop.lock().unwrap();
         let q_list = &w.q_list;
         let c_list = &w.c_list;
@@ -122,8 +130,6 @@ impl StatInfo {
         let steps_per_day = wp.steps_per_day;
         let n_cells = (wp.mesh * wp.mesh) as usize;
 
-        self.debug_show();
-
         let mut tmp_stat = StatData::default();
         if self.steps % steps_per_day == 0 {
             self.trans_daily = StatData::default();
@@ -131,7 +137,7 @@ impl StatInfo {
         self.steps += 1;
 
         for i in 0..n_cells {
-            for ar in MyIter::new(pop[i].clone()) {
+            for ar in &pop[i] {
                 count_health(
                     &mut ar.lock().unwrap(),
                     &mut tmp_stat,
@@ -140,9 +146,7 @@ impl StatInfo {
             }
         }
 
-        self.debug_show();
-
-        for ar in MyIter::new(q_list.clone()) {
+        for ar in q_list {
             let a = &mut ar.lock().unwrap();
             let q_idx = if a.health == HealthType::Symptomatic {
                 HealthType::QuarantineSymp
@@ -168,7 +172,7 @@ impl StatInfo {
                 &mut self.trans_daily,
             );
         }
-        for ar in MyIter::new(c_list.clone()) {
+        for ar in c_list {
             let a = &mut ar.lock().unwrap();
             count_health(a, &mut tmp_stat, &mut self.trans_daily);
         }
@@ -208,38 +212,43 @@ impl StatInfo {
         }
         self.stat_cumm.p_rate = tmp_stat.p_rate;
 
-        self.debug_show();
-
         if idx_in_cum + 1 >= self.skip {
-            let mut new_stat = StatData::default(); // new_stat();
-            for (k, v) in &self.stat_cumm.cnt.0 {
-                new_stat.cnt.0[k] = v / self.skip as u32;
-            }
-            for (k, v) in &self.stat_cumm.cnt.1 {
-                new_stat.cnt.1[k] = v / self.skip as u32;
+            let nsr = self.ds.new();
+            {
+                let mut new_stat = nsr.lock().unwrap();
+                for (k, v) in &self.stat_cumm.cnt.0 {
+                    new_stat.cnt.0[k] = v / self.skip as u32;
+                }
+                for (k, v) in &self.stat_cumm.cnt.1 {
+                    new_stat.cnt.1[k] = v / self.skip as u32;
+                }
+
+                new_stat.p_rate = self.stat_cumm.p_rate / (self.skip as f64);
             }
 
-            new_stat.p_rate = self.stat_cumm.p_rate / (self.skip as f64);
-            new_stat.next = self.statistics.clone();
-            let nsr_opt = Some(Arc::new(Mutex::new(new_stat)));
-            self.statistics = nsr_opt.clone();
+            self.statistics.push_front(nsr.clone());
             if self.steps / self.skip > MAX_N_REC {
-                for pr in MyIter::new(nsr_opt.clone()) {
-                    let p = &mut pr.lock().unwrap();
-                    if let Some(qr) = &p.next.clone() {
-                        let q = qr.lock().unwrap();
-                        for (k, v) in &mut p.cnt.0 {
-                            *v = (*v + q.cnt.0[k]) / 2;
+                let mut new_list = VecDeque::new();
+                loop {
+                    if let Some(pr) = &self.statistics.pop_front() {
+                        if let Some(qr) = &self.statistics.pop_front() {
+                            let p = &mut pr.lock().unwrap();
+                            let q = &mut qr.lock().unwrap();
+                            for (k, v) in &mut p.cnt.0 {
+                                *v = (*v + q.cnt.0[k]) / 2;
+                            }
+                            for (k, v) in &mut p.cnt.1 {
+                                *v = (*v + q.cnt.1[k]) / 2;
+                            }
+                            p.p_rate = (p.p_rate + q.p_rate) / 2.;
+                            self.ds.restore(qr.clone());
                         }
-                        for (k, v) in &mut p.cnt.1 {
-                            *v = (*v + q.cnt.1[k]) / 2;
-                        }
-                        p.p_rate = (p.p_rate + q.p_rate) / 2.;
-                        p.next = q.next.clone();
-                        // q.next = freeStat;
-                        // freeStat = q;
+                        new_list.push_back(pr.clone());
+                    } else {
+                        break;
                     }
                 }
+                self.statistics = new_list;
                 self.skip *= 2;
             }
         }
@@ -289,35 +298,41 @@ impl StatInfo {
             self.trans_cumm.p_rate += self.trans_daily.p_rate;
 
             if idx_in_cum + 1 >= self.skip_days {
-                let new_tran_r = self.ds.new(|| StatData::default());
-                let new_tran = &mut new_tran_r.lock().unwrap();
-                for (k, v) in &self.trans_cumm.cnt.0 {
-                    new_tran.cnt.0[k] = v / self.skip_days as u32;
+                let new_tran_r = self.ds.new();
+                {
+                    let new_tran = &mut new_tran_r.lock().unwrap();
+                    for (k, v) in &self.trans_cumm.cnt.0 {
+                        new_tran.cnt.0[k] = v / self.skip_days as u32;
+                    }
+                    for (k, v) in &self.trans_cumm.cnt.1 {
+                        new_tran.cnt.1[k] = v / self.skip_days as u32;
+                    }
+                    new_tran.p_rate = self.trans_cumm.p_rate / self.skip_days as f64;
                 }
-                for (k, v) in &self.trans_cumm.cnt.1 {
-                    new_tran.cnt.1[k] = v / self.skip_days as u32;
-                }
-                new_tran.p_rate = self.trans_cumm.p_rate / self.skip_days as f64;
-                new_tran.next = self.transit.clone();
-                let new_tran_r_opt = Some(new_tran_r.clone());
-                self.transit = new_tran_r_opt.clone();
+                self.transit.push_front(new_tran_r.clone());
 
                 if self.days / self.skip_days >= MAX_N_REC {
-                    for pr in MyIter::new(new_tran_r_opt) {
-                        let p = &mut pr.lock().unwrap();
-                        if let Some(qr) = p.next.clone() {
-                            let q = &mut qr.lock().unwrap();
-                            for (k, v) in &mut p.cnt.0 {
-                                *v = (*v + q.cnt.0[k]) / 2;
+                    let mut new_list = VecDeque::new();
+                    loop {
+                        if let Some(pr) = &self.transit.pop_front() {
+                            if let Some(qr) = &self.transit.pop_front() {
+                                let p = &mut pr.lock().unwrap();
+                                let q = &mut qr.lock().unwrap();
+                                for (k, v) in &mut p.cnt.0 {
+                                    *v = (*v + q.cnt.0[k]) / 2;
+                                }
+                                for (k, v) in &mut p.cnt.1 {
+                                    *v = (*v + q.cnt.1[k]) / 2;
+                                }
+                                p.p_rate = (p.p_rate + q.p_rate) / 2.;
+                                self.ds.restore(qr.clone());
                             }
-                            for (k, v) in &mut p.cnt.1 {
-                                *v = (*v + q.cnt.1[k]) / 2;
-                            }
-                            p.p_rate = (p.p_rate + q.p_rate) / 2.;
-                            p.next = q.next.clone();
-                            self.ds.restore(&mut q.next, qr.clone());
+                            new_list.push_back(pr.clone());
+                        } else {
+                            break;
                         }
                     }
+                    self.transit = new_list;
                     self.skip_days *= 2;
                 }
             }
@@ -336,7 +351,7 @@ impl StatInfo {
             self.n_infects_hist[nv].inc();
         }
 
-        match &self.statistics {
+        match self.statistics.front() {
             Some(sr) => {
                 let s = sr.lock().unwrap();
                 s.cnt.0[HealthType::Asymptomatic] + s.cnt.0[HealthType::Symptomatic] == 0
@@ -344,25 +359,48 @@ impl StatInfo {
             _ => false,
         }
     }
-    fn debug_show(&self) {
-        StatInfo::debug_show_stat(&self.stat_cumm, "stat_cumm");
-        StatInfo::debug_show_stat(&self.trans_cumm, "trans_cumm");
-        StatInfo::debug_show_stat(&self.trans_daily, "trans_daily");
-        StatInfo::debug_show_statistics(&self.statistics);
+
+    pub fn write_statistics(&self, wtr: &mut Writer<File>) -> Result<(), Box<dyn Error>> {
+        for h in HealthType::keys() {
+            wtr.write_field(format!("{:?}", h))?;
+        }
+        for t in TestType::keys() {
+            wtr.write_field(format!("{:?}", t))?;
+        }
+        wtr.write_record(None::<&[u8]>)?;
+
+        for stat in self.statistics.iter().rev() {
+            let stat = stat.lock().unwrap();
+            for h in HealthType::keys() {
+                wtr.write_field(format!("{}", stat.cnt.0[h]))?;
+            }
+            for t in TestType::keys() {
+                wtr.write_field(format!("{}", stat.cnt.1[t]))?;
+            }
+            wtr.write_record(None::<&[u8]>)?;
+        }
+        Ok(())
     }
-    fn debug_show_statistics(stat: &Option<MRef<StatData>>) {
-        if let Some(sr) = &stat {
-            let s = sr.lock().unwrap();
-            StatInfo::debug_show_stat(&s, "statistics");
-        } else {
-            println!("-")
+
+    pub fn debug_show(&self) {
+        StatInfo::debug_show_all_stat(&self.statistics, "statistics");
+    }
+    fn debug_show_all_stat(stats: &VecDeque<MRef<StatData>>, name: &str) {
+        for sr in stats {
+            let s = &sr.lock().unwrap();
+            StatInfo::debug_show_stat(s, name);
+            println!();
         }
     }
     fn debug_show_stat(stat: &StatData, name: &str) {
-        println!("----{}----", name);
-        println!(" {:?}", stat.cnt.0);
-        println!(" {:?}", stat.cnt.1);
-        println!(" {}", stat.p_rate);
+        print!("{}", name);
+        print!("{}", " ".repeat(15 - name.len()));
+        for (_, v) in &stat.cnt.0 {
+            print!("{}/", v);
+        }
+        for (_, v) in &stat.cnt.1 {
+            print!("{}/", v);
+        }
     }
 }
 

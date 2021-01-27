@@ -1,22 +1,24 @@
-use crate::common_types::*;
+use crate::commons::*;
 use crate::contact::*;
 use crate::enum_map::*;
 use crate::gathering::*;
-use crate::iter::MyIter;
+use std::{error::Error, fs::File};
+
 use crate::stat::*;
 use crate::{agent::*, dyn_struct::DynStruct};
 
+use csv::Writer;
 use rand::distributions::Alphanumeric;
 use rand::{self, Rng};
 use rayon::prelude::*;
-use std::f64;
-use std::fmt::*;
+use std::fmt;
 use std::sync::{Arc, Mutex};
 use std::thread;
 use std::{
     collections::HashMap,
     time::{SystemTime, UNIX_EPOCH},
 };
+use std::{collections::VecDeque, f64};
 
 #[derive(Default, Debug)]
 pub struct WarpInfo {
@@ -35,7 +37,6 @@ impl WarpInfo {
     }
 }
 
-// #[derive(Default)]
 pub struct World {
     pub id: String,
     loop_mode: LoopMode,
@@ -44,7 +45,7 @@ pub struct World {
     pub tmp_world_params: WorldParams,
     n_mesh: i32,
     pub agents: Mutex<Vec<MRef<Agent>>>,
-    pub _pop: Mutex<Vec<Option<MRef<Agent>>>>,
+    pub _pop: Mutex<Vec<VecDeque<MRef<Agent>>>>,
     pop: Vec<Option<MRef<Agent>>>,
     n_pop: i32,
     p_range: Vec<Range>,
@@ -54,28 +55,29 @@ pub struct World {
     new_warp_f: HashMap<i32, Arc<WarpInfo>>,
     testees: HashMap<i32, TestType>,
     stop_at_n_days: i32,
-    pub q_list: Option<MRef<Agent>>,
-    pub c_list: Option<MRef<Agent>>,
+    pub q_list: VecDeque<MRef<Agent>>,
+    pub c_list: VecDeque<MRef<Agent>>,
     stat_info: Mutex<StatInfo>,
     scenario_index: i32,
     scenario: Vec<i32>, // Vec<Scenario>
-    // n_cores: i32,
-    contact_state: Mutex<ContactState>,
-    dsc: DynStruct<ContactInfo>,
+    dsc: Mutex<DynStruct<ContactInfo>>,
     gatherings: Vec<MRef<Gathering>>,
     gathering_map: GatheringMap,
     pub recov_p_hist: Vec<MyCounter>,
     pub incub_p_hist: Vec<MyCounter>,
     pub death_p_hist: Vec<MyCounter>,
     predicate_to_stop: bool,
-    test_que_head: Option<MRef<TestEntry>>,
-    test_que_tail: Option<MRef<TestEntry>>,
+    test_que: VecDeque<MRef<TestEntry>>,
     dst: DynStruct<TestEntry>,
 }
 
-impl Display for World {
-    fn fmt(&self, f: &mut Formatter<'_>) -> Result {
-        write!(f, "id:{}/running:{}", self.id, self.running(),)
+impl fmt::Display for World {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(
+            f,
+            "id:{}/steps:{}/loop_mode:{:?}",
+            self.id, self.runtime_params.step, self.loop_mode,
+        )
     }
 }
 
@@ -90,7 +92,6 @@ impl World {
             runtime_params: user_default_runtime_params,
             world_params: user_default_world_params,
             tmp_world_params: user_default_world_params,
-            // init_params: user_default_runtime_params,
             n_mesh: 0,
             agents: Default::default(),
             _pop: Mutex::new(vec![]),
@@ -103,12 +104,11 @@ impl World {
             new_warp_f: HashMap::new(),
             testees: HashMap::new(),
             stop_at_n_days: -365,
-            q_list: None,
-            c_list: None,
+            q_list: Default::default(),
+            c_list: Default::default(),
             stat_info: Mutex::new(StatInfo::new()),
             scenario_index: 0,
             scenario: vec![],
-            contact_state: Default::default(),
             dsc: Default::default(),
             gatherings: vec![],
             gathering_map: HashMap::new(),
@@ -116,53 +116,46 @@ impl World {
             incub_p_hist: vec![],
             death_p_hist: vec![],
             predicate_to_stop: false,
-            test_que_head: None,
-            test_que_tail: None,
+            test_que: Default::default(),
             dst: Default::default(),
         };
 
         w.reset_pop();
         w
     }
-    fn running(&self) -> bool {
-        self.loop_mode == LoopMode::LoopRunning
-    }
-    fn reset_pop(&mut self) {
+
+    // fn running(&self) -> bool {
+    //     self.loop_mode == LoopMode::LoopRunning
+    // }
+    pub fn reset_pop(&mut self) {
         let mut rng = rand::thread_rng();
         let wp = &self.world_params;
+        let rp = &self.runtime_params;
+
         // set runtime params of scenario != None
         self.gatherings.clear();
 
         // reset contact info heaps
         {
-            let cs = &mut self.contact_state.lock().unwrap();
+            let dsc = &mut self.dsc.lock().unwrap();
             for i in 0..self.n_pop as usize {
                 let agents = self.agents.lock().unwrap();
                 let a = &mut agents[i].lock().unwrap();
-                let ah = a.contact_info_head.clone();
-                let at = a.contact_info_tail.clone();
-                if let (Some(hr), Some(tr)) = (ah, at) {
-                    let t = &mut tr.lock().unwrap();
-                    t.next = cs.free_cinfo.clone();
-                    cs.free_cinfo = Some(hr.clone());
-                    a.contact_info_head = None;
-                    a.contact_info_tail = None;
-                }
+                dsc.restore_all(&mut a.contact_info_list);
+                a.contact_info_list = Default::default();
             }
         }
 
         if self.n_mesh != wp.mesh {
             self.n_mesh = wp.mesh;
-            // let n_cells = (wp.mesh * wp.mesh) as usize;
             let n_cnew = (wp.mesh * wp.mesh) as usize;
             self.p_range = vec![Range::default(); n_cnew];
         }
         self.gathering_map.clear();
         {
-            // Mutex::new(vec![None; (self.n_mesh * self.n_mesh) as usize]);
             let _pop = &mut self._pop.lock().unwrap();
             _pop.clear();
-            _pop.resize((self.n_mesh * self.n_mesh) as usize, None);
+            _pop.resize((self.n_mesh * self.n_mesh) as usize, Default::default());
         }
         if self.n_pop != wp.init_pop {
             self.n_pop = wp.init_pop;
@@ -192,12 +185,12 @@ impl World {
             let ar = &agents[i as usize];
             {
                 let a = &mut ar.lock().unwrap();
-                a.reset(wp.world_size as f64);
+                a.reset(wp.world_size as f64, &rp);
                 a.id = i;
                 if i < n_dist {
                     a.distancing = true
                 }
-                if i < wp.n_init_infec && i == infec_idxs[i_idx] {
+                if i_idx < (wp.n_init_infec as usize) && i == infec_idxs[i_idx] {
                     a.health = HealthType::Asymptomatic;
                     a.n_infects = 0;
                     i_idx += 1;
@@ -208,8 +201,8 @@ impl World {
                 add_agent(ar.clone(), _pop, &wp);
             }
         }
-        self.q_list = None; //.clear();
-        self.c_list = None; // .clear();
+        self.q_list.clear();
+        self.c_list.clear();
         self.warp_list.clear();
         // reset test queue
         self.runtime_params.step = 0;
@@ -222,9 +215,6 @@ impl World {
         self.scenario_index = 0;
         // self.exec_scenario();
         // [self forAllReporters:^(PeriodicReporter *rep) { [rep reset]; }];
-
-        // self.debug_pop_internal();
-        // self.debug_traverse_pop();
 
         self.loop_mode = LoopMode::LoopNone;
     }
@@ -251,26 +241,24 @@ impl World {
         todo!();
     }
 
-    // fn warp_step(&mut self, ar: &MRef<Agent>, mode: WarpType, goal: Point) -> bool {
     fn warp_steps(&mut self) {
         for info in self.new_warp_f.values() {
-            let a = &mut info.agent.lock().unwrap();
-            if a.is_warping {
-                // let w = &mut wr.clone().lock().unwrap();
-                self.warp_list.retain(|wi| {
-                    let wa = &wi.agent.lock().unwrap();
-                    println!("retain: {}, {}", a.id, wa.id);
-                    !std::ptr::eq(&**wa, &**a)
-                });
+            let is_warping = info.agent.lock().unwrap().is_warping;
+            if is_warping {
+                self.warp_list
+                    .retain(|wi| !Arc::ptr_eq(&info.agent, &wi.agent));
             } else {
-                // let a = &mut ar.lock().unwrap();
-                a.is_warping = true;
+                info.agent.lock().unwrap().is_warping = true;
                 match info.mode {
                     WarpType::WarpInside | WarpType::WarpToHospital | WarpType::WarpToCemeteryF => {
-                        remove_agent(a, &mut self._pop.lock().unwrap(), &self.world_params);
+                        remove_agent(
+                            &info.agent,
+                            &mut self._pop.lock().unwrap(),
+                            &self.world_params,
+                        );
                     }
                     WarpType::WarpBack | WarpType::WarpToCemeteryH => {
-                        remove_from_list(a, &mut self.q_list);
+                        self.q_list.remove_p(&info.agent);
                     }
                 }
             }
@@ -282,32 +270,38 @@ impl World {
             let goal = info.goal;
 
             let wp = &self.world_params;
-            let a = &mut ar.lock().unwrap();
-            let dp = Point {
-                x: goal.x - a.x,
-                y: goal.y - a.y,
+            let dp = {
+                let a = &mut ar.lock().unwrap();
+                Point {
+                    x: goal.x - a.x,
+                    y: goal.y - a.y,
+                }
             };
 
             let d = dp.y.hypot(dp.x);
             let v = wp.world_size as f64 / 5. / wp.steps_per_day as f64;
             if d < v {
-                a.x = goal.x;
-                a.y = goal.y;
-                a.is_warping = false;
+                {
+                    let a = &mut ar.lock().unwrap();
+                    a.x = goal.x;
+                    a.y = goal.y;
+                    a.is_warping = false;
+                }
                 match mode {
                     WarpType::WarpInside | WarpType::WarpBack => {
                         add_agent(ar.clone(), &mut self._pop.lock().unwrap(), wp)
                     }
                     WarpType::WarpToHospital => {
-                        add_to_list(ar.clone(), &mut self.q_list);
-                        a.got_at_hospital = true;
+                        self.q_list.push_front(ar.clone());
+                        ar.lock().unwrap().got_at_hospital = true;
                     }
                     WarpType::WarpToCemeteryF | WarpType::WarpToCemeteryH => {
-                        add_to_list(ar.clone(), &mut self.c_list);
+                        self.c_list.push_front(ar.clone());
                     }
                 }
             // true
             } else {
+                let a = &mut ar.lock().unwrap();
                 let th = dp.y.atan2(dp.x);
                 a.x += v * th.cos();
                 a.y += v * th.sin();
@@ -324,10 +318,9 @@ impl World {
         let wp = &self.world_params;
         let rp = &self.runtime_params;
 
-        gatherings.retain(|amg| {
-            let mut g = amg.lock().unwrap();
-            g.remove_from_map(gat_map);
-            !g.step(wp.steps_per_day)
+        gatherings.retain(|gr| {
+            Gathering::remove_from_map(gr, gat_map);
+            !gr.lock().unwrap().step(wp.steps_per_day)
         });
         //	caliculate the numner of gathering circles
         //	using random number in exponetial distribution.
@@ -346,7 +339,7 @@ impl World {
         let pop = &self.pop;
         let wp = &self.world_params;
         let rp = &self.runtime_params;
-        let cs = &mut self.contact_state.lock().unwrap();
+        let dsc = &mut self.dsc.lock().unwrap();
 
         let ar = &p_range[ia];
         let aloc = ar.location as usize;
@@ -364,10 +357,8 @@ impl World {
                 let (p, q) = if pa < pb { (pa, pb) } else { (pb, pa) };
                 let (lpop, rpop) = pop.split_at(q);
                 if let (Some(ap), Some(aq)) = (&lpop[p], rpop.last().unwrap()) {
-                    // let ap = &mut ap.lock().unwrap();
-                    // let aq = &mut aq.lock().unwrap();
                     let (ar, br) = if pa < pb { (ap, aq) } else { (aq, ap) };
-                    Agent::interacts(ar.clone(), br.clone(), wp, rp, cs);
+                    Agent::interacts(ar.clone(), br.clone(), wp, rp, dsc);
                 }
             }
         }
@@ -379,12 +370,17 @@ impl World {
         let c_tm = (self.runtime_params.step as f64
             - (self.runtime_params.tst_proc * self.world_params.steps_per_day as f64))
             as i32;
-        for er in MyIter::new(self.test_que_head.clone()) {
+
+        let mut old_list = VecDeque::new();
+        while !self.test_que.is_empty() {
+            let er = self.test_que.pop_front().unwrap();
             let entry = &mut er.lock().unwrap();
             if entry.time_stamp > c_tm {
+                self.test_que.push_front(er.clone());
                 break;
             }
             if entry.is_positive {
+                let entry = &mut er.lock().unwrap();
                 test_count[TestType::TestPositive] += 1;
                 if let Some(ar) = &entry.agent {
                     let a = &mut ar.lock().unwrap();
@@ -398,57 +394,48 @@ impl World {
                         new_pt,
                         WarpType::WarpToHospital,
                     )));
-                    for cr in MyIter::new(a.contact_info_head.clone()) {
+                    for cr in &a.contact_info_list {
                         let c = cr.lock().unwrap();
                         self.test_infection_of_agent(
                             &c.agent.lock().unwrap(),
                             TestType::TestAsContact,
                         );
                     }
-                    if let (Some(hr), Some(tr)) = (&a.contact_info_head, &a.contact_info_tail) {
-                        self.dsc.restore(&mut tr.lock().unwrap().next, hr.clone());
-                    }
-                    a.contact_info_head = None;
-                    a.contact_info_tail = None;
+                    let dsc = &mut self.dsc.lock().unwrap();
+                    dsc.restore_all(&mut a.contact_info_list);
+                    a.contact_info_list = Default::default();
                 }
             } else {
                 test_count[TestType::TestNegative] += 1;
             }
+
             if let Some(ar) = &entry.agent {
                 ar.lock().unwrap().in_test_queue = false;
             }
-            self.test_que_head = entry.next.clone();
-            if let Some(er) = &entry.next {
-                er.lock().unwrap().prev = None;
-            } else {
-                self.test_que_tail = None;
-            }
-            self.dst.restore(&mut entry.next, er.clone())
+
+            old_list.push_back(er.clone());
         }
+        self.dst.restore_all(&mut old_list);
 
         // enqueue new tests
         for (&num, &v) in &self.testees {
             test_count[v] += 1;
             let ar = &self.agents.lock().unwrap()[num as usize];
-            let agent = &mut ar.lock().unwrap();
-            let er = self.dst.new(TestEntry::default);
-            let entry = &mut er.lock().unwrap();
-            entry.is_positive = if agent.is_infected() {
-                rng.gen::<f64>() < self.runtime_params.tst_sens / 100.
-            } else {
-                rng.gen::<f64>() > self.runtime_params.tst_spec / 100.
-            };
-            agent.last_tested = self.runtime_params.step;
-            entry.time_stamp = self.runtime_params.step;
-            entry.agent = Some(ar.clone());
-            entry.prev = self.test_que_tail.clone();
-            if let Some(tr) = &self.test_que_tail {
-                tr.lock().unwrap().next = Some(er.clone());
-            } else {
-                self.test_que_head = Some(er.clone());
+            let er = self.dst.new();
+            {
+                let agent = &mut ar.lock().unwrap();
+                let entry = &mut er.lock().unwrap();
+                entry.is_positive = if agent.is_infected() {
+                    rng.gen::<f64>() < self.runtime_params.tst_sens / 100.
+                } else {
+                    rng.gen::<f64>() > self.runtime_params.tst_spec / 100.
+                };
+                agent.last_tested = self.runtime_params.step;
+                entry.time_stamp = self.runtime_params.step;
+                entry.agent = Some(ar.clone());
+                agent.in_test_queue = true;
             }
-            entry.next = None;
-            self.test_que_tail = Some(er.clone());
+            self.test_que.push_back(er);
         }
         self.testees.clear();
         // for i in TestType::TestAsSymptom..TestType::TestPositive {
@@ -462,6 +449,7 @@ impl World {
             self.exec_scenario();
         }
     }
+    /*
     fn touch(&mut self) -> bool {
         todo!()
         //     let mut result;
@@ -470,13 +458,14 @@ impl World {
         //     [_lastTLock unlock];
         //     return result;
     }
+    */
 
-    fn do_one_step(wr: MRef<World>) {
+    fn do_one_step(wr: &MRef<World>) {
         let n_in_field = {
             let w = &mut wr.lock().unwrap();
             w.do_one_step_first()
         };
-        let infectors = World::do_one_step_second(wr.clone(), n_in_field);
+        let infectors = World::do_one_step_second(wr, n_in_field);
         {
             let w = &mut wr.lock().unwrap();
             w.do_one_step_third(infectors)
@@ -484,8 +473,6 @@ impl World {
     }
 
     fn do_one_step_first(&mut self) -> usize {
-        println!("do_one_step");
-
         let n_cells = {
             let mesh = self.world_params.mesh as usize;
             mesh * mesh
@@ -499,10 +486,10 @@ impl World {
         let n_in_field = {
             let _pop = self._pop.lock().unwrap();
             let mut n_in_field = 0;
-            let pop = &mut self.pop; //.lock().unwrap();
+            let pop = &mut self.pop;
             for i in 0..n_cells {
                 self.p_range[i].location = n_in_field;
-                for aa in MyIter::new(_pop[i].clone()) {
+                for aa in &_pop[i] {
                     pop[n_in_field as usize] = Some(aa.clone());
                     n_in_field += 1;
                 }
@@ -512,8 +499,8 @@ impl World {
         };
 
         let old_time_stamp = {
-            self.runtime_params.step - self.world_params.steps_per_day * 14
             // two weeks
+            self.runtime_params.step - self.world_params.steps_per_day * 14
         };
         let (ps, _) = self.pop.split_at(n_in_field);
         ps.into_par_iter().for_each(|ar_opt| {
@@ -522,19 +509,15 @@ impl World {
                     let a = &mut ar.lock().unwrap();
                     a.reset_for_step();
                 }
-                let mut cs = self.contact_state.lock().unwrap();
-                cs.remove_old_cinfo(ar.clone(), old_time_stamp);
+                let dsc = &mut self.dsc.lock().unwrap();
+                remove_old_cinfo(dsc, ar.clone(), old_time_stamp);
             }
         });
 
         self.manage_gatherings();
-        self.gathering_map.par_iter().for_each(|(num, wrgs)| {
-            let iter = {
-                let _pop = &mut self._pop.lock().unwrap();
-                let opt_ar = { &_pop[*num as usize] };
-                MyIter::new(opt_ar.clone())
-            };
-            for aa in iter {
+        self.gathering_map.par_iter().for_each(|(&num, wrgs)| {
+            let _pop = &mut self._pop.lock().unwrap();
+            for aa in &_pop[num as usize] {
                 let a = &mut aa.lock().unwrap();
                 if !a.is_infected() {
                     for amg in wrgs.iter() {
@@ -547,8 +530,6 @@ impl World {
 
         let (rs, _) = self.p_range.split_at(n_cells);
         rs.into_iter().for_each(|rng| {
-            // let world = &mut wr.lock().unwrap();
-            // let rng = &wr.lock().unwrap().p_range[i];
             let len = rng.length as usize;
             let loc = rng.location as usize;
 
@@ -556,13 +537,13 @@ impl World {
                 if let Some(ar) = &self.pop[(loc + j)] {
                     for k in (j + 1)..len {
                         if let Some(br) = &self.pop[loc + k] {
-                            let cs = &mut self.contact_state.lock().unwrap();
+                            let dsc = &mut self.dsc.lock().unwrap();
                             Agent::interacts(
                                 ar.clone(),
                                 br.clone(),
                                 &self.world_params,
                                 &self.runtime_params,
-                                cs,
+                                dsc,
                             );
                         }
                     }
@@ -572,7 +553,7 @@ impl World {
         n_in_field
     }
 
-    fn do_one_step_second(wr: MRef<World>, n_in_field: usize) -> Mutex<Vec<InfectionCntInfo>> {
+    fn do_one_step_second(wr: &MRef<World>, n_in_field: usize) -> Mutex<Vec<InfectionCntInfo>> {
         intersect_grids(wr.clone());
 
         // step
@@ -582,8 +563,8 @@ impl World {
                 let w = wr.lock().unwrap();
                 w.pop[i].clone()
             };
-            if let Some(ar) = ar_opt {
-                Agent::step_agent(wr.clone(), ar.clone());
+            if let Some(ar) = &ar_opt {
+                Agent::step_agent(wr, ar);
                 {
                     let a = &mut ar.lock().unwrap();
                     if a.new_n_infects > 0 {
@@ -598,29 +579,21 @@ impl World {
                 }
             }
         });
+
+        for ar in &wr.lock().unwrap().q_list {
+            Agent::step_agent_in_quarantine(wr.clone(), ar.clone());
+        }
+
         infectors
     }
 
     fn do_one_step_third(&mut self, infectors: Mutex<Vec<InfectionCntInfo>>) {
-        for ref ar in MyIter::new(self.q_list.clone()) {
-            Agent::step_agent_in_quarantine(self, ar.clone());
-        }
-        /*
-        let new_warp_f = &self.new_warp_f;
-        for info in new_warp_f.values() {
-            // if !self.warp_step(&info.agent, info.mode, info.goal) {
-            if !self.warp_step(info) {
-                self.warp_list.push(info.clone());
-            }
-        }
-        */
         self.warp_steps();
 
         let mut test_count = EnumMap::default();
         self.deliver_test_results(&mut test_count);
 
         let finished = {
-            // let w = wr.lock().unwrap();
             let si = &mut self.stat_info.lock().unwrap();
             si.calc_stat_with_test(&self, &test_count, &infectors.lock().unwrap())
         };
@@ -630,64 +603,30 @@ impl World {
             if finished {
                 self.loop_mode = LoopMode::LoopFinished;
             } else if self.predicate_to_stop {
-                // if ([predicateToStop evaluateWithObject:statInfo])
                 self.loop_mode = LoopMode::LoopEndByCondition;
             }
         }
     }
-    fn debug_list_pop(pop: &Vec<Option<MRef<Agent>>>) {
-        for (i, ar_opt) in pop.iter().enumerate() {
-            print!("{}:", i);
-            if let Some(ar) = &ar_opt {
-                let a = ar.lock().unwrap();
-                print!("{},", a.id);
-                if let Some(nr) = &a.next {
-                    let n = nr.lock().unwrap();
-                    print!("{},", n.id);
-                } else {
-                    print!(",");
-                }
-                if let Some(pr) = &a.prev {
-                    let p = pr.lock().unwrap();
-                    print!("{}", p.id);
-                }
-            }
-            println!();
-        }
-    }
-    pub fn debug_pop(&self) {
-        World::debug_list_pop(&self._pop.lock().unwrap());
-    }
-    pub fn debug_pop_internal(&self) {
-        World::debug_list_pop(&self.pop);
-    }
-    pub fn debug_traverse_pop(&self) {
-        for (i, ar_opt) in self._pop.lock().unwrap().iter().enumerate() {
-            print!("{}:", i);
-            for ar in MyIter::new(ar_opt.clone()) {
-                let a = ar.lock().unwrap();
-                let p = a.prev.clone();
-                print!("{}({}),", a.id, p.map_or(-1, |ar| ar.lock().unwrap().id));
-            }
-            println!();
-        }
+
+    pub fn debug(&self) {
+        self.stat_info.lock().unwrap().debug_show();
     }
 }
 
-/*
-pub fn new_handle(world: MRef<World>) -> thread::JoinHandle<()> {
-    thread::spawn(move || {
-        World::running_loop(world);
-        // world.lock().unwrap().start();
-        // while world.lock().unwrap().running {
-        //     thread::sleep(std::time::Duration::from_secs(1));
-        //     world.lock().unwrap().up();
-        // }
-    })
+fn add_agent(ar: MRef<Agent>, pop: &mut Vec<VecDeque<MRef<Agent>>>, wp: &WorldParams) {
+    let k = ar.lock().unwrap().index_in_pop(wp) as usize;
+    pop[k].push_front(ar);
 }
-*/
 
-pub fn start(wr: MRef<World>, stop_at: i32, max_sps: f64, prio: f64) -> thread::JoinHandle<()> {
+fn remove_agent(ar: &MRef<Agent>, pop: &mut Vec<VecDeque<MRef<Agent>>>, wp: &WorldParams) {
+    let k = ar.lock().unwrap().index_in_pop(wp) as usize;
+    pop[k].remove_p(ar);
+}
+
+pub fn start(
+    wr: MRef<World>,
+    stop_at: i32, /*, max_sps: f64, prio: f64*/
+) -> thread::JoinHandle<()> {
     {
         let world = &mut wr.lock().unwrap();
         if world.loop_mode == LoopMode::LoopRunning {
@@ -702,18 +641,19 @@ pub fn start(wr: MRef<World>, stop_at: i32, max_sps: f64, prio: f64) -> thread::
     }
     let wr = wr.clone();
     thread::spawn(move || {
-        running_loop(wr);
+        running_loop(&wr);
+        println!("loop end");
     })
 }
 
-pub fn step(wr: MRef<World>) {
+pub fn step(wr: &MRef<World>) {
     let world = &mut wr.lock().unwrap();
     match world.loop_mode {
         LoopMode::LoopRunning => {}
         LoopMode::LoopFinished | LoopMode::LoopEndByCondition => {
             world.go_ahead();
         }
-        _ => World::do_one_step(wr.clone()),
+        _ => World::do_one_step(wr),
     }
     world.loop_mode = LoopMode::LoopEndByUser;
     // [self forAllReporters:^(PeriodicReporter *rep) { [rep sendReport]; }];
@@ -726,19 +666,22 @@ pub fn stop(wr: &MRef<World>) {
     }
 }
 
-/*
-*/
+pub fn export(wr: &MRef<World>, wtr: &mut Writer<File>) -> Result<(), Box<dyn Error>> {
+    let world = &mut wr.lock().unwrap();
+    let stat_info = world.stat_info.lock().unwrap();
+    stat_info.write_statistics(wtr)?;
+    Ok(())
+}
 
-fn running_loop(wr: MRef<World>) {
+fn running_loop(wr: &MRef<World>) {
     loop {
         {
-            let wr = wr.clone();
             let w = wr.lock().unwrap();
             if w.loop_mode != LoopMode::LoopRunning {
                 break;
             }
         }
-        World::do_one_step(wr.clone());
+        World::do_one_step(wr);
         {
             let world = &mut wr.lock().unwrap();
             if world.loop_mode == LoopMode::LoopEndByCondition
@@ -749,7 +692,7 @@ fn running_loop(wr: MRef<World>) {
             }
             if world.stop_at_n_days > 0
                 && world.runtime_params.step
-                    == world.stop_at_n_days * world.world_params.steps_per_day - 1
+                    >= world.stop_at_n_days * world.world_params.steps_per_day - 1
             {
                 world.loop_mode = LoopMode::LoopEndAsDaysPassed;
                 break;

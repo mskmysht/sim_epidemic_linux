@@ -1,9 +1,12 @@
-use std::sync::{Arc, Mutex};
+use std::{
+    collections::VecDeque,
+    sync::{Arc, Mutex},
+};
 
 use crate::{
     agent::Agent,
+    dyn_struct::Reset,
     enum_map::{Enum, EnumMap},
-    iter::Next,
 };
 
 pub type MRef<T> = Arc<Mutex<T>>;
@@ -73,7 +76,7 @@ pub enum HealthType {
     Died,
     QuarantineAsym,
     QuarantineSymp,
-    NStateIndexes,
+    // NStateIndexes,
     // NHealthTypes = QuarantineAsym,
 }
 
@@ -92,35 +95,15 @@ pub enum TestType {
     TestPositive,
     TestNegative,
     TestPositiveRate,
-    NAllTestTypes,
+    // NAllTestTypes,
 }
 
 pub type UnionMap<K0, K1, V> = (EnumMap<K0, V>, EnumMap<K1, V>);
 
-/*
-#[derive(Eq, PartialEq, Hash, Debug)]
-pub enum HealthOrTest {
-    HealthType(HealthType),
-    TestType(TestType),
-}
-
-impl HealthType {
-    pub fn to_stat(self) -> HealthOrTest {
-        HealthOrTest::HealthType(self)
-    }
-}
-
-impl TestType {
-    pub fn to_stat(self) -> HealthOrTest {
-        HealthOrTest::TestType(self)
-    }
-}
-*/
-
-pub const N_INT_TEST_TYPES: TestType = TestType::TestPositiveRate;
-pub const N_INT_INDEXES: usize = HealthType::NStateIndexes as usize + N_INT_TEST_TYPES as usize;
-pub const N_ALL_INDEXES: usize =
-    HealthType::NStateIndexes as usize + TestType::NAllTestTypes as usize;
+// pub const N_INT_TEST_TYPES: TestType = TestType::TestPositiveRate;
+// pub const N_INT_INDEXES: usize = HealthType::NStateIndexes as usize + N_INT_TEST_TYPES as usize;
+// pub const N_ALL_INDEXES: usize =
+//     HealthType::NStateIndexes as usize + TestType::NAllTestTypes as usize;
 
 #[derive(Default, PartialEq, Clone, Copy, Debug)]
 pub struct Point {
@@ -160,22 +143,14 @@ impl Default for WarpType {
 
 #[derive(Default, Debug)]
 pub struct StatData {
-    pub next: Option<MRef<StatData>>,
-    pub cnt: UnionMap<HealthType, TestType, u32>, // [u32; N_INT_INDEXES],
+    pub cnt: UnionMap<HealthType, TestType, u32>,
     pub p_rate: f64,
 }
 
-impl StatData {
-    pub fn reset(&mut self) {
+impl Reset<StatData> for StatData {
+    fn reset(&mut self) {
         self.p_rate = 0.0;
         self.cnt = Default::default();
-        self.next = None;
-    }
-}
-
-impl Next<MRef<StatData>> for MRef<StatData> {
-    fn next(&self) -> Option<MRef<StatData>> {
-        self.lock().unwrap().next.clone()
     }
 }
 
@@ -187,7 +162,7 @@ pub enum LoopMode {
     LoopEndByUser,
     LoopEndByCondition,
     LoopEndAsDaysPassed,
-    LoopEndByTimeLimit,
+    // LoopEndByTimeLimit,
 }
 
 impl Default for LoopMode {
@@ -213,22 +188,38 @@ impl MyCounter {
         self.cnt -= 1;
     }
 
-    pub fn description(&self) -> String {
-        format!("<MyCounter: cnt={}>", self.cnt)
-    }
+    // pub fn description(&self) -> String {
+    //     format!("<MyCounter: cnt={}>", self.cnt)
+    // }
 }
 
 #[derive(Default)]
 pub struct TestEntry {
-    pub prev: Option<MRef<TestEntry>>,
-    pub next: Option<MRef<TestEntry>>,
     pub time_stamp: i32,
     pub is_positive: bool,
     pub agent: Option<MRef<Agent>>,
 }
 
-impl Next<MRef<TestEntry>> for MRef<TestEntry> {
-    fn next(&self) -> Option<MRef<TestEntry>> {
-        self.lock().unwrap().next.clone()
+impl Reset<TestEntry> for TestEntry {
+    fn reset(&mut self) {
+        self.time_stamp = 0;
+        self.is_positive = false;
+        self.agent = None;
+    }
+}
+
+pub trait PointerVec<T> {
+    fn remove_p(&mut self, t: &Arc<T>);
+}
+
+impl<T> PointerVec<T> for Vec<Arc<T>> {
+    fn remove_p(&mut self, t: &Arc<T>) {
+        self.retain(|u| !Arc::ptr_eq(u, t));
+    }
+}
+
+impl<T> PointerVec<T> for VecDeque<Arc<T>> {
+    fn remove_p(&mut self, t: &Arc<T>) {
+        self.retain(|u| !Arc::ptr_eq(u, t));
     }
 }

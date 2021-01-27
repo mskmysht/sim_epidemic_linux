@@ -19,11 +19,15 @@ This repository includes a program rewritten in Rust which is designed to run th
 ### Usage
 - Available CUI Commands:
   - `new {number}`: create new world with a number
+  - `start {world number} {the day to stop at}`: start a world to stop at the day in new thread
+  - `step {world number}`: step a world
+  - `stop {world number}`: stop a world
+  - `reset {world number}`: reset the state of a world
+  - `export {world number} {file path}`: export the statistic history of a world to a csv file
+  - `delete {world number}`: delete a world
   - `list`: list existing worlds
-  - `start {number}`: start the world of a given number in new thread
-  - `stop {number}`: not yet implemented
-  - `delete {number}`: not yet implemented
-  - [for development] `debug {number}`: execute some debug process for the world of a given number
+  - `:q`: quit this application
+  - [for development] `debug {world number}`: execute some debug process for a world
 - All parameters are set to a world in which is created via `WorldParams` structure and `RuntimeParams` structure.
 - You can find more detail at http://www.intlab.soka.ac.jp/~unemi/SimEpidemic1/info/simepidemic-docs.html.
 

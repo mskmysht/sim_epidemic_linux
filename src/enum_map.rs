@@ -19,7 +19,7 @@ pub trait Enum {
 }
 
 pub struct EnumMap<K, V> {
-    arr: Vec<V>, // ; <K as Enum>::ENUM_SIZE],
+    arr: Vec<V>,
     _maker: PhantomData<K>,
 }
 

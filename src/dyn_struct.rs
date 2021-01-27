@@ -1,35 +1,43 @@
-use std::sync::{Arc, Mutex};
+use std::{
+    collections::VecDeque,
+    sync::{Arc, Mutex},
+};
 
-use crate::common_types::MRef;
+use crate::commons::MRef;
 
 static ALLOC_UNIT: usize = 2048;
 
+pub trait Reset<T> {
+    fn reset(&mut self);
+}
+
 #[derive(Default)]
 pub struct DynStruct<T> {
-    array: Vec<MRef<T>>,
-    pub free: Option<MRef<T>>,
-    idx: usize,
+    pool: VecDeque<MRef<T>>,
 }
 
 impl<T> DynStruct<T> {
-    pub fn new<F>(&mut self, f: F) -> MRef<T>
+    pub fn new(&mut self) -> MRef<T>
     where
-        F: Fn() -> T,
+        T: Default,
+        T: Reset<T>,
     {
-        if self.idx == self.array.len() {
-            self.array.reserve_exact(ALLOC_UNIT);
-            for _ in 0..ALLOC_UNIT - 1 {
-                let c = f(); // Default::default();
-                self.array.push(Arc::new(Mutex::new(c)));
+        if self.pool.is_empty() {
+            for _ in 0..ALLOC_UNIT {
+                let c = Default::default();
+                self.pool.push_back(Arc::new(Mutex::new(c)));
             }
         }
-        let cr = &self.array[self.idx];
-        self.idx += 1;
+        let cr = &self.pool.pop_front().unwrap();
+        cr.lock().unwrap().reset();
         cr.clone()
     }
 
-    pub fn restore(&mut self, n_opt: &mut Option<MRef<T>>, tr: MRef<T>) {
-        *n_opt = self.free.clone();
-        self.free = Some(tr.clone());
+    pub fn restore(&mut self, tr: MRef<T>) {
+        self.pool.push_back(tr);
+    }
+
+    pub fn restore_all(&mut self, trs: &mut VecDeque<MRef<T>>) {
+        self.pool.append(trs);
     }
 }
