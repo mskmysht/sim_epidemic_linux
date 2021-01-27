@@ -25,7 +25,7 @@ This repository includes a program rewritten in Rust which is designed to run th
   - `reset {world number}`: reset the state of a world
   - `export {world number} {file path}`: export the statistic history of a world to a csv file
   - `delete {world number}`: delete a world
-  - `list`: list existing worlds
+  - `list`: list all existing worlds
   - `:q`: quit this application
   - [for development] `debug {world number}`: execute some debug process for a world
 - All parameters are set to a world in which is created via `WorldParams` structure and `RuntimeParams` structure.
