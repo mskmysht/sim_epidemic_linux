@@ -623,78 +623,7 @@ fn remove_agent(ar: &MRef<Agent>, pop: &mut Vec<VecDeque<MRef<Agent>>>, wp: &Wor
     pop[k].remove_p(ar);
 }
 
-pub fn start(
-    wr: &MRef<World>,
-    stop_at: i32, /*, max_sps: f64, prio: f64*/
-) -> thread::JoinHandle<()> {
-    let wr = wr.clone();
-    thread::spawn(move || {
-        {
-            let world = &mut wr.lock().unwrap();
-            if world.loop_mode == LoopMode::LoopRunning {
-                return;
-            }
-            if stop_at > 0 {
-                world.stop_at_n_days = stop_at;
-            }
-            // world.max_sps = max_sps;
-            world.go_ahead();
-            world.loop_mode = LoopMode::LoopRunning;
-        }
-        running_loop(&wr);
-    })
-}
-
-pub fn step(wr: &MRef<World>) -> thread::JoinHandle<()> {
-    let wr = wr.clone();
-    thread::spawn(move || {
-        {
-            let world = &mut wr.lock().unwrap();
-            match world.loop_mode {
-                LoopMode::LoopRunning => return,
-                LoopMode::LoopFinished | LoopMode::LoopEndByCondition => {
-                    world.go_ahead();
-                }
-                _ => {}
-            }
-        }
-        World::do_one_step(&wr);
-        wr.lock().unwrap().loop_mode = LoopMode::LoopEndByUser;
-    })
-    // [self forAllReporters:^(PeriodicReporter *rep) { [rep sendReport]; }];
-}
-
-pub fn stop(wr: &MRef<World>) -> thread::JoinHandle<()> {
-    let wr = wr.clone();
-    thread::spawn(move || {
-        let world = &mut wr.lock().unwrap();
-        if world.loop_mode == LoopMode::LoopRunning {
-            world.loop_mode = LoopMode::LoopEndByUser;
-        }
-    })
-}
-
-pub fn reset(wr: &MRef<World>) -> thread::JoinHandle<()> {
-    let wr = wr.clone();
-    thread::spawn(move || {
-        wr.lock().unwrap().reset_pop();
-    })
-}
-
-pub fn export(wr: &MRef<World>, path: &str) -> Result<(), Box<dyn Error>> {
-    let world = &mut wr.lock().unwrap();
-    let stat_info = world.stat_info.lock().unwrap();
-    let mut wtr = Writer::from_path(path)?;
-    stat_info.write_statistics(&mut wtr)?;
-    wtr.flush()?;
-    Ok(())
-}
-
-pub fn debug(wr: &MRef<World>) {
-    wr.lock().unwrap().debug();
-}
-
-fn running_loop(wr: &MRef<World>) {
+fn running_loop(wr: MRef<World>) {
     loop {
         {
             let w = wr.lock().unwrap();
@@ -702,7 +631,7 @@ fn running_loop(wr: &MRef<World>) {
                 break;
             }
         }
-        World::do_one_step(wr);
+        World::do_one_step(&Arc::clone(&wr));
         {
             let world = &mut wr.lock().unwrap();
             if world.loop_mode == LoopMode::LoopEndByCondition
@@ -808,4 +737,59 @@ fn get_uptime() -> f64 {
         .duration_since(UNIX_EPOCH)
         .expect("SystemTime before UNIX EPOCH!")
         .as_secs_f64()
+}
+
+pub fn stop_world(world: &mut World) {
+    if world.loop_mode == LoopMode::LoopRunning {
+        world.loop_mode = LoopMode::LoopEndByUser;
+    }
+}
+
+pub fn step_world(wr: MRef<World>) {
+    {
+        let world = &mut wr.lock().unwrap();
+        match world.loop_mode {
+            LoopMode::LoopRunning => return,
+            LoopMode::LoopFinished | LoopMode::LoopEndByCondition => {
+                world.go_ahead();
+            }
+            _ => {}
+        }
+    }
+    World::do_one_step(&wr);
+    wr.lock().unwrap().loop_mode = LoopMode::LoopEndByUser;
+}
+
+pub fn start_world(wr: MRef<World>, stop_at: i32) -> Option<thread::JoinHandle<()>> {
+    {
+        let world = &mut wr.lock().unwrap();
+        if world.loop_mode == LoopMode::LoopRunning {
+            return None;
+        }
+        if stop_at > 0 {
+            world.stop_at_n_days = stop_at;
+        }
+        // world.max_sps = max_sps;
+        world.go_ahead();
+        world.loop_mode = LoopMode::LoopRunning;
+    }
+    Some(thread::spawn(move || {
+        running_loop(Arc::clone(&wr));
+    }))
+}
+
+pub fn reset_world(world: &mut World) {
+    world.reset_pop();
+}
+
+pub fn debug_world(world: &World) {
+    world.debug();
+}
+
+pub fn export_world(world: &World, path: &str) -> Result<(), Box<dyn Error>> {
+    let stat_info = world.stat_info.lock().unwrap();
+    let mut wtr = Writer::from_path(path)?;
+    stat_info.write_statistics(&mut wtr)?;
+    wtr.flush()?;
+    Ok(())
 }
