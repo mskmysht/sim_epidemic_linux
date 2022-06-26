@@ -6,21 +6,43 @@ use std::{
     ops::{Index, IndexMut},
 };
 
-pub trait Enum {
+pub trait Enum: Sized {
     const ENUM_SIZE: usize;
+
     fn from_usize(u: usize) -> Self;
     fn to_usize(self) -> usize;
-    fn keys() -> Vec<Self>
-    where
-        Self: Sized,
-    {
-        (0..Self::ENUM_SIZE).map(Self::from_usize).collect()
+    fn iter<'a>() -> EnumIter<'a, Self> {
+        EnumIter(0, PhantomData)
     }
 }
 
-pub struct EnumMap<K, V> {
+pub struct EnumIter<'a, T>(usize, PhantomData<&'a T>);
+impl<'a, T: Enum> Iterator for EnumIter<'a, T> {
+    type Item = &'a T;
+
+    fn next(&mut self) -> Option<Self::Item> {
+        if T::ENUM_SIZE >= self.0 {
+            None
+        } else {
+            let t = T::from_usize(self.0);
+            self.0 += 1;
+            Some(&t)
+        }
+    }
+}
+
+pub struct EnumMap<K: Enum, V> {
     arr: Vec<V>,
     _maker: PhantomData<K>,
+}
+
+impl<K: Enum, V> EnumMap<K, V> {
+    fn new(arr: Vec<V>) -> Self {
+        Self {
+            arr,
+            _maker: PhantomData,
+        }
+    }
 }
 
 impl<K: Enum + Debug, V: Debug> Debug for EnumMap<K, V> {
@@ -38,10 +60,7 @@ impl<K: Enum + Debug, V: Debug> Debug for EnumMap<K, V> {
 
 impl<K: Enum, V: Default> Default for EnumMap<K, V> {
     fn default() -> Self {
-        EnumMap {
-            arr: (0..<K as Enum>::ENUM_SIZE).map(|_| V::default()).collect(),
-            _maker: PhantomData,
-        }
+        EnumMap::new((0..<K as Enum>::ENUM_SIZE).map(|_| V::default()).collect())
     }
 }
 
@@ -60,59 +79,59 @@ impl<K: Enum, V> IndexMut<K> for EnumMap<K, V> {
 }
 
 pub struct Iter<'a, K, V> {
-    iterator: std::iter::Enumerate<std::slice::Iter<'a, V>>,
-    _marker: PhantomData<K>,
+    keys: EnumIter<'a, K>,
+    values: &'a [V],
 }
 
 pub struct IterMut<'a, K, V> {
-    iterator: std::iter::Enumerate<std::slice::IterMut<'a, V>>,
-    _marker: PhantomData<K>,
+    keys: EnumIter<'a, K>,
+    values: &'a mut [V],
 }
 
 impl<'a, K: Enum, V> Iterator for Iter<'a, K, V> {
-    type Item = (K, &'a V);
+    type Item = (&'a K, &'a V);
 
     fn next(&mut self) -> Option<Self::Item> {
-        self.iterator.next().map(|(i, v)| {
-            let key = <K as Enum>::from_usize(i);
-            (key, v)
-        })
+        // let k_tmp = std::mem::replace(&mut self.keys, &mut []);
+        let k = self.keys.next()?;
+        let (v, vs) = self.values.split_first()?;
+        self.values = vs;
+        Some((k, v))
     }
 }
 
 impl<'a, K: Enum, V> Iterator for IterMut<'a, K, V> {
-    type Item = (K, &'a mut V);
+    type Item = (&'a K, &'a mut V);
 
     fn next(&mut self) -> Option<Self::Item> {
-        self.iterator.next().map(|(i, v)| {
-            let key = <K as Enum>::from_usize(i);
-            (key, v)
-        })
+        let k = self.keys.next()?;
+        let v_tmp = std::mem::replace(&mut self.values, &mut []);
+        let (v, vs) = v_tmp.split_first_mut()?;
+        self.values = vs;
+        Some((k, v))
     }
 }
 
 impl<'a, K: Enum, V> IntoIterator for &'a EnumMap<K, V> {
-    type Item = (K, &'a V);
-
+    type Item = (&'a K, &'a V);
     type IntoIter = Iter<'a, K, V>;
 
     fn into_iter(self) -> Self::IntoIter {
         Iter {
-            iterator: self.arr.iter().enumerate(),
-            _marker: PhantomData,
+            keys: K::iter(),
+            values: self.arr.as_slice(),
         }
     }
 }
 
 impl<'a, K: Enum, V> IntoIterator for &'a mut EnumMap<K, V> {
-    type Item = (K, &'a mut V);
-
+    type Item = (&'a K, &'a mut V);
     type IntoIter = IterMut<'a, K, V>;
 
     fn into_iter(self) -> Self::IntoIter {
         IterMut {
-            iterator: self.arr.iter_mut().enumerate(),
-            _marker: PhantomData,
+            keys: K::iter(),
+            values: self.arr.as_mut_slice(),
         }
     }
 }

@@ -1,3 +1,16 @@
+// mod agent2;
+mod agent;
+pub mod area;
+mod commons;
+mod contact;
+mod dyn_struct;
+mod enum_map;
+mod gathering;
+pub mod log;
+mod stat;
+pub mod testing;
+mod world;
+
 use commons::{DistInfo, MRef, RuntimeParams, WorldParams};
 
 use peg::parser;
@@ -5,15 +18,6 @@ use std::io::{self, Write};
 use std::sync::mpsc;
 use std::sync::{Arc, Mutex};
 use std::thread;
-
-mod agent;
-mod commons;
-mod contact;
-mod dyn_struct;
-mod enum_map;
-mod gathering;
-mod stat;
-mod world;
 
 use world::*;
 
@@ -151,14 +155,15 @@ fn new_world() -> MRef<World> {
         gat_dr: DistInfo::new(24.0, 48.0, 168.0),
         gat_st: DistInfo::new(0.0, 50.0, 100.0),
         step: 0,
+        act_mode: todo!(),
+        act_kurt: todo!(),
+        mass_act: todo!(),
+        mob_act: todo!(),
+        gat_act: todo!(),
+        mob_freq: todo!(),
+        gat_freq: todo!(),
     };
-    let wp = WorldParams {
-        init_pop: 1000,
-        world_size: 180,
-        mesh: 9,
-        n_init_infec: 4,
-        steps_per_day: 3,
-    };
+    let wp = WorldParams::new(1000, 180, 9, 4, 3, commons::WrkPlcMode::WrkPlcNone);
     let w = World::new(rp, wp);
     Arc::new(Mutex::new(w))
 }
