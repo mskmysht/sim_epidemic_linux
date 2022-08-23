@@ -1,12 +1,9 @@
+use crate::agent::{Agent, ParamsForStep};
+use crate::enum_map::{Enum, EnumMap};
 use rand::Rng;
+use std::collections::VecDeque;
 
-use crate::agent::Agent;
-use crate::agent::ParamsForStep;
-use crate::agent::WarpInfo;
-use crate::enum_map::Enum;
-use crate::enum_map::EnumMap;
-
-#[derive(Eq, PartialEq, Hash, Copy, Clone, Enum, Debug)]
+#[derive(Eq, PartialEq, Clone, Enum, Debug)]
 pub enum TestReason {
     AsSymptom,
     AsContact,
@@ -15,15 +12,15 @@ pub enum TestReason {
     // NAllTestTypes,
 }
 
-#[derive(Enum)]
-enum TestResult {
+#[derive(Enum, Clone)]
+pub enum TestResult {
     Positive,
     Negative,
 }
 
 impl From<bool> for TestResult {
-    fn from(infected: bool) -> Self {
-        match infected {
+    fn from(is_positive: bool) -> Self {
+        match is_positive {
             true => Self::Positive,
             false => Self::Negative,
         }
@@ -34,92 +31,69 @@ pub struct Testee {
     agent: Agent,
     reason: TestReason,
     result: TestResult,
+    time_stamp: u64,
 }
 
 impl Testee {
-    pub fn new(agent: Agent, reason: TestReason, prms: &ParamsForStep) -> Self {
+    pub fn new(agent: Agent, reason: TestReason, pfs: &ParamsForStep) -> Self {
         let rng = &mut rand::thread_rng();
-        let a = agent.lock().unwrap();
-        let p = if a.is_infected() {
+        let p = if let Some(ip) = agent.lock().unwrap().is_infected() {
             rng.gen::<f64>()
                 < 1.0
-                    - (1.0 - prms.rp.tst_sens.r())
-                        .powf(prms.vr_info[a.virus_variant].reproductivity)
+                    - (1.0 - pfs.rp.tst_sens.r()).powf(pfs.vr_info[ip.virus_variant].reproductivity)
         } else {
-            rng.gen::<f64>() > prms.rp.tst_spec.r()
+            rng.gen::<f64>() > pfs.rp.tst_spec.r()
         };
         Self {
             agent,
             reason,
             result: p.into(),
+            time_stamp: pfs.rp.step,
         }
     }
 
     fn reserve_quarantine(&mut self) {
-        let agent = self.agent.lock().unwrap();
-        agent.reserve_quarantine();
+        self.agent.lock().unwrap().reserve_quarantine();
     }
 }
 
 impl Drop for Testee {
     fn drop(&mut self) {
-        let a = self.agent.lock().unwrap();
-        a.finish_test(self.time_stamp);
+        self.agent.lock().unwrap().finish_test(self.time_stamp);
     }
 }
 
-// #[derive(Default)]
-struct TestEntry {
-    testees: Vec<Testee>,
-    time_stamp: u64,
-}
-
-impl TestEntry {
-    pub fn new(
-        testees: Vec<Testee>,
-        time_stamp: u64,
-        // vi: &[VariantInfo],
-    ) -> Self {
-        // let a = agent.lock().unwrap();
-        // a.in_test_queue = true;
-        TestEntry {
-            // is_positive,
-            // agent,
-            testees,
-            time_stamp,
-        }
-    }
-}
-
-pub struct TestInfo {
-    pub warp: WarpInfo,
-    pub testees: Vec<(Agent, TestReason)>,
-}
-
-pub struct TestQueue(Vec<TestEntry>);
+pub struct TestQueue(VecDeque<Testee>);
 
 impl TestQueue {
+    pub fn new() -> Self {
+        Self(VecDeque::new())
+    }
+
+    // enqueue a new test
+    pub fn push(&mut self, agent: Agent, reason: TestReason, pfs: &ParamsForStep) {
+        self.0.push_back(Testee::new(agent, reason, pfs));
+    }
     // enqueue new tests
-    pub fn add(&mut self, testees: Vec<Testee>, step: u64) {
-        self.0.push(TestEntry::new(testees, step));
+    pub fn extend(&mut self, testees: Vec<Testee>) {
+        self.0.extend(testees);
     }
 
     // check the results of tests
     pub fn accept(
         &mut self,
-        prms: &ParamsForStep,
+        pfs: &ParamsForStep,
         count_reason: &mut EnumMap<TestReason, u64>,
         count_result: &mut EnumMap<TestResult, u64>,
     ) {
         let (latest, oldest) = {
-            let l = prms.rp.step as f64 - (prms.rp.tst_proc * prms.wp.steps_per_day());
-            let o = l - prms.rp.tst_dly_lim * prms.wp.steps_per_day();
+            let l = pfs.rp.step as f64 - (pfs.rp.tst_proc * pfs.wp.steps_per_day());
+            let o = l - pfs.rp.tst_dly_lim * pfs.wp.steps_per_day();
             (l as u64, o as u64)
         };
-        // prms.rp.trc_ope
         let mut max_tests = {
             let rng = &mut rand::thread_rng();
-            let m = prms.wp.init_pop as f64 * prms.rp.tst_capa.r() / prms.wp.steps_per_day();
+            let m = pfs.wp.init_n_pop as f64 * pfs.rp.tst_capa.r() / pfs.wp.steps_per_day();
             if m.fract() > rng.gen() {
                 m as usize + 1
             } else {
@@ -127,43 +101,28 @@ impl TestQueue {
             }
         };
 
-        let dl = self.0.len();
-        let k = None;
-        for (j, e) in self.0.iter().enumerate() {
-            if e.time_stamp > latest {
-                dl = j;
+        while let Some(t) = self.0.front() {
+            if t.time_stamp > latest || max_tests == 0 {
                 break;
             }
-            let tl = e.testees.len();
-            if max_tests < tl {
-                dl = j;
-                k = Some(max_tests);
-                break;
-            } else {
-                max_tests -= tl;
-            }
-        }
-        for t in self.0.drain(..dl).flat_map(|e| e.testees) {
-            self.deliver(t, prms, count_reason, count_result);
-        }
-        if let Some(k) = k {
-            for t in self.0[0].testees.drain(..k) {
-                self.deliver(t, prms, count_reason, count_result);
+            let mut t = self.0.pop_front().unwrap();
+            if t.time_stamp > oldest {
+                max_tests -= 1;
+                self.deliver(&mut t, count_reason, count_result);
             }
         }
     }
 
     fn deliver(
         &mut self,
-        t: Testee,
-        prms: &ParamsForStep,
+        t: &mut Testee,
         count_reason: &mut EnumMap<TestReason, u64>,
         count_result: &mut EnumMap<TestResult, u64>,
     ) {
-        count_result[t.result] += 1;
-        count_reason[t.reason] += 1;
-        if let TestResult::Positive = t.result {
+        if let TestResult::Positive = &t.result {
             t.reserve_quarantine();
         }
+        count_result[&t.result] += 1;
+        count_reason[&t.reason] += 1;
     }
 }

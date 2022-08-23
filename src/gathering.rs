@@ -1,13 +1,13 @@
+use crate::agent::cont::Field;
 use crate::agent::Agent;
-use crate::commons::{math, DistInfo, WRef, WrkPlcMode};
-use crate::commons::{math::Point, random, HealthType, MRef, RuntimeParams, WorldParams};
-use crate::world::Field;
+use crate::commons::{math, WrkPlcMode};
+use crate::commons::{math::Point, random, RuntimeParams, WorldParams};
 use rand::seq::SliceRandom;
 use rand::Rng;
-use rayon::prelude::*;
-use std::f64;
+use rayon::iter::{IntoParallelIterator, ParallelIterator};
+use std::sync::Arc;
 use std::sync::Mutex;
-use std::sync::{Arc, Weak};
+use std::{f64, ops};
 
 const SURROUND: f64 = 5.;
 const GATHERING_FORCE: f64 = 5.;
@@ -21,48 +21,61 @@ pub struct Gathering {
 }
 
 impl Gathering {
-    pub fn affect(&self, pt: &Point) -> Option<(f64, Point)> {
-        let dp = self.p - *pt;
-        let d = dp.x.hypot(dp.y);
-        if d > self.size + SURROUND || d < 0.01 {
-            return None;
-        }
-        let f = self.strength / SURROUND
-            * GATHERING_FORCE
-            * (if d > self.size {
-                self.size + SURROUND - d
-            } else {
-                d * SURROUND / self.size
-            });
-        Some((d, dp / d * f))
-    }
-
-    fn collect_participants(
-        grid: &Field,
-        gat_freq: &DistInfo,
+    pub fn new(
+        gat_spots_fixed: &[Point],
+        agents: &[Agent],
         wp: &WorldParams,
-        r: &f64,
-        x: &f64,
-        dy: f64,
-        row: usize,
-        gathering: &WRef<Gathering>,
-    ) {
-        let dx = (r * r - dy * dy).sqrt();
-        let left = math::quantize(0f64.max(x - dx), wp.res_rate(), wp.mesh);
-        let right = math::quantize(x.min(x + dx), wp.res_rate(), wp.mesh);
-        grid[row][left..=right].par_iter().for_each(|(_, agents)| {
-            let rng = rand::thread_rng();
-            for agent in agents {
-                let mut agent = agent.lock().unwrap();
-                if agent.health != HealthType::Symptomatic
-                    && rng.gen::<f64>() < random::modified_prob(agent.gat_freq, gat_freq) / 100.0
-                {
-                    agent.gathering = Weak::clone(gathering);
-                }
+        rp: &RuntimeParams,
+    ) -> Self {
+        let rng = &mut rand::thread_rng();
+        let p = if !gat_spots_fixed.is_empty() && rp.gat_rnd_rt.r() < rng.gen::<f64>() {
+            *gat_spots_fixed.choose(rng).unwrap()
+        } else if wp.wrk_plc_mode == WrkPlcMode::WrkPlcNone {
+            Point {
+                x: rng.gen::<f64>() * wp.field_size(),
+                y: rng.gen::<f64>() * wp.field_size(),
             }
-        });
+        } else {
+            agents.choose(rng).unwrap().lock().unwrap().origin
+        };
+        let size = {
+            let size = random::my_random(rng, &rp.gat_sz);
+            if wp.wrk_plc_mode == WrkPlcMode::WrkPlcCentered {
+                size * p.map(|c| c / wp.field_size() * 2.0 - 1.0).centered_bias()
+                    * f64::consts::SQRT_2
+            } else {
+                size
+            }
+        };
+        Self {
+            size,
+            duration: random::my_random(rng, &rp.gat_dr),
+            strength: random::my_random(rng, &rp.gat_st),
+            p,
+        }
     }
 
+    pub fn get_effect(&self, pt: &Point) -> (Option<Point>, Option<f64>) {
+        let delta = self.p - *pt;
+        let d = delta.x.hypot(delta.y);
+        if d > self.size + SURROUND || d < 0.01 {
+            return (None, None);
+        }
+        let mut f_norm = self.strength / SURROUND * GATHERING_FORCE;
+        if d > self.size {
+            f_norm *= self.size + SURROUND - d;
+        } else {
+            f_norm *= d * SURROUND / self.size;
+        }
+        let f = delta / d * f_norm;
+        if d < self.size {
+            (Some(f), Some(d / self.size))
+        } else {
+            (Some(f), None)
+        }
+    }
+
+    /*
     fn ix_right(w_size: usize, mesh: usize, x: f64, grid: f64) -> usize {
         let right = ((w_size as f64).min(x) / grid).ceil() as usize;
         if right <= mesh {
@@ -70,101 +83,80 @@ impl Gathering {
         } else {
             mesh
         }
+    }*/
+    fn get_range(r: f64, row: usize, p: &Point, wp: &WorldParams) -> ops::RangeInclusive<usize> {
+        let dy = p.y - math::dequantize(row, wp.res_rate());
+        let dx = (r * r - dy * dy).sqrt();
+        let left = math::quantize(0f64.max(p.x - dx), wp.res_rate(), wp.mesh);
+        let right = math::quantize(p.x.min(p.x + dx), wp.res_rate(), wp.mesh);
+        left..=right
     }
 
-    const CENTERED_BIAS: f64 = 0.25;
-    fn centered_bias(p: Point) -> f64 {
-        let a = Self::CENTERED_BIAS / (1.0 - Self::CENTERED_BIAS);
-        a / (1.0 - (1.0 - a) * p.x.abs().max(p.y.abs()))
-    }
-
-    pub fn setup<R: Rng>(
-        // map: &mut GatheringMap,
-        agent_grid: &Field,
-        gat_spots_fixed: &[Point],
-        agents: &[MRef<Agent>],
-        wp: &WorldParams,
-        rp: &RuntimeParams,
-        rng: &mut R,
-    ) -> MRef<Gathering> {
-        // let rng = &mut rand::thread_rng();
-        let gat = {
-            let p = if gat_spots_fixed.len() > 0 && rp.gat_rnd_rt.r() < rng.gen::<f64>() {
-                *gat_spots_fixed.choose(rng).unwrap()
-            } else if wp.wrk_plc_mode == WrkPlcMode::WrkPlcNone {
-                Point {
-                    x: rng.gen::<f64>() * wp.field_size(),
-                    y: rng.gen::<f64>() * wp.field_size(),
-                }
-            } else {
-                agents.choose(rng).unwrap().lock().unwrap().org_pt
-            };
-            let size = {
-                let size = random::my_random(rng, &rp.gat_sz);
-                if wp.wrk_plc_mode == WrkPlcMode::WrkPlcCentered {
-                    size * Self::centered_bias(p / wp.field_size() * 2.0 - 1.0)
-                        * f64::consts::SQRT_2
-                } else {
-                    size
-                }
-            };
-            Gathering {
-                size,
-                duration: random::my_random(rng, &rp.gat_dr),
-                strength: random::my_random(rng, &rp.gat_st),
-                p,
-            }
-        };
-        let r = gat.size + SURROUND;
-        let p = &gat.p;
+    fn get_allocations(&self, wp: &WorldParams) -> Vec<(usize, usize)> {
+        let r = self.size + SURROUND;
+        let p = self.p;
         let bottom = math::quantize(0f64.max(p.y - r), wp.res_rate(), wp.mesh);
         let top = math::quantize(wp.field_size().min(p.y + r), wp.res_rate(), wp.mesh);
         let center = math::quantize(p.y + 0.5, wp.res_rate(), wp.mesh); // rounding
 
-        let gat = Arc::new(Mutex::new(gat));
-        let wgat = Arc::downgrade(&gat);
+        let mut locs = Vec::new();
         for row in bottom..center {
-            Gathering::collect_participants(
-                agent_grid,
-                &rp.gat_freq,
-                wp,
-                &r,
-                &p.x,
-                p.y - math::dequantize(row + 1, wp.res_rate()),
-                row,
-                &wgat,
-            );
+            locs.extend(Self::get_range(r, row + 1, &p, wp).map(|column| (row, column)))
         }
-        for row in (center..=top).rev() {
-            Gathering::collect_participants(
-                agent_grid,
-                &rp.gat_freq,
-                wp,
-                &r,
-                &p.x,
-                p.y - math::dequantize(row, wp.res_rate()),
-                row,
-                &wgat,
-            );
+        for row in center..=top {
+            locs.extend(Self::get_range(r, row, &p, wp).map(|column| (row, column)))
         }
-        gat
+        locs
     }
 
-    pub fn step(&mut self, steps_per_day: i32) -> bool {
+    pub fn step(&mut self, steps_per_day: u64) -> bool {
         self.duration -= 24. / steps_per_day as f64;
         self.duration <= 0.
     }
+}
 
-    // pub fn remove_from_map(gr: &MRef<Gathering>, gat_map: &mut GatheringMap) {
-    //     let g = gr.lock().unwrap();
-    //     for num in g.cell_idxs.iter() {
-    //         if let Some(gs) = gat_map.get_mut(num) {
-    //             if gs.len() > 1 {
-    //                 gs.remove_p(gr);
-    //             } else {
-    //                 gat_map.remove(num);
-    //             }
-    //         }
-    //     }
-    // }
+pub struct Gatherings(Vec<Arc<Mutex<Gathering>>>);
+
+impl Gatherings {
+    pub fn new() -> Self {
+        Self(Vec::new())
+    }
+
+    pub fn clear(&mut self) {
+        self.0.clear()
+    }
+
+    pub fn steps(
+        &mut self,
+        field: &Field,
+        gat_spots_fixed: &[Point],
+        agents: &[Agent],
+        wp: &WorldParams,
+        rp: &RuntimeParams,
+    ) {
+        self.0.retain_mut(|gat| {
+            let is_expired = {
+                let mut gat = gat.lock().unwrap();
+                gat.step(wp.steps_per_day)
+            };
+            !is_expired
+        });
+
+        //	caliculate the number of gathering circles
+        //	using random number in exponetial distribution.
+        let rng = &mut rand::thread_rng();
+        let n_new_gat =
+            (rp.gat_fr / wp.steps_per_day as f64 * (wp.field_size * wp.field_size) as f64 / 1e5
+                * (-(rng.gen::<f64>() * 0.9999 + 0.0001).ln()))
+            .round() as usize;
+        for _ in 0..n_new_gat {
+            let gat = Gathering::new(gat_spots_fixed, agents, wp, rp);
+            let locs = gat.get_allocations(wp);
+            let gat = Arc::new(Mutex::new(gat));
+            locs.into_par_iter().for_each(|(row, range)| {
+                field.replace_gathering(row, range, &rp.gat_freq, &gat);
+            });
+            self.0.push(gat);
+        }
+    }
 }

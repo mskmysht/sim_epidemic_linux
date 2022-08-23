@@ -2,12 +2,12 @@ use crate::{
     agent::Agent,
     commons::{RuntimeParams, WorldParams},
 };
-use std::vec::Drain;
+use std::collections::{vec_deque::Drain, VecDeque};
 
 // #[derive(Default)]
 pub struct ContactInfo {
     pub agent: Agent,
-    time_stamp: u64,
+    pub time_stamp: u64,
 }
 
 // impl Reset<ContactInfo> for ContactInfo {
@@ -30,20 +30,19 @@ impl ContactInfo {
 
 /// a vector guarantees the ascending order of `time_stamp`
 #[derive(Default)]
-pub struct Contacts(Vec<ContactInfo>);
+pub struct Contacts(VecDeque<ContactInfo>);
 
 impl Contacts {
     const RETENTION_PERIOD: u64 = 14;
     pub fn add(&mut self, agent: Agent, step: u64) {
-        self.0.push(ContactInfo::new(agent, step))
+        self.0.push_back(ContactInfo::new(agent, step))
     }
 
-    pub fn drain_agent<T, F: Fn(Agent) -> Option<T>>(&mut self, f: F) -> Vec<T> {
-        self.0
-            .drain(..)
-            .into_iter()
-            .filter_map(|ci| f(ci.agent))
-            .collect()
+    pub fn drain(&mut self) -> Drain<'_, ContactInfo> {
+        self.0.drain(..)
+        // .into_iter()
+        // .filter_map(|ci| f(ci.agent))
+        // .collect()
     }
 
     pub fn remove_old(&mut self, rp: &RuntimeParams, wp: &WorldParams) {

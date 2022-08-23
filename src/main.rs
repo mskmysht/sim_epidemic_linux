@@ -1,17 +1,5 @@
-// mod agent2;
-mod agent;
-pub mod area;
-mod commons;
-mod contact;
-mod dyn_struct;
-mod enum_map;
-mod gathering;
-pub mod log;
-mod stat;
-pub mod testing;
-mod world;
-
-use commons::{DistInfo, MRef, RuntimeParams, WorldParams};
+use sim_epidemic_linux::commons::{DistInfo, RuntimeParams, WorldParams, WrkPlcMode};
+use sim_epidemic_linux::world::*;
 
 use peg::parser;
 use std::io::{self, Write};
@@ -19,22 +7,21 @@ use std::sync::mpsc;
 use std::sync::{Arc, Mutex};
 use std::thread;
 
-use world::*;
-
 pub enum Command {
     Quit,
     Show,
-    Start(i32),
+    Start(u64),
     Step,
     Stop,
     Reset,
     Export(String),
     Debug,
+    None,
 }
 
 pub enum Cmd {
     Show,
-    Start(i32),
+    Start(u64),
     Stop,
     Step,
     Quit,
@@ -56,6 +43,8 @@ parser! {
             / stop()
             / reset()
             / export()
+            / debug()
+            / none()
 
         rule quit() -> Command = ":q" { Command::Quit }
         rule show() -> Command = "show" { Command::Show }
@@ -65,16 +54,17 @@ parser! {
         rule reset() -> Command = "reset" { Command::Reset }
         rule export() -> Command = "export" _ path:string() { Command::Export(path) }
         rule debug() -> Command = "debug" { Command::Debug }
+        rule none() -> Command = "" { Command::None }
 
         rule _() = quiet!{ [' ' | '\t']* }
         rule eof() = quiet!{ ['\n'] }
-        rule number() -> i32 = n:$(['0'..='9']+) { n.parse().unwrap() }
+        rule number() -> u64 = n:$(['0'..='9']+) { n.parse().unwrap() }
         rule string() -> String = s:$(['!'..='~'] [' '..='~']*) { String::from(s) }
     }
 }
 
 fn new_input_handle(
-    wr: MRef<World>,
+    wr: Arc<Mutex<World>>,
     tx: mpsc::Sender<Message<thread::JoinHandle<()>>>,
 ) -> thread::JoinHandle<()> {
     thread::spawn(move || loop {
@@ -86,6 +76,7 @@ fn new_input_handle(
 
         match parse::expr(input.as_str()) {
             Ok(cmd) => match cmd {
+                Command::None => {}
                 Command::Quit => {
                     tx.send(Message::Quit).unwrap();
                     break;
@@ -99,71 +90,92 @@ fn new_input_handle(
                         tx.send(Message::Run(handle)).unwrap();
                     }
                 }
-                Command::Step => step_world(Arc::clone(&wr)),
-                Command::Stop => {
-                    let world = &mut wr.lock().unwrap();
-                    stop_world(world);
-                }
-                Command::Reset => {
-                    let world = &mut wr.lock().unwrap();
-                    reset_world(world);
-                }
+                Command::Step => wr.lock().unwrap().step(),
+                Command::Stop => wr.lock().unwrap().stop(),
+                Command::Reset => wr.lock().unwrap().reset(),
                 Command::Export(path) => {
                     let world = &wr.lock().unwrap();
-                    match export_world(world, path.as_str()) {
+                    match world.export(path.as_str()) {
                         Ok(_) => println!("{} was successfully exported", path),
                         Err(e) => println!("{}", e),
                     }
                 }
-                Command::Debug => {
-                    let world = &wr.lock().unwrap();
-                    debug_world(world);
-                }
+                Command::Debug => wr.lock().unwrap().debug(),
             },
             Err(e) => print!("{}", e),
         }
     })
 }
 
-fn new_world() -> MRef<World> {
+fn new_world() -> Arc<Mutex<World>> {
     let rp = RuntimeParams {
-        mass: 50.0,
-        friction: 50.0,
-        avoidance: 50.0,
+        mass: 50.0.into(),
+        friction: 80.0.into(),
+        avoidance: 50.0.into(),
+        max_speed: 50.0,
+        act_mode: 50.0.into(),
+        act_kurt: 0.0.into(),
+        mob_act: 50.0.into(),
+        gat_act: 50.0.into(),
+        incub_act: 0.0.into(),
+        fatal_act: 0.0.into(),
+        infec: 50.0.into(),
+        infec_dst: 3.0,
         contag_delay: 0.5,
         contag_peak: 3.0,
-        infec: 80.0,
-        infec_dst: 3.0,
+        incub: DistInfo::new(1.0, 5.0, 14.0),
+        fatal: DistInfo::new(4.0, 16.0, 20.0),
+        therapy_effc: 0.0.into(),
+        imn_max_dur: 200.0,
+        imn_max_dur_sv: 50.0.into(),
+        imn_max_effc: 90.0.into(),
+        imn_max_effc_sv: 20.0.into(),
         dst_st: 50.0,
-        dst_ob: 20.0,
-        mob_fr: 5.0,
-        gat_fr: 30.0,
-        cntct_trc: 20.0,
+        dst_ob: 20.0.into(),
+        mob_freq: DistInfo::new(40.0.into(), 70.0.into(), 100.0.into()),
+        mob_dist: DistInfo::new(10.0.into(), 30.0.into(), 80.0.into()),
+        back_hm_rt: 75.0.into(),
+        gat_fr: 50.0,
+        gat_rnd_rt: 50.0.into(),
+        gat_sz: DistInfo::new(5.0, 10.0, 20.0),
+        gat_dr: DistInfo::new(6.0, 12.0, 24.0),
+        gat_st: DistInfo::new(50.0, 80.0, 100.0),
+        gat_freq: DistInfo::new(40.0.into(), 70.0.into(), 100.0.into()),
+        cntct_trc: 20.0.into(),
         tst_delay: 1.0,
         tst_proc: 1.0,
         tst_interval: 2.0,
-        tst_sens: 70.0,
-        tst_spec: 99.8,
-        tst_sbj_asy: 1.0,
-        tst_sbj_sym: 99.0,
-        incub: DistInfo::new(1.0, 5.0, 14.0),
-        fatal: DistInfo::new(4.0, 16.0, 20.0),
-        recov: DistInfo::new(4.0, 10.0, 40.0),
-        immun: DistInfo::new(400.0, 500.0, 600.0),
-        mob_dist: DistInfo::new(10.0, 30.0, 80.0),
-        gat_sz: DistInfo::new(5.0, 10.0, 20.0),
-        gat_dr: DistInfo::new(24.0, 48.0, 168.0),
-        gat_st: DistInfo::new(0.0, 50.0, 100.0),
+        tst_sens: 70.0.into(),
+        tst_spec: 99.8.into(),
+        tst_sbj_asy: 1.0.into(),
+        tst_sbj_sym: 99.0.into(),
+        tst_capa: 50.0.into(),
+        tst_dly_lim: 3.0,
         step: 0,
-        act_mode: todo!(),
-        act_kurt: todo!(),
-        mass_act: todo!(),
-        mob_act: todo!(),
-        gat_act: todo!(),
-        mob_freq: todo!(),
-        gat_freq: todo!(),
     };
-    let wp = WorldParams::new(1000, 180, 9, 4, 3, commons::WrkPlcMode::WrkPlcNone);
+
+    let wp = WorldParams::new(
+        10000,
+        360,
+        18,
+        16,
+        0.10.into(),
+        0.0.into(),
+        20.0.into(),
+        50.0.into(),
+        WrkPlcMode::WrkPlcNone,
+        150.0.into(),
+        50.0,
+        500.0.into(),
+        40.0.into(),
+        30.0.into(),
+        90.0.into(),
+        95.0.into(),
+        14.0,
+        7.0,
+        120.0,
+        90.0.into(),
+    );
     let w = World::new(rp, wp);
     Arc::new(Mutex::new(w))
 }

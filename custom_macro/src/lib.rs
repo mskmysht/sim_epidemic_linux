@@ -40,16 +40,22 @@ pub fn enum_derive(input: proc_macro::TokenStream) -> proc_macro::TokenStream {
                     quote! {
                     #[automatically_derived]
                     impl Enum for #name {
-                        const ENUM_SIZE: usize = #num;
+                        type Arr = [Self; #num];
+                        const LEN: usize = #num;
+                        const ALL: Self::Arr = [
+                            #(
+                                #name::#vnames,
+                            )*
+                        ];
 
-                        fn from_usize(u: usize) -> Self {
-                            match u {
-                                #usize_ident
-                                _ => unreachable!(),
-                            }
-                        }
+                        // fn from_usize(u: usize) -> Self {
+                        //     match u {
+                        //         #usize_ident
+                        //         _ => unreachable!(),
+                        //     }
+                        // }
 
-                        fn to_usize(self) -> usize {
+                        fn to_index(&self) -> usize {
                             match self {
                                 #ident_usize
                             }

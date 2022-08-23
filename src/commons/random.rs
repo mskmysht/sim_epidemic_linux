@@ -1,3 +1,5 @@
+use std::ops;
+
 use rand::Rng;
 use rand_distr::StandardNormal;
 
@@ -10,9 +12,16 @@ pub fn revise_prob(x: f64, mode: f64) -> f64 {
     a * x / ((a - 1.0) * x + 1.0)
 }
 
-pub fn modified_prob(x: f64, p: &DistInfo) -> f64 {
+pub fn modified_prob<T>(x: f64, p: &DistInfo<T>) -> T
+where
+    T: ops::Sub<Output = T>
+        + ops::Div<T, Output = f64>
+        + ops::Mul<f64, Output = T>
+        + ops::Add<Output = T>
+        + Copy,
+{
     let span = p.max - p.min;
-    revise_prob(x, (p.mode - p.min) / span) * span + p.min
+    (span * revise_prob(x, (p.mode - p.min) / span)) + p.min
 }
 
 pub fn random_exp<R: Rng>(rng: &mut R) -> f64 {
@@ -52,27 +61,45 @@ pub fn random_mk<R: Rng>(rng: &mut R, mode: f64, kurt: f64) -> f64 {
     revise_prob((x + 1.0) / 2.0, mode)
 }
 
-pub fn my_random<R: Rng>(rng: &mut R, p: &DistInfo) -> f64 {
+pub fn my_random<T, R>(rng: &mut R, p: &DistInfo<T>) -> T
+where
+    T: ops::Sub<Output = T>
+        + ops::Div<T, Output = f64>
+        + ops::Mul<f64, Output = T>
+        + ops::Add<Output = T>
+        + PartialEq
+        + Copy,
+    R: Rng,
+{
     if p.max == p.min {
         p.min
     } else {
         let span = p.max - p.min;
-        random_mk(rng, (p.mode - p.min) / span, 0.0) * span + p.min
+        span * random_mk(rng, (p.mode - p.min) / span, 0.0) + p.min
     }
 }
 
-pub fn random_with_corr<R: Rng>(rng: &mut R, p: &DistInfo, a: &ActivenessEffect, c: f64) -> f64 {
+pub fn random_with_corr<T, R>(rng: &mut R, p: &DistInfo<T>, x: f64, m_x: f64, c: f64) -> T
+where
+    T: ops::Sub<Output = T>
+        + ops::Div<T, Output = f64>
+        + ops::Mul<f64, Output = T>
+        + ops::Add<Output = T>
+        + PartialEq
+        + Copy,
+    R: Rng,
+{
     if c == 0.0 {
         my_random(rng, p)
     } else {
         let m = (p.mode - p.min) / (p.max - p.min);
         let m_y = if c < 0.0 { 1.0 - m } else { m };
-        let mut y = m_y * (1.0 - a.m_x) * a.x / (a.m_x * (1.0 - m_y) - (a.m_x - m_y) * a.x);
+        let mut y = m_y * (1.0 - m_x) * x / (m_x * (1.0 - m_y) - (m_x - m_y) * x);
         y += (random_mk(rng, y * 0.1 + m_y * 0.9, 0.0) - y) * (1.0 - c.abs());
         if c < 0.0 {
             y = 1.0 - y;
         }
-        y * (p.max - p.min) + p.min
+        (p.max - p.min) * y + p.min
     }
 }
 
@@ -109,13 +136,13 @@ pub fn random_with_corr<R: Rng>(rng: &mut R, p: &DistInfo, a: &ActivenessEffect,
 
 // static GUASSIAN: MRef<Gaussian> = Arc::new(Mutex::new(Gaussian::new()));
 
-pub struct ActivenessEffect {
-    x: f64,
-    m_x: f64,
-}
+// pub struct ActivenessEffect {
+//     x: f64,
+//     m_x: f64,
+// }
 
-impl ActivenessEffect {
-    pub fn new(x: f64, m_x: f64) -> Self {
-        Self { x, m_x }
-    }
-}
+// impl ActivenessEffect {
+//     pub fn new(x: f64, m_x: f64) -> Self {
+//         Self { x, m_x }
+//     }
+// }

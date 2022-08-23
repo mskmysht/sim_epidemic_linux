@@ -6,78 +6,86 @@ use std::{
     ops::{Index, IndexMut},
 };
 
-pub trait Enum: Sized {
-    const ENUM_SIZE: usize;
+pub trait Enum: Clone + Sized {
+    type Arr: Index<usize, Output = Self> + IntoIterator<Item = Self>;
+    const LEN: usize;
+    const ALL: Self::Arr;
 
-    fn from_usize(u: usize) -> Self;
-    fn to_usize(self) -> usize;
-    fn iter<'a>() -> EnumIter<'a, Self> {
-        EnumIter(0, PhantomData)
+    fn index(idx: usize) -> Self {
+        Self::ALL.index(idx).clone()
     }
+
+    fn to_index(&self) -> usize;
+    // fn iter<'a>() -> EnumIter<'a, Self> {
+    //     EnumIter(0, PhantomData)
+    // }
 }
 
+/*
 pub struct EnumIter<'a, T>(usize, PhantomData<&'a T>);
 impl<'a, T: Enum> Iterator for EnumIter<'a, T> {
     type Item = &'a T;
 
     fn next(&mut self) -> Option<Self::Item> {
-        if T::ENUM_SIZE >= self.0 {
+        if T::LEN >= self.0 {
             None
         } else {
             let t = T::from_usize(self.0);
             self.0 += 1;
-            Some(&t)
+            Some(t)
         }
     }
 }
+*/
 
+#[derive(Clone)]
 pub struct EnumMap<K: Enum, V> {
     arr: Vec<V>,
-    _maker: PhantomData<K>,
+    _marker: PhantomData<K>,
 }
 
 impl<K: Enum, V> EnumMap<K, V> {
-    fn new(arr: Vec<V>) -> Self {
+    fn new<F: Fn() -> V>(f: F) -> Self {
         Self {
-            arr,
-            _maker: PhantomData,
+            arr: (0..K::LEN).map(|_| f()).collect(),
+            _marker: PhantomData,
         }
+    }
+
+    pub fn iter(&self) -> impl Iterator<Item = (K, &V)> {
+        self.arr.iter().enumerate().map(|(i, v)| (K::index(i), v))
     }
 }
 
 impl<K: Enum + Debug, V: Debug> Debug for EnumMap<K, V> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_map()
-            .entries(
-                self.arr
-                    .iter()
-                    .enumerate()
-                    .map(|(i, v)| (<K as Enum>::from_usize(i), v)),
-            )
+            .entries(self.arr.iter().enumerate().map(|(i, v)| (K::index(i), v)))
             .finish()
     }
 }
 
 impl<K: Enum, V: Default> Default for EnumMap<K, V> {
     fn default() -> Self {
-        EnumMap::new((0..<K as Enum>::ENUM_SIZE).map(|_| V::default()).collect())
+        EnumMap::new(V::default)
     }
 }
 
-impl<K: Enum, V> Index<K> for EnumMap<K, V> {
+impl<K: Enum, V> Index<&K> for EnumMap<K, V> {
     type Output = V;
 
-    fn index(&self, index: K) -> &Self::Output {
-        &self.arr[index.to_usize()]
+    fn index(&self, index: &K) -> &Self::Output {
+        &self.arr[index.to_index()]
     }
 }
 
-impl<K: Enum, V> IndexMut<K> for EnumMap<K, V> {
-    fn index_mut(&mut self, index: K) -> &mut Self::Output {
-        &mut self.arr[index.to_usize()]
+impl<K: Enum, V> IndexMut<&K> for EnumMap<K, V> {
+    fn index_mut(&mut self, index: &K) -> &mut Self::Output {
+        &mut self.arr[index.to_index()]
     }
 }
 
+/*
 pub struct Iter<'a, K, V> {
     keys: EnumIter<'a, K>,
     values: &'a [V],
@@ -135,3 +143,4 @@ impl<'a, K: Enum, V> IntoIterator for &'a mut EnumMap<K, V> {
         }
     }
 }
+*/
