@@ -2,17 +2,10 @@ pub mod math;
 pub mod random;
 
 use self::math::{Permille, Point};
+use crate::enum_map::{Enum, EnumMap};
 use crate::table::TableIndex;
-use crate::{
-    enum_map::{Enum, EnumMap},
-    testing::TestReason,
-};
 use math::Percentage;
 use rand::Rng;
-use std::{collections::VecDeque, sync::Arc};
-
-// pub type MRef<T> = Arc<Mutex<T>>;
-// pub type WRef<T> = Weak<Mutex<T>>;
 
 #[derive(Default, Debug)]
 pub struct DistInfo<T> {
@@ -33,13 +26,10 @@ pub struct RuntimeParams {
     pub friction: Percentage,
     pub avoidance: f64,
     pub max_speed: f64,
-    // activeness as individuality
-    pub act_mode: Percentage,
+    pub act_mode: Percentage, // activeness as individuality
     pub act_kurt: Percentage,
-    // bias for mility and gatherings
-    // pub mass_act: f64,
-    pub mob_act: Percentage,
-    pub gat_act: Percentage,
+    pub mob_act: Percentage, // pub mass_act: f64,
+    pub gat_act: Percentage, // bias for mility and gatherings
     pub incub_act: Percentage,
     pub fatal_act: Percentage,
 
@@ -78,12 +68,12 @@ pub struct RuntimeParams {
     pub tst_sbj_sym: Percentage, // Subjects for test of symptomatic. contacts are tested 100%.
     pub tst_capa: Permille,      // Test capacity (per 1,000 persons per day)
     pub tst_dly_lim: f64,        // Test delay limit (days)
-    // pub trc_ope: TracingOperation, // How to treat the contacts, tests or vaccination, or both
-    // pub trc_vcn_type: u32, // vaccine type for tracing vaccination
+    //[todo] pub trc_ope: TracingOperation, // How to treat the contacts, tests or vaccination, or both
+    //[todo] pub trc_vcn_type: u32, // vaccine type for tracing vaccination
     pub step: u64,
-    // pub recov: DistInfo<f64>,
-    // pub immun: DistInfo<f64>,
-    // pub vcn_p_rate: f64,
+    //[todo] pub recov: DistInfo<f64>,
+    //[todo] pub immun: DistInfo<f64>,
+    //[todo] pub vcn_p_rate: f64,
 }
 
 #[derive(Eq, Hash, Enum, Clone, Copy, PartialEq, Debug)]
@@ -94,18 +84,9 @@ pub enum HealthType {
     Recovered,
     Died,
     Vaccinated,
-    // QuarantineAsym,
-    // QuarantineSymp,
-    // NStateIndexes,
-    // NHealthTypes = QuarantineAsym,
 }
 
 pub type UnionMap<K0, K1, V> = (EnumMap<K0, V>, EnumMap<K1, V>);
-
-// pub const N_INT_TEST_TYPES: TestType = TestType::TestPositiveRate;
-// pub const N_INT_INDEXES: usize = HealthType::NStateIndexes as usize + N_INT_TEST_TYPES as usize;
-// pub const N_ALL_INDEXES: usize =
-//     HealthType::NStateIndexes as usize + TestType::NAllTestTypes as usize;
 
 #[derive(Clone, Copy, Debug)]
 pub struct WorldParams {
@@ -118,9 +99,9 @@ pub struct WorldParams {
     pub q_asymptomatic: Percentage,
     pub q_symptomatic: Percentage,
     pub wrk_plc_mode: WrkPlcMode,
-    // pub av_clstr_rate: Percentage, // Anti-Vax
-    // pub av_clstr_gran: Percentage, // Anti-Vax
-    // pub av_test_rate: Percentage, // Anti-Vax
+    //[todo] pub av_clstr_rate: Percentage, // Anti-Vax
+    //[todo] pub av_clstr_gran: Percentage, // Anti-Vax
+    //[todo] pub av_test_rate: Percentage, // Anti-Vax
     pub rcv_bias: Percentage,
     pub rcv_temp: f64,
     pub rcv_upper: Percentage,
@@ -258,45 +239,12 @@ impl WorldParams {
     }
 }
 
-// pub fn go_home_back(wp: &WorldParams, rp: &RuntimeParams) -> bool {
-//     wp.wrk_plc_mode != WrkPlcMode::WrkPlcNone && is_daytime(wp, rp)
-// }
-
-// pub fn is_daytime(wp: &WorldParams, rp: &RuntimeParams) -> bool {
-//     if wp.steps_per_day < 3 {
-//         rp.step % 2 == 0
-//     } else {
-//         rp.step % wp.steps_per_day < wp.steps_per_day * 2 / 3
-//     }
-// }
-
-#[derive(Clone, Copy, Debug)]
-pub enum WarpType {
-    WarpInside,
-    WarpToHospital,
-    WarpToCemeteryF,
-    WarpToCemeteryH,
-    WarpBack,
-}
-
-impl Default for WarpType {
-    fn default() -> Self {
-        WarpType::WarpInside
-    }
-}
-
 #[derive(PartialEq, Clone, Copy, Debug)]
 pub enum WrkPlcMode {
     WrkPlcNone,
     WrkPlcUniform,
     WrkPlcCentered,
-    // WrkPlcPopDistImg,
-}
-
-#[derive(Default, Debug)]
-pub struct StatData {
-    pub cnt: UnionMap<HealthType, TestReason, u32>,
-    pub p_rate: f64,
+    //[todo] WrkPlcPopDistImg,
 }
 
 #[derive(Clone, Copy, PartialEq, Debug)]
@@ -307,7 +255,7 @@ pub enum LoopMode {
     LoopEndByUser,
     LoopEndByCondition,
     LoopEndAsDaysPassed,
-    // LoopEndByTimeLimit,
+    //[todo] LoopEndByTimeLimit,
 }
 
 impl Default for LoopMode {
@@ -316,80 +264,56 @@ impl Default for LoopMode {
     }
 }
 
-pub struct MyCounter {
-    cnt: i32,
-}
-
-impl MyCounter {
-    pub fn new() -> MyCounter {
-        MyCounter { cnt: 0 }
-    }
-
-    pub fn inc(&mut self) {
-        self.cnt += 1;
-    }
-
-    pub fn dec(&mut self) {
-        self.cnt -= 1;
-    }
-
-    // pub fn description(&self) -> String {
-    //     format!("<MyCounter: cnt={}>", self.cnt)
-    // }
-}
-
-pub trait PointerVec<T> {
-    fn remove_p(&mut self, t: &Arc<T>);
-}
-
-impl<T> PointerVec<T> for Vec<Arc<T>> {
-    fn remove_p(&mut self, t: &Arc<T>) {
-        self.retain(|u| !Arc::ptr_eq(u, t));
-    }
-}
-
-impl<T> PointerVec<T> for VecDeque<Arc<T>> {
-    fn remove_p(&mut self, t: &Arc<T>) {
-        self.retain(|u| !Arc::ptr_eq(u, t));
-    }
-}
-
 pub enum Either<L, R> {
     Left(L),
     Right(R),
 }
 
-pub trait DrainMap<T, U, F: FnMut(&mut T) -> (bool, U)> {
+pub trait DrainMap<T, U, V, F: FnMut(&mut T) -> (U, Option<V>)> {
     type Target;
     fn drain_map_mut(&mut self, f: F) -> Self::Target;
 }
 
-pub trait DrainLike<T, F: FnMut(&mut T) -> bool> {
-    fn drain_mut(&mut self, f: F) -> Self;
+pub trait DrainWith<T, U, F: FnMut(&mut T) -> (U, bool)> {
+    type Target;
+    fn drain_with_mut(&mut self, f: F) -> Self::Target;
 }
 
-impl<T, U, F: FnMut(&mut T) -> (bool, U)> DrainMap<T, U, F> for Vec<T> {
-    type Target = Vec<U>;
+impl<T, U, V, F: FnMut(&mut T) -> (U, Option<V>)> DrainMap<T, U, V, F> for Vec<T> {
+    type Target = Vec<(U, Option<(V, T)>)>;
 
     fn drain_map_mut(&mut self, mut f: F) -> Self::Target {
-        let mut us = Vec::new();
-        self.retain_mut(|v| {
-            let (b, u) = f(v);
-            us.push(u);
-            !b
-        });
-        us
-    }
-}
-
-impl<T, F: FnMut(&mut T) -> bool> DrainLike<T, F> for Vec<T> {
-    fn drain_mut(&mut self, mut f: F) -> Self {
         let is = self
             .iter_mut()
             .enumerate()
             .rev()
-            .filter_map(|(i, v)| if f(v) { Some(i) } else { None })
+            .map(|(i, v)| {
+                let (u, v) = f(v);
+                (u, v.map(|v| (v, i)))
+            })
             .collect::<Vec<_>>();
-        is.into_iter().map(|i| self.swap_remove(i)).collect()
+
+        is.into_iter()
+            .map(|(u, vi)| (u, vi.map(|(v, i)| (v, self.swap_remove(i)))))
+            .collect()
+    }
+}
+
+impl<T, U, F: FnMut(&mut T) -> (U, bool)> DrainWith<T, U, F> for Vec<T> {
+    type Target = Vec<(U, Option<T>)>;
+
+    fn drain_with_mut(&mut self, mut f: F) -> Self::Target {
+        let is = self
+            .iter_mut()
+            .enumerate()
+            .rev()
+            .map(|(i, v)| {
+                let (u, b) = f(v);
+                (u, if b { Some(i) } else { None })
+            })
+            .collect::<Vec<_>>();
+        is.into_iter()
+            .map(|(u, i)| (u, i.map(|i| self.swap_remove(i))))
+            .collect()
     }
 }

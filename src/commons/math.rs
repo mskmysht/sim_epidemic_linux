@@ -1,7 +1,7 @@
 use std::{iter::FromIterator, ops};
 
 use rand::Rng;
-use rand_distr::{num_traits::Pow, Open01};
+use rand_distr::Open01;
 
 pub fn quantize(p: f64, res_rate: f64, n: usize) -> usize {
     let i = (p * res_rate).floor() as usize;
@@ -265,83 +265,6 @@ pub struct Permille(f64);
 
 num_field!(Percentage, 100.0);
 num_field!(Permille, 1000.0);
-
-/*
-#[derive(Clone, Copy, Debug, PartialEq)]
-pub struct PartsPerPow10<const E: u8>(f64);
-
-impl<const E: u8> From<f64> for PartsPerPow10<E> {
-    fn from(v: f64) -> Self {
-        Self(v)
-    }
-}
-
-impl<const E: u8> PartsPerPow10<E> {
-    pub const fn new(v: f64) -> Self {
-        Self(v)
-    }
-
-    pub fn r(&self) -> f64 {
-        self.0 / 10.0.pow(E)
-    }
-
-    pub fn min<'a>(&'a self, other: &'a Self) -> &'a Self {
-        if self.0 < other.0 {
-            &self
-        } else {
-            &other
-        }
-    }
-
-    pub fn max<'a>(&'a self, other: &'a Self) -> &'a Self {
-        if self.0 > other.0 {
-            &self
-        } else {
-            &other
-        }
-    }
-}
-
-impl<const E: u8> ops::Add for PartsPerPow10<E> {
-    type Output = Self;
-
-    fn add(self, rhs: Self) -> Self::Output {
-        Self(self.0 + rhs.0)
-    }
-}
-
-impl<const E: u8> ops::Sub for PartsPerPow10<E> {
-    type Output = Self;
-
-    fn sub(self, rhs: Self) -> Self::Output {
-        Self(self.0 - rhs.0)
-    }
-}
-
-impl<const E: u8> ops::Mul<f64> for PartsPerPow10<E> {
-    type Output = Self;
-
-    fn mul(self, rhs: f64) -> Self::Output {
-        Self(self.0 * rhs)
-    }
-}
-
-impl<const E: u8> ops::Div<f64> for PartsPerPow10<E> {
-    type Output = Self;
-
-    fn div(self, rhs: f64) -> Self::Output {
-        Self(self.0 / rhs)
-    }
-}
-
-impl<const E: u8> ops::Div for PartsPerPow10<E> {
-    type Output = f64;
-
-    fn div(self, rhs: Self) -> Self::Output {
-        self.0 / rhs.0
-    }
-}
-*/
 
 #[derive(Default, Clone, Debug)]
 pub struct Range {

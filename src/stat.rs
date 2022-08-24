@@ -1,9 +1,5 @@
-use crate::{
-    commons::{HealthType, StatData},
-    testing::TestResult,
-};
-use csv::Writer;
-use std::{collections::VecDeque, error::Error, fs::File};
+use crate::commons::{HealthType, UnionMap};
+use crate::testing::{TestReason, TestResult};
 
 use crate::enum_map::{Enum, EnumMap};
 
@@ -22,16 +18,6 @@ impl InfectionCntInfo {
     }
 }
 
-pub struct HealthStat {
-    old: HealthType,
-    new: HealthType,
-}
-
-pub enum HealthInfo {
-    Stat(HealthType),
-    Tran(HealthType),
-}
-
 #[derive(Enum, Clone)]
 pub enum HistgramType {
     HistIncub,
@@ -42,6 +28,41 @@ pub enum HistgramType {
 pub struct HistInfo {
     pub mode: HistgramType,
     pub days: f64,
+}
+
+#[derive(Default, Debug)]
+pub struct StatData {
+    pub cnt: UnionMap<HealthType, TestReason, u32>,
+    pub p_rate: f64,
+}
+
+pub struct MyCounter {
+    cnt: i32,
+}
+
+impl MyCounter {
+    pub fn new() -> MyCounter {
+        MyCounter { cnt: 0 }
+    }
+
+    pub fn inc(&mut self) {
+        self.cnt += 1;
+    }
+
+    pub fn dec(&mut self) {
+        self.cnt -= 1;
+    }
+
+    // pub fn description(&self) -> String {
+    //     format!("<MyCounter: cnt={}>", self.cnt)
+    // }
+}
+
+#[derive(Default)]
+pub struct Hist {
+    pub recov_p: Vec<MyCounter>,
+    pub incub_p: Vec<MyCounter>,
+    pub death_p: Vec<MyCounter>,
 }
 
 /*
@@ -57,6 +78,11 @@ pub struct TestResultCount {
     pub positive: i32,
     pub negative: i32,
 }
+
+// pub const N_INT_TEST_TYPES: TestType = TestType::TestPositiveRate;
+// pub const N_INT_INDEXES: usize = HealthType::NStateIndexes as usize + N_INT_TEST_TYPES as usize;
+// pub const N_ALL_INDEXES: usize =
+//     HealthType::NStateIndexes as usize + TestType::NAllTestTypes as usize;
 
 pub struct StatInfo {
     // max_counts: UnionMap<HealthType, TestReason, u32>,
@@ -733,48 +759,9 @@ impl StatInfo {
     }
     */
 
-    pub fn write_statistics(&self, wtr: &mut Writer<File>) -> Result<(), Box<dyn Error>> {
-        // for h in HealthType::keys() {
-        //     wtr.write_field(format!("{:?}", h))?;
-        // }
-        // for t in TestReason::keys() {
-        //     wtr.write_field(format!("{:?}", t))?;
-        // }
-        // wtr.write_record(None::<&[u8]>)?;
-
-        // for stat in self.statistics.iter().rev() {
-        //     let stat = stat.lock().unwrap();
-        //     for h in HealthType::keys() {
-        //         wtr.write_field(format!("{}", stat.cnt.0[h]))?;
-        //     }
-        //     for t in TestReason::keys() {
-        //         wtr.write_field(format!("{}", stat.cnt.1[t]))?;
-        //     }
-        //     wtr.write_record(None::<&[u8]>)?;
-        // }
-        Ok(())
-    }
-
     // pub fn debug_show(&self) {
     //     StatInfo::debug_show_all_stat(&self.statistics, "statistics");
     // }
-
-    fn debug_show_all_stat(stats: &VecDeque<StatData>, name: &str) {
-        for s in stats {
-            StatInfo::debug_show_stat(s, name);
-            println!();
-        }
-    }
-    fn debug_show_stat(stat: &StatData, name: &str) {
-        print!("{}", name);
-        print!("{}", " ".repeat(15 - name.len()));
-        for (_, v) in stat.cnt.0.iter() {
-            print!("{}/", v);
-        }
-        for (_, v) in stat.cnt.1.iter() {
-            print!("{}/", v);
-        }
-    }
 }
 
 fn calc_positive_rate(count: &EnumMap<TestResult, u32>) -> f64 {

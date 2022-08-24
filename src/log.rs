@@ -32,14 +32,17 @@ impl StepLog {
         println!("infcts: {}", self.infcts.len());
     }
 
-    pub fn n_infected(&self) -> usize {
+    fn n_infected(&self) -> usize {
         self.health_counts[0].n_infected()
     }
 
+    pub fn push(&mut self) -> bool {
+        self.health_counts.push_front(self.health_counts[0].clone());
+        self.n_infected() == 0
+    }
+
     pub fn apply_difference(&mut self, hd: HealthDiff) {
-        let mut cnt = self.health_counts[0].clone();
-        cnt.apply_difference(hd);
-        self.health_counts.push_front(cnt);
+        self.health_counts[0].apply_difference(hd);
     }
 
     pub fn write(&self, path: &str) -> csv::Result<()> {

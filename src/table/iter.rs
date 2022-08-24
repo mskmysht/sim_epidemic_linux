@@ -16,10 +16,6 @@ impl<T: Debug, const FLIP: bool> Debug for T2<T, FLIP> {
 }
 
 impl<T, const FLIP: bool> T2<T, FLIP> {
-    // pub fn swap(self) -> Self {
-    //     Self(self.1, self.0)
-    // }
-
     pub fn map<F: Fn(T) -> U, U>(self, f: F) -> T2<U, FLIP> {
         T2(f(self.0), f(self.1))
     }
@@ -177,75 +173,3 @@ impl<'a, T: 'a, const FLIP: bool> T2<&'a mut [T], FLIP> {
     }
     */
 }
-
-/*
-impl<'a, T: 'a, V: Deref<Target = [T]>, const FLIP: bool> T2<&'a V, FLIP> {
-    pub fn split_first(self) -> Option<(T2<&'a T, FLIP>, T2<&'a [T], FLIP>)> {
-        let T2(r0, r1) = self;
-        T2(r0.deref(), r1.deref()).split_first()
-    }
-
-    pub fn split_last(self) -> Option<(T2<&'a T, FLIP>, T2<&'a [T], FLIP>)> {
-        let T2(r0, r1) = self;
-        T2(r0.deref(), r1.deref()).split_last()
-    }
-
-    pub fn split_at(self, mid: T2<usize, FLIP>) -> (T2<&'a [T], FLIP>, T2<&'a [T], FLIP>) {
-        let T2(r0, r1) = self;
-        T2(r0.deref(), r1.deref()).split_at(mid)
-    }
-
-    pub fn split_back_at(self, mid: T2<usize, FLIP>) -> (T2<&'a [T], FLIP>, T2<&'a [T], FLIP>) {
-        let T2(r0, r1) = self;
-        T2(r0.deref(), r1.deref()).split_back_at(mid)
-    }
-
-    pub fn first(self) -> Option<T2<&'a T, FLIP>> {
-        let T2(r0, r1) = self;
-        T2(r0.deref(), r1.deref()).first()
-    }
-
-    pub fn last(self) -> Option<T2<&'a T, FLIP>> {
-        let T2(r0, r1) = self;
-        T2(r0.deref(), r1.deref()).last()
-    }
-}
-
-impl<'a, T: 'a, V: DerefMut<Target = [T]>, const FLIP: bool> T2<&'a mut V, FLIP> {
-    pub fn split_first_mut(self) -> Option<(T2<&'a mut T, FLIP>, T2<&'a mut [T], FLIP>)> {
-        let T2(r0, r1) = self;
-        T2(r0.deref_mut(), r1.deref_mut()).split_first_mut()
-    }
-
-    pub fn split_last_mut(self) -> Option<(T2<&'a mut T, FLIP>, T2<&'a mut [T], FLIP>)> {
-        let T2(r0, r1) = self;
-        T2(r0.deref_mut(), r1.deref_mut()).split_last_mut()
-    }
-
-    pub fn split_at_mut(
-        self,
-        mid: T2<usize, FLIP>,
-    ) -> (T2<&'a mut [T], FLIP>, T2<&'a mut [T], FLIP>) {
-        let T2(r0, r1) = self;
-        T2(r0.deref_mut(), r1.deref_mut()).split_at_mut(mid)
-    }
-
-    pub fn split_back_at_mut(
-        self,
-        mid: T2<usize, FLIP>,
-    ) -> (T2<&'a mut [T], FLIP>, T2<&'a mut [T], FLIP>) {
-        let T2(r0, r1) = self;
-        T2(r0.deref_mut(), r1.deref_mut()).split_back_at_mut(mid)
-    }
-
-    pub fn first_mut(self) -> Option<T2<&'a mut T, FLIP>> {
-        let T2(r0, r1) = self;
-        T2(r0.deref_mut(), r1.deref_mut()).first_mut()
-    }
-
-    pub fn last_mut(self) -> Option<T2<&'a mut T, FLIP>> {
-        let T2(r0, r1) = self;
-        T2(r0.deref_mut(), r1.deref_mut()).last_mut()
-    }
-}
-*/

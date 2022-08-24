@@ -16,27 +16,7 @@ pub trait Enum: Clone + Sized {
     }
 
     fn to_index(&self) -> usize;
-    // fn iter<'a>() -> EnumIter<'a, Self> {
-    //     EnumIter(0, PhantomData)
-    // }
 }
-
-/*
-pub struct EnumIter<'a, T>(usize, PhantomData<&'a T>);
-impl<'a, T: Enum> Iterator for EnumIter<'a, T> {
-    type Item = &'a T;
-
-    fn next(&mut self) -> Option<Self::Item> {
-        if T::LEN >= self.0 {
-            None
-        } else {
-            let t = T::from_usize(self.0);
-            self.0 += 1;
-            Some(t)
-        }
-    }
-}
-*/
 
 #[derive(Clone)]
 pub struct EnumMap<K: Enum, V> {
@@ -84,63 +64,3 @@ impl<K: Enum, V> IndexMut<&K> for EnumMap<K, V> {
         &mut self.arr[index.to_index()]
     }
 }
-
-/*
-pub struct Iter<'a, K, V> {
-    keys: EnumIter<'a, K>,
-    values: &'a [V],
-}
-
-pub struct IterMut<'a, K, V> {
-    keys: EnumIter<'a, K>,
-    values: &'a mut [V],
-}
-
-impl<'a, K: Enum, V> Iterator for Iter<'a, K, V> {
-    type Item = (&'a K, &'a V);
-
-    fn next(&mut self) -> Option<Self::Item> {
-        // let k_tmp = std::mem::replace(&mut self.keys, &mut []);
-        let k = self.keys.next()?;
-        let (v, vs) = self.values.split_first()?;
-        self.values = vs;
-        Some((k, v))
-    }
-}
-
-impl<'a, K: Enum, V> Iterator for IterMut<'a, K, V> {
-    type Item = (&'a K, &'a mut V);
-
-    fn next(&mut self) -> Option<Self::Item> {
-        let k = self.keys.next()?;
-        let v_tmp = std::mem::replace(&mut self.values, &mut []);
-        let (v, vs) = v_tmp.split_first_mut()?;
-        self.values = vs;
-        Some((k, v))
-    }
-}
-
-impl<'a, K: Enum, V> IntoIterator for &'a EnumMap<K, V> {
-    type Item = (&'a K, &'a V);
-    type IntoIter = Iter<'a, K, V>;
-
-    fn into_iter(self) -> Self::IntoIter {
-        Iter {
-            keys: K::iter(),
-            values: self.arr.as_slice(),
-        }
-    }
-}
-
-impl<'a, K: Enum, V> IntoIterator for &'a mut EnumMap<K, V> {
-    type Item = (&'a K, &'a mut V);
-    type IntoIter = IterMut<'a, K, V>;
-
-    fn into_iter(self) -> Self::IntoIter {
-        IterMut {
-            keys: K::iter(),
-            values: self.arr.as_mut_slice(),
-        }
-    }
-}
-*/

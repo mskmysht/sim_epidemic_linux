@@ -165,7 +165,6 @@ impl<'a, T, const FLIP: bool> DoubleMut<'a, T, FLIP> {
             let tmp = mem::take(&mut self.head);
             let (p, h): (T2<&'a mut T, FLIP>, _) = tmp.split_first_mut().unwrap();
             self.head = h;
-            // Some(p.into())
             Some(p)
         } else if !self.mid.is_empty() {
             let m_tmp = mem::take(&mut self.mid);
@@ -176,13 +175,11 @@ impl<'a, T, const FLIP: bool> DoubleMut<'a, T, FLIP> {
             let (p, h) = T2(r0, r1).split_first_mut().unwrap();
             self.head = h;
             self.mid = m;
-            // Some(p.into())
             Some(p)
         } else if !self.tail.is_empty() {
             let tmp = mem::take(&mut self.tail);
             let (p, h) = tmp.split_first_mut().unwrap();
             self.tail = h;
-            // Some(p.into())
             Some(p)
         } else {
             None
@@ -197,7 +194,6 @@ impl<'a, T, const FLIP: bool> DoubleMut<'a, T, FLIP> {
             let tmp = mem::take(&mut self.tail);
             let (p, h) = tmp.split_last_mut().unwrap();
             self.tail = h;
-            // Some(p.into())
             Some(p)
         } else if !self.mid.is_empty() {
             let m_tmp = mem::take(&mut self.mid);
@@ -208,13 +204,11 @@ impl<'a, T, const FLIP: bool> DoubleMut<'a, T, FLIP> {
             let (p, t) = T2(r0, r1).split_last_mut().unwrap();
             self.tail = t;
             self.mid = mid;
-            // Some(p.into())
             Some(p)
         } else if !self.head.is_empty() {
             let tmp = mem::take(&mut self.head);
             let (p, h) = tmp.split_last_mut().unwrap();
             self.head = h;
-            // Some(p.into())
             Some(p)
         } else {
             None
@@ -298,7 +292,6 @@ where
     V: 'a,
     T2<V, FLIP>: Into<(V, V)>,
 {
-    // type Item = ((&'a Idx, &'a mut T), (&'a Idx, &'a mut T));
     type Item = (V, V);
 
     fn next(&mut self) -> Option<Self::Item> {
@@ -311,8 +304,6 @@ where
 impl<'a, T, V, const C0: usize, const C1: usize, const FLIP: bool> DoubleEndedIterator
     for VDoubleIndexMut<'a, T, V, C0, C1, FLIP>
 where
-    // T2<&'a mut (Idx, T), FLIP>: Into<((&'a Idx, &'a mut T), (&'a Idx, &'a mut T))>,
-    // T: Into<V>,
     &'a mut T: Into<V>,
     T2<V, FLIP>: Into<(V, V)>,
 {
@@ -326,8 +317,6 @@ where
 impl<'a, T, V, const C0: usize, const C1: usize, const FLIP: bool> ExactSizeIterator
     for VDoubleIndexMut<'a, T, V, C0, C1, FLIP>
 where
-    // T2<&'a mut (Idx, T), FLIP>: Into<((&'a Idx, &'a mut T), (&'a Idx, &'a mut T))>,
-    // T: Into<V>,
     &'a mut T: Into<V>,
     T2<V, FLIP>: Into<(V, V)>,
 {
@@ -572,7 +561,6 @@ impl<'a, T: 'a, const FLIP: bool> Double<'a, T, FLIP> {
             let tmp = mem::take(&mut self.head);
             let (p, h) = tmp.split_first().unwrap();
             self.head = h;
-            // Some(p.into())
             Some(p)
         } else if !self.mid.is_empty() {
             let m_tmp = mem::take(&mut self.mid);
@@ -582,13 +570,11 @@ impl<'a, T: 'a, const FLIP: bool> Double<'a, T, FLIP> {
             let (p, h) = T2(r0, r1).split_first().unwrap();
             self.head = h;
             self.mid = m;
-            // Some(p.into())
             Some(p)
         } else if !self.tail.is_empty() {
             let tmp = mem::take(&mut self.tail);
             let (p, h) = tmp.split_first().unwrap();
             self.tail = h;
-            // Some(p.into())
             Some(p)
         } else {
             None
@@ -600,7 +586,6 @@ impl<'a, T: 'a, const FLIP: bool> Double<'a, T, FLIP> {
             let tmp = mem::take(&mut self.tail);
             let (p, h) = tmp.split_last().unwrap();
             self.tail = h;
-            // Some(p.into())
             Some(p)
         } else if !self.mid.is_empty() {
             let m_tmp = mem::take(&mut self.mid);
@@ -610,13 +595,11 @@ impl<'a, T: 'a, const FLIP: bool> Double<'a, T, FLIP> {
             let (p, t) = T2(r0, r1).split_last().unwrap();
             self.tail = t;
             self.mid = mid;
-            // Some(p.into())
             Some(p)
         } else if !self.head.is_empty() {
             let tmp = mem::take(&mut self.head);
             let (p, h) = tmp.split_last().unwrap();
             self.head = h;
-            // Some(p.into())
             Some(p)
         } else {
             None

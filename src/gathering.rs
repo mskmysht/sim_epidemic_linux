@@ -1,4 +1,4 @@
-use crate::agent::cont::Field;
+use crate::agent::location::Field;
 use crate::agent::Agent;
 use crate::commons::{math, WrkPlcMode};
 use crate::commons::{math::Point, random, RuntimeParams, WorldParams};
@@ -36,7 +36,7 @@ impl Gathering {
                 y: rng.gen::<f64>() * wp.field_size(),
             }
         } else {
-            agents.choose(rng).unwrap().lock().unwrap().origin
+            agents.choose(rng).unwrap().get_origin()
         };
         let size = {
             let size = random::my_random(rng, &rp.gat_sz);

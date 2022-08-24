@@ -103,46 +103,48 @@ where
     }
 }
 
-// pub struct Gaussian {
-//     z: f64,
-//     second_time: bool,
-// }
+/*
+pub struct Gaussian {
+    z: f64,
+    second_time: bool,
+}
 
-// impl Gaussian {
-//     pub fn new() -> Gaussian {
-//         Gaussian {
-//             z: 0.0,
-//             second_time: false,
-//         }
-//     }
+impl Gaussian {
+    pub fn new() -> Gaussian {
+        Gaussian {
+            z: 0.0,
+            second_time: false,
+        }
+    }
 
-//     fn gen<R: Rng>(&mut self, rng: &mut R) -> f64 {
-//         if self.second_time {
-//             self.second_time = false;
-//             self.z
-//         } else {
-//             self.second_time = true;
-//             let r = (-2. * rng.gen::<f64>().ln()).sqrt();
-//             let th = rng.gen::<f64>() * std::f64::consts::PI * 2.0;
-//             self.z = r * th.cos();
-//             r * th.sin()
-//         }
-//     }
+    fn gen<R: Rng>(&mut self, rng: &mut R) -> f64 {
+        if self.second_time {
+            self.second_time = false;
+            self.z
+        } else {
+            self.second_time = true;
+            let r = (-2. * rng.gen::<f64>().ln()).sqrt();
+            let th = rng.gen::<f64>() * std::f64::consts::PI * 2.0;
+            self.z = r * th.cos();
+            r * th.sin()
+        }
+    }
 
-//     pub fn random_guassian<R: Rng>(&mut self, rng: &mut R) -> f64 {
-//         self.gen(rng)
-//     }
-// }
+    pub fn random_guassian<R: Rng>(&mut self, rng: &mut R) -> f64 {
+        self.gen(rng)
+    }
+}
 
-// static GUASSIAN: MRef<Gaussian> = Arc::new(Mutex::new(Gaussian::new()));
+static GUASSIAN: MRef<Gaussian> = Arc::new(Mutex::new(Gaussian::new()));
 
-// pub struct ActivenessEffect {
-//     x: f64,
-//     m_x: f64,
-// }
+pub struct ActivenessEffect {
+    x: f64,
+    m_x: f64,
+}
 
-// impl ActivenessEffect {
-//     pub fn new(x: f64, m_x: f64) -> Self {
-//         Self { x, m_x }
-//     }
-// }
+impl ActivenessEffect {
+    pub fn new(x: f64, m_x: f64) -> Self {
+        Self { x, m_x }
+    }
+}
+*/

@@ -82,8 +82,7 @@ fn new_input_handle(
                     break;
                 }
                 Command::Show => {
-                    let world = wr.lock().unwrap();
-                    println!("{}", world);
+                    println!("{}", wr.lock().unwrap());
                 }
                 Command::Start(stop_at) => {
                     if let Some(handle) = start_world(Arc::clone(&wr), stop_at) {
@@ -93,13 +92,10 @@ fn new_input_handle(
                 Command::Step => wr.lock().unwrap().step(),
                 Command::Stop => wr.lock().unwrap().stop(),
                 Command::Reset => wr.lock().unwrap().reset(),
-                Command::Export(path) => {
-                    let world = &wr.lock().unwrap();
-                    match world.export(path.as_str()) {
-                        Ok(_) => println!("{} was successfully exported", path),
-                        Err(e) => println!("{}", e),
-                    }
-                }
+                Command::Export(path) => match wr.lock().unwrap().export(path.as_str()) {
+                    Ok(_) => println!("{} was successfully exported", path),
+                    Err(e) => println!("{}", e),
+                },
                 Command::Debug => wr.lock().unwrap().debug(),
             },
             Err(e) => print!("{}", e),
@@ -159,7 +155,7 @@ fn new_world() -> Arc<Mutex<World>> {
         360,
         18,
         16,
-        0.10.into(),
+        0.05.into(),
         0.0.into(),
         20.0.into(),
         50.0.into(),

@@ -8,8 +8,7 @@ pub enum TestReason {
     AsSymptom,
     AsContact,
     AsSuspected,
-    // TestPositiveRate,
-    // NAllTestTypes,
+    // [todo] TestPositiveRate,
 }
 
 #[derive(Enum, Clone)]
@@ -35,31 +34,17 @@ pub struct Testee {
 }
 
 impl Testee {
-    pub fn new(agent: Agent, reason: TestReason, pfs: &ParamsForStep) -> Self {
-        let rng = &mut rand::thread_rng();
-        let p = if let Some(ip) = agent.lock().unwrap().is_infected() {
-            rng.gen::<f64>()
-                < 1.0
-                    - (1.0 - pfs.rp.tst_sens.r()).powf(pfs.vr_info[ip.virus_variant].reproductivity)
-        } else {
-            rng.gen::<f64>() > pfs.rp.tst_spec.r()
-        };
+    pub fn new(agent: Agent, reason: TestReason, result: TestResult, time_stamp: u64) -> Self {
         Self {
             agent,
             reason,
-            result: p.into(),
-            time_stamp: pfs.rp.step,
+            result,
+            time_stamp,
         }
     }
 
-    fn reserve_quarantine(&mut self) {
-        self.agent.lock().unwrap().reserve_quarantine();
-    }
-}
-
-impl Drop for Testee {
-    fn drop(&mut self) {
-        self.agent.lock().unwrap().finish_test(self.time_stamp);
+    fn finish_test(self) {
+        self.agent.deliver_test_result(self.time_stamp, self.result);
     }
 }
 
@@ -71,8 +56,8 @@ impl TestQueue {
     }
 
     // enqueue a new test
-    pub fn push(&mut self, agent: Agent, reason: TestReason, pfs: &ParamsForStep) {
-        self.0.push_back(Testee::new(agent, reason, pfs));
+    pub fn push(&mut self, testee: Testee) {
+        self.0.push_back(testee);
     }
     // enqueue new tests
     pub fn extend(&mut self, testees: Vec<Testee>) {
@@ -105,24 +90,22 @@ impl TestQueue {
             if t.time_stamp > latest || max_tests == 0 {
                 break;
             }
-            let mut t = self.0.pop_front().unwrap();
+            let t = self.0.pop_front().unwrap();
             if t.time_stamp > oldest {
                 max_tests -= 1;
-                self.deliver(&mut t, count_reason, count_result);
+                self.deliver(t, count_reason, count_result);
             }
         }
     }
 
     fn deliver(
         &mut self,
-        t: &mut Testee,
+        t: Testee,
         count_reason: &mut EnumMap<TestReason, u64>,
         count_result: &mut EnumMap<TestResult, u64>,
     ) {
-        if let TestResult::Positive = &t.result {
-            t.reserve_quarantine();
-        }
         count_result[&t.result] += 1;
         count_reason[&t.reason] += 1;
+        t.finish_test();
     }
 }

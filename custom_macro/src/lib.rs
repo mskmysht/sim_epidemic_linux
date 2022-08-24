@@ -22,15 +22,6 @@ pub fn enum_derive(input: proc_macro::TokenStream) -> proc_macro::TokenStream {
                 Ok(vnames) => {
                     let num = data_enum.variants.len();
                     let counter = 0..num;
-
-                    let usize_ident = {
-                        let counter = counter.clone();
-                        quote! {
-                            #(
-                                #counter => #name::#vnames,
-                            )*
-                        }
-                    };
                     let ident_usize = quote! {
                         #(
                             #name::#vnames => #counter,
@@ -47,13 +38,6 @@ pub fn enum_derive(input: proc_macro::TokenStream) -> proc_macro::TokenStream {
                                 #name::#vnames,
                             )*
                         ];
-
-                        // fn from_usize(u: usize) -> Self {
-                        //     match u {
-                        //         #usize_ident
-                        //         _ => unreachable!(),
-                        //     }
-                        // }
 
                         fn to_index(&self) -> usize {
                             match self {
