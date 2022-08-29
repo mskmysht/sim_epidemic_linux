@@ -46,13 +46,11 @@ parser! {
     }
 }
 
-pub fn input_handle<
-    A: Default + Send + 'static,
-    F: FnMut(Command, &mut A) -> bool + Send + 'static,
->(
-    mut callback: F,
-) -> thread::JoinHandle<()> {
-    let mut arg = A::default();
+pub fn input_handle<C>() -> thread::JoinHandle<()>
+where
+    C: super::Callback + Send + 'static,
+{
+    let mut c = C::init();
     thread::spawn(move || loop {
         let mut input = String::new();
         io::stdout().flush().unwrap();
@@ -62,7 +60,7 @@ pub fn input_handle<
 
         match parse::command(input.as_str()) {
             Ok(cmd) => {
-                if !callback(cmd, &mut arg) {
+                if !c.callback(cmd) {
                     break;
                 }
             }

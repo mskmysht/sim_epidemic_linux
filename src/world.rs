@@ -12,8 +12,8 @@ use crate::{
     },
     enum_map::EnumMap,
 };
-use std::error;
 use std::sync::mpsc;
+use std::{error, io};
 use std::{
     f64, fmt, thread,
     time::{SystemTime, UNIX_EPOCH},
@@ -282,7 +282,8 @@ pub fn spawn_world(
     stream_tx: mpsc::Sender<WorldStatus>,
     req_rx: mpsc::Receiver<Request>,
     res_tx: mpsc::Sender<ResponseResult>,
-) -> WorldStatus {
+    drop_tx: mpsc::Sender<bool>,
+) -> io::Result<WorldStatus> {
     #[derive(Default, Debug)]
     struct StepInfo {
         prev_time: f64,
@@ -293,17 +294,18 @@ pub fn spawn_world(
     let mut info = StepInfo::default();
     let status = WorldStatus::new(world.runtime_params.step, LoopMode::LoopNone);
 
-    macro_rules! res_ok_status {
-        () => {
+    let _res_tx = res_tx.clone();
+    macro_rules! res_status {
+        (ok) => {
             res_tx.send(Ok(None)).unwrap()
         };
-        ($msg:expr) => {
+        (ok; $msg:expr) => {
             res_tx.send(Ok(Some($msg))).unwrap()
         };
-    }
-
-    macro_rules! res_err_status {
-        ($err:expr) => {
+        (ok_) => {
+            _res_tx.send(Ok(None)).unwrap()
+        };
+        (err; $err:expr) => {
             res_tx.send(Err($err)).unwrap()
         };
     }
@@ -372,68 +374,76 @@ pub fn spawn_world(
         };
     }
 
-    thread::spawn(move || 'outer: loop {
-        match req_rx.recv().unwrap() {
-            Request::Delete => {
-                res_ok_status!();
-                break;
-            }
-            Request::Reset => {
-                reset!();
-                res_ok_status!();
-            }
-            Request::Step => {
-                if !world.is_finished {
-                    step!(LoopMode::LoopEndByUser);
-                    res_ok_status!();
-                } else {
-                    res_err_status!(ErrorStatus::AlreadyFinished);
+    let handle = thread::Builder::new()
+        .name(format!("world_{}", world.id.clone()))
+        .spawn(move || 'outer: loop {
+            match req_rx.recv().unwrap() {
+                Request::Delete => {
+                    break;
                 }
-            }
-            Request::Start(stop_at) => {
-                if world.is_finished {
-                    res_err_status!(ErrorStatus::AlreadyFinished);
-                } else {
-                    res_ok_status!();
-                    loop {
-                        if auto_stopped!(stop_at) {
-                            break;
-                        }
-                        if step!(LoopMode::LoopRunning) {
-                            break;
-                        }
-                        if let Ok(msg) = req_rx.try_recv() {
-                            match msg {
-                                Request::Delete => {
-                                    res_ok_status!();
-                                    break 'outer;
+                Request::Reset => {
+                    reset!();
+                    res_status!(ok);
+                }
+                Request::Step => {
+                    if !world.is_finished {
+                        step!(LoopMode::LoopEndByUser);
+                        res_status!(ok);
+                    } else {
+                        res_status!(err; ErrorStatus::AlreadyFinished);
+                    }
+                }
+                Request::Start(stop_at) => {
+                    if world.is_finished {
+                        res_status!(err; ErrorStatus::AlreadyFinished);
+                    } else {
+                        res_status!(ok);
+                        loop {
+                            if auto_stopped!(stop_at) {
+                                break;
+                            }
+                            if step!(LoopMode::LoopRunning) {
+                                break;
+                            }
+                            if let Ok(msg) = req_rx.try_recv() {
+                                match msg {
+                                    Request::Delete => {
+                                        break 'outer;
+                                    }
+                                    Request::Stop => {
+                                        stop!();
+                                        res_status!(ok);
+                                        break;
+                                    }
+                                    Request::Reset => {
+                                        reset!();
+                                        res_status!(ok);
+                                        break;
+                                    }
+                                    Request::Debug => res_status!(ok; debug!()),
+                                    _ => res_status!(err; ErrorStatus::AlreadyRunning),
                                 }
-                                Request::Stop => {
-                                    stop!();
-                                    res_ok_status!();
-                                    break;
-                                }
-                                Request::Reset => {
-                                    reset!();
-                                    res_ok_status!();
-                                    break;
-                                }
-                                Request::Debug => res_ok_status!(debug!()),
-                                _ => res_err_status!(ErrorStatus::AlreadyRunning),
                             }
                         }
                     }
                 }
+                Request::Debug => res_status!(ok; debug!()),
+                Request::Export(dir) => match world.export(&dir) {
+                    Ok(_) => res_status!(ok; format!("{} was successfully exported", dir)),
+                    Err(_) => res_status!(err; ErrorStatus::FileExportFailed),
+                },
+                Request::Stop => res_status!(err; ErrorStatus::AlreadyStopped),
             }
-            Request::Debug => res_ok_status!(debug!()),
-            Request::Export(dir) => match world.export(&dir) {
-                Ok(_) => res_ok_status!(format!("{} was successfully exported", dir)),
-                Err(_) => res_err_status!(ErrorStatus::FileExportFailed),
-            },
-            Request::Stop => res_err_status!(ErrorStatus::AlreadyStopped),
+        })?;
+
+    thread::spawn(move || {
+        let panicked = handle.join().is_err();
+        if !panicked {
+            res_status!(ok_)
         }
+        drop_tx.send(panicked).unwrap();
     });
-    status
+    Ok(status)
 }
 
 fn new_world_params() -> WorldParams {
