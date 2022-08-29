@@ -4,13 +4,25 @@ use crate::{
     stat::{HistInfo, InfectionCntInfo},
 };
 use csv::Writer;
-use std::collections::VecDeque;
+use std::{collections::VecDeque, error, fmt::Display};
 
 #[derive(Default)]
 pub struct StepLog {
     pub hists: Vec<HistInfo>,
     health_counts: VecDeque<HealthLog>,
     pub infcts: Vec<InfectionCntInfo>,
+}
+
+impl Display for StepLog {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        writeln!(
+            f,
+            "[{}], {:?}",
+            self.health_counts.len(),
+            self.health_counts[0].0
+        )?;
+        write!(f, "infcts: {}", self.infcts.len())
+    }
 }
 
 impl StepLog {
@@ -21,15 +33,6 @@ impl StepLog {
         cnt[&HealthType::Asymptomatic] = n_asymptomatic;
         self.health_counts.clear();
         self.health_counts.push_front(HealthLog(cnt));
-    }
-
-    pub fn show_log(&self) {
-        println!(
-            "[{}], {:?}",
-            self.health_counts.len(),
-            self.health_counts[0].0
-        );
-        println!("infcts: {}", self.infcts.len());
     }
 
     fn n_infected(&self) -> usize {
@@ -45,8 +48,11 @@ impl StepLog {
         self.health_counts[0].apply_difference(hd);
     }
 
-    pub fn write(&self, path: &str) -> csv::Result<()> {
-        let mut wtr = Writer::from_path(path)?;
+    pub fn write(&self, name: &str, dir: &str) -> Result<(), Box<dyn error::Error>> {
+        use std::path;
+        let p = path::Path::new(dir);
+        let p = p.join(format!("{}_log.csv", name));
+        let mut wtr = Writer::from_path(p)?;
         for ht in <HealthType as Enum>::ALL.iter() {
             wtr.write_field(format!("{:?}", ht))?;
         }

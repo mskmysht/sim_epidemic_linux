@@ -247,23 +247,6 @@ pub enum WrkPlcMode {
     //[todo] WrkPlcPopDistImg,
 }
 
-#[derive(Clone, Copy, PartialEq, Debug)]
-pub enum LoopMode {
-    LoopNone,
-    LoopRunning,
-    LoopFinished,
-    LoopEndByUser,
-    LoopEndByCondition,
-    LoopEndAsDaysPassed,
-    //[todo] LoopEndByTimeLimit,
-}
-
-impl Default for LoopMode {
-    fn default() -> Self {
-        LoopMode::LoopNone
-    }
-}
-
 pub enum Either<L, R> {
     Left(L),
     Right(R),
