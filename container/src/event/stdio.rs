@@ -3,7 +3,7 @@ use std::{
     thread,
 };
 
-use crate::control::Command;
+use crate::event::Command;
 use peg::parser;
 
 parser! {

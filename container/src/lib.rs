@@ -1,8 +1,8 @@
 mod agent;
 mod commons;
 mod contact;
-pub mod control;
 mod enum_map;
+pub mod event;
 mod gathering;
 mod log;
 mod stat;
