@@ -2,5 +2,6 @@
 
 members = [
     "container",
+    "controller",
     "custom_macro"
 ]
