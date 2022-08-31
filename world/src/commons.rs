@@ -1,9 +1,10 @@
+pub mod enum_map;
 pub mod math;
 pub mod random;
 
 use self::math::{Permille, Point};
-use crate::enum_map::{Enum, EnumMap};
 use crate::table::TableIndex;
+use enum_map::{Enum, EnumMap};
 use math::Percentage;
 use rand::Rng;
 

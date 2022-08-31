@@ -1,6 +1,8 @@
 use crate::{
-    commons::HealthType,
-    enum_map::{Enum, EnumMap},
+    commons::{
+        enum_map::{Enum, EnumMap},
+        HealthType,
+    },
     stat::{HistInfo, InfectionCntInfo},
 };
 use csv::Writer;

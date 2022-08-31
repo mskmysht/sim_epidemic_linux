@@ -1,5 +1,5 @@
 use crate::agent::{Agent, ParamsForStep};
-use crate::enum_map::{Enum, EnumMap};
+use crate::commons::enum_map::{Enum, EnumMap};
 use rand::Rng;
 use std::collections::VecDeque;
 

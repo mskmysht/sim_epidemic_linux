@@ -1,17 +1,14 @@
 use chrono::Local;
 
-use crate::commons::{math::Point, RuntimeParams, WorldParams};
+use crate::agent::{
+    location::{Cemetery, Field, Hospital, Warps},
+    Agent, ParamsForStep, VaccineInfo, VariantInfo,
+};
+use crate::commons::{enum_map::EnumMap, math::Point, RuntimeParams, WorldParams};
 use crate::commons::{DistInfo, HealthType, WrkPlcMode};
 use crate::gathering::Gatherings;
 use crate::log::StepLog;
 use crate::testing::TestQueue;
-use crate::{
-    agent::{
-        location::{Cemetery, Field, Hospital, Warps},
-        Agent, ParamsForStep, VaccineInfo, VariantInfo,
-    },
-    enum_map::EnumMap,
-};
 use std::sync::mpsc;
 use std::{error, io};
 use std::{
@@ -257,7 +254,13 @@ impl fmt::Display for WorldStatus {
     }
 }
 
-pub enum Request {
+impl From<&WorldStatus> for String {
+    fn from(status: &WorldStatus) -> Self {
+        status.to_string()
+    }
+}
+
+pub enum Command {
     Delete,
     Start(u64),
     Step,
@@ -267,7 +270,7 @@ pub enum Request {
     Export(String),
 }
 
-#[derive(Debug)]
+#[derive(Debug, serde::Deserialize, serde::Serialize)]
 pub enum ErrorStatus {
     AlreadyFinished,
     AlreadyStopped,
@@ -275,14 +278,16 @@ pub enum ErrorStatus {
     FileExportFailed,
 }
 
-pub type ResponseResult = Result<Option<String>, ErrorStatus>;
+pub mod result {
+    pub type Result = std::result::Result<Option<String>, super::ErrorStatus>;
+}
 
 pub fn spawn_world(
     id: String,
     stream_tx: mpsc::Sender<WorldStatus>,
-    req_rx: mpsc::Receiver<Request>,
-    res_tx: mpsc::Sender<ResponseResult>,
-    drop_tx: mpsc::Sender<bool>,
+    req_rx: mpsc::Receiver<Command>,
+    res_tx: mpsc::Sender<result::Result>,
+    drop_tx: mpsc::Sender<()>,
 ) -> io::Result<WorldStatus> {
     #[derive(Default, Debug)]
     struct StepInfo {
@@ -378,14 +383,14 @@ pub fn spawn_world(
         .name(format!("world_{}", world.id.clone()))
         .spawn(move || 'outer: loop {
             match req_rx.recv().unwrap() {
-                Request::Delete => {
-                    break;
+                Command::Delete => {
+                    break world.id;
                 }
-                Request::Reset => {
+                Command::Reset => {
                     reset!();
                     res_status!(ok);
                 }
-                Request::Step => {
+                Command::Step => {
                     if !world.is_finished {
                         step!(LoopMode::LoopEndByUser);
                         res_status!(ok);
@@ -393,7 +398,7 @@ pub fn spawn_world(
                         res_status!(err; ErrorStatus::AlreadyFinished);
                     }
                 }
-                Request::Start(stop_at) => {
+                Command::Start(stop_at) => {
                     if world.is_finished {
                         res_status!(err; ErrorStatus::AlreadyFinished);
                     } else {
@@ -407,41 +412,42 @@ pub fn spawn_world(
                             }
                             if let Ok(msg) = req_rx.try_recv() {
                                 match msg {
-                                    Request::Delete => {
-                                        break 'outer;
+                                    Command::Delete => {
+                                        break 'outer world.id;
                                     }
-                                    Request::Stop => {
+                                    Command::Stop => {
                                         stop!();
                                         res_status!(ok);
                                         break;
                                     }
-                                    Request::Reset => {
+                                    Command::Reset => {
                                         reset!();
                                         res_status!(ok);
                                         break;
                                     }
-                                    Request::Debug => res_status!(ok; debug!()),
+                                    Command::Debug => res_status!(ok; debug!()),
                                     _ => res_status!(err; ErrorStatus::AlreadyRunning),
                                 }
                             }
                         }
                     }
                 }
-                Request::Debug => res_status!(ok; debug!()),
-                Request::Export(dir) => match world.export(&dir) {
+                Command::Debug => res_status!(ok; debug!()),
+                Command::Export(dir) => match world.export(&dir) {
                     Ok(_) => res_status!(ok; format!("{} was successfully exported", dir)),
                     Err(_) => res_status!(err; ErrorStatus::FileExportFailed),
                 },
-                Request::Stop => res_status!(err; ErrorStatus::AlreadyStopped),
+                Command::Stop => res_status!(err; ErrorStatus::AlreadyStopped),
             }
         })?;
 
     thread::spawn(move || {
-        let panicked = handle.join().is_err();
-        if !panicked {
-            res_status!(ok_)
+        if let Ok(id) = handle.join() {
+            println!("[info] Delete world {id}.");
+            res_status!(ok_);
+        } else {
+            drop_tx.send(()).unwrap();
         }
-        drop_tx.send(panicked).unwrap();
     });
     Ok(status)
 }

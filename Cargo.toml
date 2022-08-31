@@ -1,7 +1,9 @@
 [workspace]
 
 members = [
+    "world",
     "container",
     "controller",
+    "net",
     "custom_macro"
 ]
