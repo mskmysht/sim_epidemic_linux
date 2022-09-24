@@ -12,16 +12,16 @@ use std::{
 fn main(container1: Ipv4Addr, /*, container2: Ipv4Addr */) -> Result<(), Box<dyn error::Error>> {
     if let Ok(stream) = TcpStream::connect(SocketAddrV4::new(container1, 8080)) {
         println!("Connected to the server!");
-        stdio::input_loop(MyListener(stream));
+        stdio::input_loop(MyListener(stream, "container-1"));
     } else {
         println!("Couldn't connect to server...");
     }
     Ok(())
 }
 
-struct MyListener(TcpStream);
+struct MyListener<'a>(TcpStream, &'a str);
 
-impl stdio::Listener<()> for MyListener {
+impl<'a> stdio::Listener<()> for MyListener<'a> {
     type Arg = stdio::Command;
 
     fn callback(&mut self, arg: Self::Arg) -> ops::ControlFlow<()> {
@@ -32,29 +32,20 @@ impl stdio::Listener<()> for MyListener {
             stdio::Command::New => Request::New,
             stdio::Command::Info(id) => Request::Info(id),
             stdio::Command::Delete(id) => Request::Delete(id),
-            stdio::Command::Start(_, _) => todo!(),
-            stdio::Command::Step(_) => todo!(),
-            stdio::Command::Stop(_) => todo!(),
-            stdio::Command::Reset(_) => todo!(),
-            stdio::Command::Debug(_) => todo!(),
-            stdio::Command::Export(_, _) => todo!(),
+            stdio::Command::Msg(_, _) => todo!(),
         };
 
-        match net::write_data(&mut self.0, &net::serialize(&req).unwrap()) {
+        match comm::write_data(&mut self.0, &req) {
             Ok(n) => eprintln!("[info] sent {n} bytes data"),
             Err(e) => {
                 eprintln!("[error] {e:?}");
                 return ops::ControlFlow::Break(());
             }
         }
-        match net::read_data(&mut self.0) {
-            Ok(data) => match net::deserialize::<socket::Result>(&data) {
-                Ok(res) => match res {
-                    Ok(res) => println!("{res:?}"),
-                    Err(err) => println!("{err:?}"),
-                },
-                Err(e) => println!("{e:?}"),
-            },
+        match comm::read_data::<socket::Response, _>(&mut self.0) {
+            Ok(res) => {
+                println!("{res:?}");
+            }
             Err(e) => {
                 eprintln!("[error] {e:?}");
                 return ops::ControlFlow::Break(());

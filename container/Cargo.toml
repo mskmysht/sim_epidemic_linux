@@ -8,8 +8,11 @@ edition = "2018"
 
 [dependencies]
 world = { path = "../world" }
-net = { path = "../net" }
+comm = { path = "../comm" }
 rand = { version = "0.8", features = ["alloc"] }
 rand_distr = "0.4"
-peg = "0.8.0"
+peg = "0.8"
 serde = { version = "1.0", features = ["derive"] }
+ipc-channel = "0.16"
+pico-args = "0.5"
+ctrlc = "3.2"

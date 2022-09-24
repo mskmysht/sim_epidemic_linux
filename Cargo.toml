@@ -4,6 +4,6 @@ members = [
     "world",
     "container",
     "controller",
-    "net",
+    "comm",
     "custom_macro"
 ]

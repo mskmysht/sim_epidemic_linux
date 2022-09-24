@@ -6,6 +6,6 @@ edition = "2021"
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 
 [dependencies]
-net = { path = "../net" }
+comm = { path = "../comm" }
 container = { path = "../container" }
 argopt = "0.3"

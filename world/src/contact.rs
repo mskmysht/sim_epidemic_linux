@@ -18,14 +18,14 @@ impl Contacts {
     }
 
     pub fn get_testees(&mut self, pfs: &ParamsForStep) -> Vec<Testee> {
-        let old_time_stamp = pfs.rp.step - pfs.wp.steps_per_day * Self::RETENTION_PERIOD;
+        let retention_steps = pfs.wp.steps_per_day * Self::RETENTION_PERIOD;
         self.0
             .drain(..)
             .filter_map(|ci| {
-                if ci.time_stamp <= old_time_stamp {
-                    None
-                } else {
+                if pfs.rp.step - ci.time_stamp < retention_steps {
                     ci.agent.try_reserve_test(pfs)
+                } else {
+                    None
                 }
             })
             .collect()

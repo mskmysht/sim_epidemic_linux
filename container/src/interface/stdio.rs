@@ -11,16 +11,18 @@ pub enum Command {
     New,
     Info(String),
     Delete(String),
-    Start(String, u64),
-    Step(String),
-    Stop(String),
-    Reset(String),
-    Debug(String),
-    Export(String, String),
+    // Start(String, u64),
+    // Step(String),
+    // Stop(String),
+    // Reset(String),
+    // Debug(String),
+    // Export(String, String),
+    Msg(String, world::Request),
 }
 
 parser! {
     grammar parse() for str {
+        use world::Request;
         rule _() = quiet!{ [' ' | '\t']+ }
         rule __() = quiet!{ [' ' | '\t']* }
         rule eof() = quiet!{ ['\n'] }
@@ -48,12 +50,12 @@ parser! {
             / "new"  { Command::New }
             / "info"   id:id() { Command::Info(id) }
             / "delete" id:id() { Command::Delete(id) }
-            / "step"   id:id() { Command::Step (id) }
-            / "stop"   id:id() { Command::Stop (id) }
-            / "reset"  id:id() { Command::Reset(id) }
-            / "debug"  id:id() { Command::Debug(id) }
-            / "start"  id:id() n:num() {  Command::Start (id, n) }
-            / "export" id:id() p:path() { Command::Export(id, p) }
+            / "step"   id:id() { Command::Msg(id, Request::Step) }
+            / "stop"   id:id() { Command::Msg(id, Request::Stop) }
+            / "reset"  id:id() { Command::Msg(id, Request::Reset) }
+            / "debug"  id:id() { Command::Msg(id, Request::Debug) }
+            / "start"  id:id() n:num() {  Command::Msg(id, Request::Start(n)) }
+            / "export" id:id() p:path() { Command::Msg(id, Request::Export(p)) }
             / ""     { Command::None }
     }
 }
@@ -91,9 +93,9 @@ pub struct StdListener {
 }
 
 impl StdListener {
-    pub fn new() -> Self {
+    pub fn new(path: String) -> Self {
         Self {
-            manager: super::WorldManager::new(),
+            manager: super::WorldManager::new(path),
         }
     }
 }
@@ -124,36 +126,20 @@ impl Listener<()> for StdListener {
                 Err(e) => println!("{e}"),
             },
             Command::Info(ref id) => {
-                if let Some(status) = self.manager.get_info::<String>(id) {
+                if let Some(status) = self.manager.get_status::<String>(id) {
                     println!("{}", status);
                 } else {
                     println!("World '{id}' not found.");
                 }
             }
-            Command::Delete(ref id) => {
-                if let Some(res) = self.manager.delete(id) {
-                    // info.req.send(world::Command::Delete).unwrap();
-                    match res {
-                        Ok(None) => println!("succeed"),
-                        Ok(Some(msg)) => println!("{}", msg),
-                        Err(err) => eprintln!("{:?}", err),
-                    }
-                } else {
-                    println!("World '{id}' not found.");
-                }
-            }
-            Command::Start(ref id, stop_at) => log(id, self.manager.start(id, stop_at)),
-            Command::Stop(ref id) => log(id, self.manager.stop(id)),
-            Command::Step(ref id) => log(id, self.manager.step(id)),
-            Command::Reset(ref id) => log(id, self.manager.reset(id)),
-            Command::Debug(ref id) => log(id, self.manager.debug(id)),
-            Command::Export(ref id, dir) => log(id, self.manager.export(id, dir)),
+            Command::Delete(ref id) => log(id, self.manager.delete(id)),
+            Command::Msg(ref id, req) => log(id, self.manager.send(id, req)),
         }
         ops::ControlFlow::Continue(())
     }
 }
 
-fn log(id: &String, res: Option<world::result::Result>) {
+fn log(id: &String, res: Option<world::Response>) {
     if let Some(res) = res {
         match res {
             Ok(None) => println!("succeed"),
