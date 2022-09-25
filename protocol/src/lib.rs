@@ -1,3 +1,6 @@
+pub mod parse;
+pub mod stdio;
+
 use std::io;
 
 pub fn deserialize<D: for<'a> serde::Deserialize<'a>>(data: &[u8]) -> bincode::Result<D> {

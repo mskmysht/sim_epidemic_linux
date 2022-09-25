@@ -7,12 +7,11 @@ edition = "2018"
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 
 [dependencies]
-world = { path = "../world" }
-comm = { path = "../comm" }
-rand = { version = "0.8", features = ["alloc"] }
-rand_distr = "0.4"
-peg = "0.8"
-serde = { version = "1.0", features = ["derive"] }
+container-if = {path = "../container-if"}
+world-if = {path = "../world-if"}
+protocol = {path = "../protocol"}
 ipc-channel = "0.16"
 pico-args = "0.5"
-ctrlc = "3.2"
+rand = {version = "0.8", features = ["alloc"]}
+rand_distr = "0.4"
+serde = {version = "1.0", features = ["derive"]}

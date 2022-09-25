@@ -1,9 +1,11 @@
 [workspace]
 
 members = [
-    "world",
-    "container",
-    "controller",
-    "comm",
-    "custom_macro"
+  "world",
+  "world-if",
+  "container",
+  "container-if",
+  "controller",
+  "protocol",
+  "custom_macro",
 ]

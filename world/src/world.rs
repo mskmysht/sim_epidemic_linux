@@ -1,8 +1,3 @@
-use chrono::serde::ts_seconds;
-use chrono::Local;
-use ipc_channel::ipc::{IpcReceiver, IpcSender};
-use serde::{Deserialize, Serialize};
-
 use crate::agent::{
     location::{Cemetery, Field, Hospital, Warps},
     Agent, ParamsForStep, VaccineInfo, VariantInfo,
@@ -12,12 +7,15 @@ use crate::commons::{DistInfo, HealthType, WrkPlcMode};
 use crate::gathering::Gatherings;
 use crate::log::StepLog;
 use crate::testing::TestQueue;
+use chrono::Local;
+use ipc_channel::ipc::{IpcReceiver, IpcSender};
 use std::{error, io, thread::JoinHandle};
 use std::{
-    f64, fmt, thread,
+    f64, thread,
     time::{SystemTime, UNIX_EPOCH},
     usize,
 };
+use world_if::{ErrorStatus, LoopMode, Request, Response, WorldStatus};
 
 struct World {
     id: String,
@@ -213,146 +211,6 @@ fn get_uptime() -> f64 {
         .as_secs_f64()
 }
 
-#[derive(Clone, Copy, PartialEq, Debug, Serialize, Deserialize)]
-pub enum LoopMode {
-    LoopNone,
-    LoopRunning,
-    LoopFinished,
-    LoopEndByUser,
-    LoopEndAsDaysPassed,
-    //[todo] LoopEndByCondition,
-    //[todo] LoopEndByTimeLimit,
-}
-
-impl Default for LoopMode {
-    fn default() -> Self {
-        LoopMode::LoopNone
-    }
-}
-
-#[derive(Debug, serde::Deserialize, serde::Serialize)]
-pub struct WorldStatus {
-    step: u64,
-    mode: LoopMode,
-    #[serde(with = "ts_seconds")]
-    time_stamp: chrono::DateTime<chrono::Utc>,
-}
-
-impl WorldStatus {
-    fn new(step: u64, mode: LoopMode) -> Self {
-        Self {
-            step,
-            mode,
-            time_stamp: chrono::Utc::now(),
-        }
-    }
-}
-
-impl fmt::Display for WorldStatus {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(
-            f,
-            "[{}]step:{},mode:{:?}",
-            self.time_stamp, self.step, self.mode
-        )
-    }
-}
-
-impl From<&WorldStatus> for String {
-    fn from(status: &WorldStatus) -> Self {
-        status.to_string()
-    }
-}
-
-#[derive(Debug, serde::Deserialize, serde::Serialize)]
-pub enum Request {
-    Delete,
-    Start(u64),
-    Step,
-    Stop,
-    Reset,
-    Debug,
-    Export(String),
-}
-
-#[derive(Debug, serde::Deserialize, serde::Serialize)]
-pub enum ErrorStatus {
-    AlreadyFinished,
-    AlreadyStopped,
-    AlreadyRunning,
-    FileExportFailed,
-}
-
-pub type Response = std::result::Result<Option<String>, super::ErrorStatus>;
-
-#[derive(Debug, serde::Deserialize, serde::Serialize)]
-pub struct WorldInfo {
-    req: IpcSender<Request>,
-    res: IpcReceiver<Response>,
-    stream: IpcReceiver<WorldStatus>,
-    status: WorldStatus,
-}
-
-impl WorldInfo {
-    pub fn new(
-        req: IpcSender<Request>,
-        res: IpcReceiver<Response>,
-        stream: IpcReceiver<WorldStatus>,
-        status: WorldStatus,
-    ) -> Self {
-        Self {
-            stream,
-            req,
-            res,
-            status,
-        }
-    }
-
-    pub fn seek_status(&mut self) -> &WorldStatus {
-        let mut v = None;
-        while let Ok(s) = self.stream.try_recv() {
-            v = Some(s);
-        }
-        if let Some(s) = v {
-            self.status = s;
-        }
-        &self.status
-    }
-
-    // pub fn delete(&self) -> Response {
-    //     self.send(Request::Delete)
-    // }
-
-    // pub fn reset(&self) -> Response {
-    //     self.send(Request::Reset)
-    // }
-
-    // pub fn start(&self, stop_at: u64) -> Response {
-    //     self.send(Request::Start(stop_at))
-    // }
-
-    // pub fn step(&self) -> Response {
-    //     self.send(Request::Step)
-    // }
-
-    // pub fn stop(&self) -> Response {
-    //     self.send(Request::Stop)
-    // }
-
-    // pub fn export(&self, dir: String) -> Response {
-    //     self.send(Request::Export(dir))
-    // }
-
-    // pub fn debug(&self) -> Response {
-    //     self.send(Request::Debug)
-    // }
-
-    pub fn send(&self, req: Request) -> Response {
-        self.req.send(req).unwrap();
-        self.res.recv().unwrap()
-    }
-}
-
 pub fn spawn_world(
     id: String,
     stream_tx: IpcSender<WorldStatus>,
@@ -377,9 +235,6 @@ pub fn spawn_world(
         };
         (ok; $msg:expr) => {
             res_tx.send(Ok(Some($msg))).unwrap()
-        };
-        (ok_) => {
-            _res_tx.send(Ok(None)).unwrap()
         };
         (err; $err:expr) => {
             res_tx.send(Err($err)).unwrap()

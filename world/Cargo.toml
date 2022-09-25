@@ -6,14 +6,13 @@ edition = "2021"
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 
 [dependencies]
-custom_macro = { path = "../custom_macro" }
-comm = { path = "../comm" }
-rand = { version = "0.8", features = ["alloc"] }
-rand_distr = "0.4"
-rayon = "1.5"
-csv ="1.1"
-chrono = { version = "0.4", features = ["serde"] }
-peg = "0.8"
-serde = { version = "1.0", features = ["derive"] }
+custom_macro = {path = "../custom_macro"}
+world-if = {path = "../world-if"}
 ipc-channel = "0.16"
 pico-args = "0.5"
+rayon = "1.5"
+chrono = {version = "0.4", features = ["serde"]}
+csv = "1.1"
+rand = {version = "0.8", features = ["alloc"]}
+rand_distr = "0.4"
+serde = {version = "1.0", features = ["derive"]}
