@@ -1,4 +1,4 @@
-use container::{event, stdio::StdListener, WorldManager};
+use container::{stdio::StdListener, world::WorldManager};
 use protocol::stdio;
 use std::{
     io,
@@ -24,7 +24,7 @@ fn connect(world_path: String) -> io::Result<()> {
         let mut stream = stream?;
         let addr = stream.peer_addr()?;
         println!("[info] Acceept {addr}");
-        event::event_loop(&mut stream, &mut manager);
+        protocol::channel::event_loop(&mut stream, &mut manager);
         println!("[info] Disconnect {addr}");
     }
     loop {}

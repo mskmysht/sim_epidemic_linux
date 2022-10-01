@@ -1,62 +1,167 @@
-use container_if::Manager;
-use ipc_channel::ipc::IpcOneShotServer;
-use rand::Rng;
-use rand_distr::Alphanumeric;
-use std::{
-    collections::HashMap,
-    io, process,
-    sync::{Arc, Mutex},
-    thread::{self, JoinHandle},
-};
-use world_if::{ErrorStatus, Request, Response, Success, WorldInfo};
+pub mod world {
+    use container_if as cif;
+    use ipc_channel::ipc::IpcOneShotServer;
+    use parking_lot::{Mutex, RwLock};
+    use protocol::channel::Callback;
+    use std::{
+        collections::HashMap,
+        io, process,
+        sync::Arc,
+        thread::{self, JoinHandle},
+    };
+    use world_if as wif;
+    use world_if::WorldInfo;
 
-fn new_unique_string<const LEN: usize>() -> String {
-    rand::thread_rng()
-        .sample_iter(Alphanumeric)
-        .take(LEN)
-        .map(char::from)
-        .collect()
-}
+    fn new_unique_string<const LEN: usize>() -> String {
+        use rand::Rng;
+        use rand_distr::Alphanumeric;
+        rand::thread_rng()
+            .sample_iter(Alphanumeric)
+            .take(LEN)
+            .map(char::from)
+            .collect()
+    }
 
-pub struct WorldManager {
-    path: String,
-    info_map: Arc<Mutex<HashMap<String, WorldInfo>>>,
-    handles: Vec<JoinHandle<()>>,
-}
+    pub struct WorldManager {
+        path: String,
+        info_map: Arc<RwLock<HashMap<String, Mutex<WorldInfo>>>>,
+        handles: Vec<JoinHandle<()>>,
+    }
 
-impl WorldManager {
-    pub fn new(path: String) -> Self {
-        Self {
-            path,
-            info_map: Arc::new(Mutex::new(HashMap::default())),
-            handles: Vec::new(),
+    impl WorldManager {
+        pub fn new(path: String) -> Self {
+            Self {
+                path,
+                info_map: Arc::new(RwLock::new(HashMap::default())),
+                handles: Vec::new(),
+            }
+        }
+
+        pub fn close(&mut self) {
+            for handle in self.handles.drain(..) {
+                handle.join().unwrap();
+            }
+        }
+
+        pub fn delete_all(&mut self) -> Vec<(String, wif::Response)> {
+            let all = self
+                .info_map
+                .write()
+                .drain()
+                .map(|(id, info)| {
+                    let res = info.lock().send(wif::Request::Delete);
+                    (id, res)
+                })
+                .collect();
+            all
+        }
+
+        pub fn entry(&mut self) -> io::Result<String> {
+            use std::collections::hash_map::Entry;
+            let mut map = self.info_map.write();
+            let entry = {
+                loop {
+                    let id = new_unique_string::<3>();
+                    if let Entry::Vacant(e) = map.entry(id) {
+                        break e;
+                    }
+                }
+            };
+            let id = entry.key().clone();
+            let (server, server_name) = IpcOneShotServer::new()?;
+            let mut child = process::Command::new(&self.path)
+                .args(["--world-id", &id, "--server-name", &server_name])
+                .spawn()?;
+            let (_, info): (_, WorldInfo) = server.accept().unwrap();
+            println!("[info] Create World {id}.");
+            let handle = {
+                let id = id.clone();
+                let map = Arc::clone(&self.info_map);
+                thread::spawn(move || {
+                    let s = child.wait().unwrap();
+                    if map.write().remove(&id).is_some() {
+                        println!("[warn] stopped world {id} process with exit status {s}.");
+                    } else {
+                        println!("[info] closed world {id} process with exit status {s}.");
+                    }
+                })
+            };
+            entry.insert(Mutex::new(info));
+            self.handles.push(handle);
+            Ok(id)
+        }
+
+        pub fn send(&self, id: &String, req: wif::Request) -> Option<wif::Response> {
+            let map = self.info_map.read();
+            let info = map.get(id)?.lock();
+            Some(info.send(req))
+        }
+
+        pub fn get_status(&self, id: &String) -> Option<String> {
+            let map = self.info_map.read();
+            let mut info = map.get(id)?.lock();
+            Some((info.seek_status()).into())
+        }
+
+        pub fn get_ids(&self) -> Vec<String> {
+            self.info_map.read().keys().cloned().collect()
+        }
+
+        pub fn delete(&mut self, id: &String) -> Option<wif::Response> {
+            let mut map = self.info_map.write();
+            let info = map.remove(id)?;
+            let info = info.lock();
+            Some(info.send(wif::Request::Delete))
         }
     }
 
-    fn close(&mut self) {
-        for handle in self.handles.drain(..) {
-            handle.join().unwrap();
-        }
-    }
+    impl Callback for WorldManager {
+        type Req = cif::Request<wif::Request>;
+        type Res = cif::Response<wif::Success, wif::ErrorStatus>;
 
-    fn delete_all(&mut self) -> Vec<(String, Response)> {
-        let all = self
-            .info_map
-            .lock()
-            .unwrap()
-            .drain()
-            .map(|(id, info)| {
-                let res = info.send(Request::Delete);
-                (id, res)
-            })
-            .collect();
-        all
+        fn callback(&mut self, req: Self::Req) -> Self::Res {
+            match req {
+                cif::Request::New => match self.entry() {
+                    Ok(id) => Ok(cif::Success::Created(id)),
+                    Err(e) => {
+                        println!("[error] {e:?}");
+                        Err(cif::Error::Failure)
+                    }
+                },
+                cif::Request::List => Ok(cif::Success::IdList(self.get_ids())),
+                cif::Request::Info(ref id) => self
+                    .get_status(id)
+                    .ok_or(cif::Error::NoId)
+                    .map(cif::Success::Msg),
+                cif::Request::Delete(id) => self
+                    .delete(&id)
+                    .ok_or(cif::Error::NoId)?
+                    .map_err(cif::Error::WorldError)
+                    .map(cif::Success::Accepted),
+                cif::Request::Msg(id, req) => self
+                    .send(&id, req)
+                    .ok_or(cif::Error::NoId)?
+                    .map_err(cif::Error::WorldError)
+                    .map(cif::Success::Accepted),
+            }
+        }
     }
 }
 
+/*
 impl Manager<Request, Success, ErrorStatus> for WorldManager {
     fn new(&mut self) -> io::Result<String> {
-        let id = new_unique_string::<3>();
+        use std::collections::hash_map::Entry;
+        let mut map = self.info_map.lock().unwrap();
+        let entry = {
+            loop {
+                let id = new_unique_string::<3>();
+                if let Entry::Vacant(e) = map.entry(id) {
+                    break e;
+                }
+            }
+        };
+        let id = entry.key().clone();
         let (server, server_name) = IpcOneShotServer::new()?;
         let mut child = process::Command::new(&self.path)
             .args(["--world-id", &id, "--server-name", &server_name])
@@ -68,7 +173,6 @@ impl Manager<Request, Success, ErrorStatus> for WorldManager {
             let map = Arc::clone(&self.info_map);
             thread::spawn(move || {
                 let s = child.wait().unwrap();
-                // println!("[info] child #{id}: {s}");
                 if map.lock().unwrap().remove(&id).is_some() {
                     println!("[warn] stopped world {id} process with exit status {s}.");
                 } else {
@@ -76,7 +180,7 @@ impl Manager<Request, Success, ErrorStatus> for WorldManager {
                 }
             })
         };
-        self.info_map.lock().unwrap().insert(id.clone(), info);
+        entry.insert(info);
         self.handles.push(handle);
         Ok(id)
     }
@@ -102,13 +206,16 @@ impl Manager<Request, Success, ErrorStatus> for WorldManager {
         Some(info.send(Request::Delete))
     }
 }
+*/
 
 pub mod stdio {
+    use crate::world::WorldManager;
     use container_if::Request as CReq;
-    use protocol::stdio::{InputLoop, ParseResult};
+    use protocol::{
+        channel::Callback,
+        stdio::{InputLoop, ParseResult},
+    };
     use world_if::Request as WReq;
-
-    use crate::WorldManager;
 
     pub struct StdListener {
         manager: WorldManager,
@@ -141,7 +248,7 @@ pub mod stdio {
         }
 
         fn callback(&mut self, req: Self::Req) -> Self::Res {
-            req.eval(&mut self.manager)
+            self.manager.callback(req)
         }
 
         fn logging(res: Self::Res) {
@@ -153,6 +260,7 @@ pub mod stdio {
     }
 }
 
+/*
 pub mod event {
     use std::net::TcpStream;
 
@@ -178,3 +286,4 @@ pub mod event {
         protocol::write_data(stream, &res)
     }
 }
+*/

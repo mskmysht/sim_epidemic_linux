@@ -8,11 +8,6 @@ pub enum Command {
     Quit,
     None,
     Delegate(String),
-    // List,
-    // New,
-    // Info(String),
-    // Delete(String),
-    // Msg(String, world_if::Request),
 }
 
 parser! {
@@ -24,16 +19,6 @@ parser! {
             = _ ":q" _ eof() { Command::Quit }
             / _ eof() { Command::None }
             / s:$([_]+) { Command::Delegate(String::from(s)) }
-            // / "list" { Command::List }
-            // / "new"  { Command::New }
-            // / "info"   id:id() { Command::Info(id) }
-            // / "delete" id:id() { Command::Delete(id) }
-            // / "step"   id:id() { Command::Msg(id, Request::Step) }
-            // / "stop"   id:id() { Command::Msg(id, Request::Stop) }
-            // / "reset"  id:id() { Command::Msg(id, Request::Reset) }
-            // / "debug"  id:id() { Command::Msg(id, Request::Debug) }
-            // / "start"  id:id() n:num() {  Command::Msg(id, Request::Start(n)) }
-            // / "export" id:id() p:path() { Command::Msg(id, Request::Export(p)) }
     }
 }
 
