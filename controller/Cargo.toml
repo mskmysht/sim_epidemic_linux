@@ -6,8 +6,13 @@ edition = "2021"
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 
 [dependencies]
-container-if = {path = "../container-if"}
-protocol = {path = "../protocol"}
-world-if = {path = "../world-if"}
+container-if = { path = "../container-if" }
+protocol = { path = "../protocol" }
+world-if = { path = "../world-if" }
+config = { path = "../config" }
+async-trait = "0.1"
 argopt = "0.3"
-peg = "0.8"
+quinn = "0.8"
+rustls = "0.20"
+tokio = { version = "1.21", features = ["full"] }
+# futures-util = "0.3"

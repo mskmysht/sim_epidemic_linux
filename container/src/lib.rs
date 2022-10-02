@@ -2,7 +2,7 @@ pub mod world {
     use container_if as cif;
     use ipc_channel::ipc::IpcOneShotServer;
     use parking_lot::{Mutex, RwLock};
-    use protocol::channel::Callback;
+    use protocol::SyncCallback;
     use std::{
         collections::HashMap,
         io, process,
@@ -115,11 +115,23 @@ pub mod world {
         }
     }
 
-    impl Callback for WorldManager {
-        type Req = cif::Request<wif::Request>;
-        type Res = cif::Response<wif::Success, wif::ErrorStatus>;
+    impl Drop for WorldManager {
+        fn drop(&mut self) {
+            for (id, res) in self.delete_all().into_iter() {
+                match res {
+                    Ok(_) => println!("Deleted {id}."),
+                    Err(err) => eprintln!("{:?}", err),
+                }
+            }
+            self.close();
+        }
+    }
 
-        fn callback(&mut self, req: Self::Req) -> Self::Res {
+    impl SyncCallback for WorldManager {
+        type Req = cif::Request<wif::Request>;
+        type Ret = cif::Response<wif::Success, wif::ErrorStatus>;
+
+        fn callback(&mut self, req: Self::Req) -> Self::Ret {
             match req {
                 cif::Request::New => match self.entry() {
                     Ok(id) => Ok(cif::Success::Created(id)),
@@ -210,12 +222,16 @@ impl Manager<Request, Success, ErrorStatus> for WorldManager {
 
 pub mod stdio {
     use crate::world::WorldManager;
-    use container_if::Request as CReq;
+    use async_trait::async_trait;
+    use container_if as cif;
     use protocol::{
-        channel::Callback,
         stdio::{InputLoop, ParseResult},
+        AsyncCallback, SyncCallback,
     };
-    use world_if::Request as WReq;
+    use world_if as wif;
+
+    type Req = cif::Request<wif::Request>;
+    type Ret = cif::Response<wif::Success, wif::ErrorStatus>;
 
     pub struct StdListener {
         manager: WorldManager,
@@ -229,33 +245,47 @@ pub mod stdio {
         }
     }
 
-    impl InputLoop for StdListener {
-        type Req = CReq<WReq>;
-        type Res = container_if::Response<world_if::Success, world_if::ErrorStatus>;
+    // impl Drop for StdListener {
+    //     fn drop(&mut self) {
+    //         for (id, res) in self.manager.delete_all().into_iter() {
+    //             match res {
+    //                 Ok(_) => println!("Deleted {id}."),
+    //                 Err(err) => eprintln!("{:?}", err),
+    //             }
+    //         }
+    //         self.manager.close();
+    //     }
+    // }
 
-        fn parse(input: &str) -> ParseResult<Self::Req> {
+    impl InputLoop<Req, Ret> for StdListener {
+        fn parse(input: &str) -> ParseResult<Req> {
             protocol::parse::request(input)
         }
 
-        fn quit(&mut self) {
-            for (id, res) in self.manager.delete_all().into_iter() {
-                match res {
-                    Ok(_) => println!("Deleted {id}."),
-                    Err(err) => eprintln!("{:?}", err),
-                }
-            }
-            self.manager.close();
-        }
-
-        fn callback(&mut self, req: Self::Req) -> Self::Res {
-            self.manager.callback(req)
-        }
-
-        fn logging(res: Self::Res) {
-            match res {
+        fn logging(ret: Ret) {
+            match ret {
                 Ok(s) => println!("[info] {s:?}"),
                 Err(e) => eprintln!("[error] {e:?}"),
             }
+        }
+    }
+
+    impl SyncCallback for StdListener {
+        type Req = Req;
+        type Ret = Ret;
+
+        fn callback(&mut self, req: Self::Req) -> Self::Ret {
+            self.manager.callback(req)
+        }
+    }
+
+    #[async_trait]
+    impl AsyncCallback for StdListener {
+        type Req = Req;
+        type Ret = Ret;
+
+        async fn callback(&mut self, req: Self::Req) -> Self::Ret {
+            self.manager.callback(req)
         }
     }
 }

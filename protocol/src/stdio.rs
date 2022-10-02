@@ -2,7 +2,9 @@ use peg::parser;
 use std::{
     io::{self, Write},
     ops::ControlFlow,
+    sync::Arc,
 };
+use tokio::sync::Mutex;
 
 pub enum Command {
     Quit,
@@ -24,56 +26,118 @@ parser! {
 
 pub type ParseResult<T> = Result<T, peg::error::ParseError<<str as peg::Parse>::PositionRepr>>;
 
-pub trait InputLoop {
-    type Req;
-    type Res;
-    fn parse(input: &str) -> ParseResult<Self::Req>;
-    fn callback(&mut self, req: Self::Req) -> Self::Res;
-    fn quit(&mut self);
-    fn logging(res: Self::Res);
+pub trait InputLoop<Req, Ret> {
+    fn parse(input: &str) -> ParseResult<Req>;
+    fn logging(ret: Ret);
 }
 
-fn run_step<R: InputLoop>(
-    runner: &mut R,
-    str: &str,
-) -> Result<
-    ControlFlow<(), Option<R::Res>>,
-    peg::error::ParseError<<str as peg::Parse>::PositionRepr>,
-> {
-    let cmd = parse::command(str)?;
-    let c = match cmd {
-        Command::Quit => {
-            runner.quit();
-            ControlFlow::Break(())
-        }
-        Command::Delegate(str) => {
-            let req = R::parse(str.as_str())?;
-            ControlFlow::Continue(Some(runner.callback(req)))
-        }
-        Command::None => ControlFlow::Continue(None),
-    };
-    Ok(c)
+pub struct Runner<C> {
+    core: C,
 }
 
-pub fn run<R>(mut runner: R)
+impl<C> Runner<C>
 where
-    R: InputLoop,
+    C: super::SyncCallback + InputLoop<C::Req, C::Ret>,
 {
-    loop {
-        let mut input = String::new();
-        io::stdout().flush().unwrap();
-        print!("> ");
-        io::stdout().flush().unwrap();
-        io::stdin().read_line(&mut input).unwrap();
-        match run_step(&mut runner, input.as_str()) {
-            Err(e) => eprintln!("{e}"),
-            Ok(c) => match c {
-                ControlFlow::Continue(None) => {}
-                ControlFlow::Continue(Some(res)) => {
-                    R::logging(res);
-                }
-                ControlFlow::Break(_) => break,
-            },
+    pub fn new(core: C) -> Self {
+        Self { core }
+    }
+
+    pub fn step(
+        &mut self,
+        input: &str,
+    ) -> Result<
+        ControlFlow<(), Option<C::Ret>>,
+        peg::error::ParseError<<str as peg::Parse>::PositionRepr>,
+    > {
+        let cmd = parse::command(input)?;
+        let c = match cmd {
+            Command::Quit => ControlFlow::Break(()),
+            Command::Delegate(str) => {
+                let req = C::parse(str.as_str())?;
+                ControlFlow::Continue(Some(self.core.callback(req)))
+            }
+            Command::None => ControlFlow::Continue(None),
+        };
+        Ok(c)
+    }
+
+    pub fn run(mut self) {
+        loop {
+            let mut input = String::new();
+            io::stdout().flush().unwrap();
+            print!("> ");
+            io::stdout().flush().unwrap();
+            io::stdin().read_line(&mut input).unwrap();
+            match self.step(input.as_str()) {
+                Err(e) => eprintln!("{e}"),
+                Ok(c) => match c {
+                    ControlFlow::Continue(None) => {}
+                    ControlFlow::Continue(Some(res)) => {
+                        C::logging(res);
+                    }
+                    ControlFlow::Break(_) => break,
+                },
+            }
         }
+        drop(self)
+    }
+}
+
+pub struct AsyncRunner<C> {
+    core: Arc<Mutex<C>>,
+}
+
+impl<C> AsyncRunner<C>
+where
+    C: super::AsyncCallback + InputLoop<C::Req, C::Ret> + Send + 'static,
+    C::Req: Send,
+    C::Ret: Send,
+{
+    pub fn new(core: C) -> Self {
+        Self {
+            core: Arc::new(Mutex::new(core)),
+        }
+    }
+
+    pub async fn step<'a>(
+        &mut self,
+        input: &'a str,
+    ) -> Result<ControlFlow<()>, peg::error::ParseError<<str as peg::Parse>::PositionRepr>> {
+        let cmd = parse::command(input)?;
+        let c = match cmd {
+            Command::Quit => ControlFlow::Break(()),
+            Command::Delegate(str) => {
+                let req = C::parse(str.as_str())?;
+                let core = Arc::clone(&self.core);
+                tokio::spawn(async move {
+                    let res = core.lock().await.callback(req).await;
+                    C::logging(res);
+                });
+                ControlFlow::Continue(())
+            }
+            Command::None => ControlFlow::Continue(()),
+        };
+        Ok(c)
+    }
+
+    pub async fn run(mut self) {
+        loop {
+            let mut input = String::new();
+            io::stdout().flush().unwrap();
+            print!("> ");
+            io::stdout().flush().unwrap();
+            io::stdin().read_line(&mut input).unwrap();
+            match self.step(input.as_str()).await {
+                Err(e) => {
+                    eprintln!("{e}");
+                }
+                Ok(c) => match c {
+                    ControlFlow::Break(_) => break,
+                    _ => {}
+                },
+            }
+        }
+        drop(self)
     }
 }

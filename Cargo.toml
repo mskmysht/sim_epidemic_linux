@@ -8,4 +8,5 @@ members = [
   "controller",
   "protocol",
   "custom_macro",
+  "config"
 ]

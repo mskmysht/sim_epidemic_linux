@@ -10,9 +10,16 @@ edition = "2018"
 container-if = {path = "../container-if"}
 world-if = {path = "../world-if"}
 protocol = {path = "../protocol"}
+config = { path = "../config" }
 ipc-channel = "0.16"
-pico-args = "0.5"
+argopt = "0.3"
 rand = {version = "0.8", features = ["alloc"]}
 rand_distr = "0.4"
 serde = {version = "1.0", features = ["derive"]}
 parking_lot = "0.12"
+async-trait = "0.1"
+tokio = { version = "1.21", features = ["full"] }
+quinn = "0.8"
+rustls = "0.20"
+rcgen = "0.10"
+futures-util = "0.3"
