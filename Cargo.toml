@@ -2,11 +2,12 @@
 
 members = [
   "world",
-  "world-if",
   "container",
-  "container-if",
   "controller",
-  "protocol",
   "custom_macro",
-  "config"
+  "libs/world-if",
+  "libs/container-if",
+  "libs/protocol",
+  "libs/security",
+  "libs/repl",
 ]

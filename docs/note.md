@@ -7,3 +7,10 @@
 ### 全般
 - `TracingOperation`
     - bitflags[https://github.com/bitflags/bitflags]で代用
+
+### ToDo
+- 各プロトコルのデータ変換対応（world-container間, container-controller間）
+  - デシリアライズをいつするか？
+  - デシリアライズの型情報をどう伝搬するか？
+  - デシリアライズ失敗にどう対応するか？（異常処理）
+- Agent TableのRWLock化

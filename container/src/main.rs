@@ -1,7 +1,6 @@
-use container::{stdio::StdListener, world::WorldManager};
+use container::world::WorldManager;
 use futures_util::StreamExt;
 use parking_lot::Mutex;
-use protocol::stdio;
 use quinn::{Endpoint, ServerConfig};
 use std::{
     error::Error,
@@ -11,7 +10,7 @@ use std::{
 
 type DynResult<T> = Result<T, Box<dyn Error>>;
 
-#[argopt::cmd_group(commands = [gen, start_cui, start_tcp, start])]
+#[argopt::cmd_group(commands = [gen, start_tcp, start])]
 fn main() -> DynResult<()> {}
 
 #[argopt::subcmd]
@@ -22,27 +21,9 @@ fn gen(
 ) -> DynResult<()> {
     println!("{names:?}");
     let cert = rcgen::generate_simple_self_signed(names)?;
-    config::dump_ca_cert_der(&cert.serialize_der()?)?;
-    config::dump_ca_pkey_der(&cert.serialize_private_key_der())?;
+    security::dump_ca_cert_der(&cert.serialize_der()?)?;
+    security::dump_ca_pkey_der(&cert.serialize_private_key_der())?;
     println!("successfully generated a certificate & a private key.");
-    Ok(())
-}
-
-#[argopt::subcmd]
-fn start_cui(
-    /// world binary path
-    #[opt(long)]
-    world_path: String,
-    /// enable async
-    #[opt(short = 'a')]
-    is_async: bool,
-) -> DynResult<()> {
-    if is_async {
-        let rt = tokio::runtime::Runtime::new()?;
-        rt.block_on(stdio::AsyncRunner::new(StdListener::new(world_path)).run());
-    } else {
-        stdio::Runner::new(StdListener::new(world_path)).run();
-    }
     Ok(())
 }
 
@@ -69,14 +50,12 @@ fn start(
 }
 
 fn config_server() -> DynResult<ServerConfig> {
-    let cert = rustls::Certificate(config::load_ca_cert_der()?);
-    let key = rustls::PrivateKey(config::load_ca_pkey_der()?);
+    let cert = rustls::Certificate(security::load_ca_cert_der()?);
+    let key = rustls::PrivateKey(security::load_ca_pkey_der()?);
     Ok(ServerConfig::with_single_cert(vec![cert], key)?)
 }
 
 async fn run(world_path: String, addr: SocketAddr) -> DynResult<()> {
-    use protocol::SyncCallback;
-
     let (_, mut incoming) = Endpoint::server(config_server()?, addr)?;
     let manager = Arc::new(Mutex::new(WorldManager::new(world_path)));
 
@@ -101,8 +80,6 @@ async fn run(world_path: String, addr: SocketAddr) -> DynResult<()> {
 }
 
 fn run_tcp(world_path: String) -> DynResult<()> {
-    use protocol::SyncCallback;
-
     let listener = TcpListener::bind(SocketAddrV4::new(Ipv4Addr::UNSPECIFIED, 8080))?;
     let mut manager = WorldManager::new(world_path);
     for stream in listener.incoming() {

@@ -1,8 +1,6 @@
 pub mod parse;
 pub mod quic;
-pub mod stdio;
 
-use async_trait::async_trait;
 use std::io;
 
 pub fn deserialize<D: for<'a> serde::Deserialize<'a>>(data: &[u8]) -> bincode::Result<D> {
@@ -47,17 +45,4 @@ where
         }
     }
     Ok(deserialize(&data).expect("Failed to deserialize"))
-}
-
-#[async_trait]
-pub trait AsyncCallback {
-    type Req;
-    type Ret;
-    async fn callback(&mut self, req: Self::Req) -> Self::Ret;
-}
-
-pub trait SyncCallback {
-    type Req;
-    type Ret;
-    fn callback(&mut self, req: Self::Req) -> Self::Ret;
 }
