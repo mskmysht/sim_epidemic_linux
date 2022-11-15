@@ -11,13 +11,15 @@ use crate::{
     table::TableIndex,
     testing::{TestReason, TestResult, Testee},
 };
-use health::{AgentHealth, HealthTransition};
+use health::AgentHealth;
 use rand::{self, Rng};
 use std::{
     f64,
     ops::ControlFlow,
     sync::{Arc, Mutex, Weak},
 };
+
+use self::health::{HealthState, InfMode};
 
 const AGENT_RADIUS: f64 = 0.75;
 //[todo] static AGENT_SIZE: f64 = 0.665;
@@ -137,10 +139,7 @@ fn back_home_force(pt: &Point, origin: &Point) -> Option<Point> {
 }
 
 mod health {
-    use super::{
-        AsymptomaticParam, DaysTo, InfectionParam, ParamsForStep, RecoverParam, SymptomaticParam,
-        VaccinationParam, WarpParam,
-    };
+    use super::{DaysTo, InfectionParam, ParamsForStep, RecoverParam, VaccinationParam, WarpParam};
     use crate::{
         commons::{math::Point, HealthType},
         log::HealthDiff,
@@ -149,35 +148,17 @@ mod health {
     use rand::{self, Rng};
     use std::{f64, ops::ControlFlow};
 
-    #[derive(Debug)]
-    pub enum HealthTransition {
-        Susceptible,
-        Asymptomatic { immunity: f64, virus_variant: usize },
-        Symptomatic,
-        Recovered,
-        Vaccinated { vaccine_type: usize, immunity: f64 },
-        Died,
-    }
-
-    impl From<&HealthTransition> for HealthType {
-        fn from(t: &HealthTransition) -> Self {
-            match t {
-                HealthTransition::Susceptible => HealthType::Susceptible,
-                HealthTransition::Asymptomatic { .. } => HealthType::Asymptomatic,
-                HealthTransition::Symptomatic => HealthType::Symptomatic,
-                HealthTransition::Recovered => HealthType::Recovered,
-                HealthTransition::Vaccinated { .. } => HealthType::Vaccinated,
-                HealthTransition::Died => HealthType::Died,
-            }
-        }
+    #[derive(Debug, PartialEq, Eq)]
+    pub enum InfMode {
+        Asym,
+        Sym,
     }
 
     #[derive(Default)]
     pub enum HealthState {
         #[default]
         Susceptible,
-        Asymptomatic(AsymptomaticParam),
-        Symptomatic(SymptomaticParam),
+        Infected(InfectionParam, InfMode),
         Recovered(RecoverParam),
         Vaccinated(VaccinationParam),
         Died,
@@ -187,8 +168,8 @@ mod health {
         fn from(p: &HealthState) -> Self {
             match p {
                 HealthState::Susceptible => HealthType::Susceptible,
-                HealthState::Asymptomatic(_) => HealthType::Asymptomatic,
-                HealthState::Symptomatic(_) => HealthType::Symptomatic,
+                HealthState::Infected(_, InfMode::Asym) => HealthType::Asymptomatic,
+                HealthState::Infected(_, InfMode::Sym) => HealthType::Symptomatic,
                 HealthState::Recovered(_) => HealthType::Recovered,
                 HealthState::Vaccinated(_) => HealthType::Vaccinated,
                 HealthState::Died => HealthType::Died,
@@ -199,41 +180,43 @@ mod health {
     #[derive(Default)]
     pub struct AgentHealth {
         state: HealthState,
-        transition: Option<HealthTransition>,
+        new_health: Option<HealthState>,
         vaccination: Option<VaccinationParam>,
         vaccine_ticket: Option<usize>,
     }
 
     impl AgentHealth {
         pub fn force_susceptible(&mut self) {
-            self.transition = None;
+            self.new_health = None;
             self.state = HealthState::Susceptible;
         }
 
-        pub fn force_infected(&mut self, days_to: &DaysTo) -> bool {
+        pub fn force_infected(&mut self, days_to: &DaysTo) {
             let mut ip = InfectionParam::new(0.0, 0);
             ip.days_infected = rand::thread_rng().gen::<f64>() * days_to.recover.min(days_to.die);
             let d = ip.days_infected - days_to.onset;
-            let is_symptomatic = d >= 0.0;
-            if is_symptomatic {
+            let inf_mode = if d >= 0.0 {
                 ip.days_diseased = d;
-                self.state = HealthState::Symptomatic(SymptomaticParam(ip))
+                InfMode::Sym
             } else {
-                self.state = HealthState::Asymptomatic(AsymptomaticParam(ip));
-            }
-            self.transition = None;
-            is_symptomatic
+                InfMode::Asym
+            };
+            self.state = HealthState::Infected(ip, inf_mode);
+            self.new_health = None;
         }
 
         pub fn force_recovered(&mut self, days_recovered: f64) {
             let mut rcp = RecoverParam::new(0.0, 0);
             rcp.days_recovered = days_recovered;
             self.state = HealthState::Recovered(rcp);
-            self.transition = None;
+            self.new_health = None;
         }
 
         pub fn become_infected(&self) -> bool {
-            matches!(self.transition, Some(HealthTransition::Asymptomatic { .. }))
+            matches!(
+                self.new_health,
+                Some(HealthState::Infected(_, InfMode::Asym))
+            )
         }
 
         pub fn get_immune_factor(&self, bip: &InfectionParam, pfs: &ParamsForStep) -> Option<f64> {
@@ -253,7 +236,7 @@ mod health {
         pub fn get_immunity(&self) -> Option<f64> {
             match &self.state {
                 HealthState::Susceptible => Some(0.0),
-                HealthState::Asymptomatic(AsymptomaticParam(ip)) => Some(ip.immunity),
+                HealthState::Infected(ip, InfMode::Asym) => Some(ip.immunity),
                 HealthState::Vaccinated(vp) => Some(vp.immunity),
                 _ => None,
             }
@@ -261,75 +244,43 @@ mod health {
 
         pub fn get_infected(&self) -> Option<&InfectionParam> {
             match &self.state {
-                HealthState::Asymptomatic(AsymptomaticParam(ip)) => Some(ip),
-                HealthState::Symptomatic(SymptomaticParam(ip)) => Some(ip),
+                HealthState::Infected(ip, _) => Some(ip),
                 _ => None,
             }
         }
 
         pub fn is_symptomatic(&self) -> bool {
-            matches!(&self.state, HealthState::Symptomatic(_))
+            matches!(&self.state, HealthState::Infected(_, InfMode::Sym))
         }
 
         pub fn get_symptomatic(&self) -> Option<&InfectionParam> {
             match &self.state {
-                HealthState::Symptomatic(SymptomaticParam(ip)) => Some(ip),
+                HealthState::Infected(ip, InfMode::Sym) => Some(ip),
                 _ => None,
             }
         }
 
-        pub fn set_transition(&mut self, new: Option<HealthTransition>) {
-            if new.is_some() {
-                self.transition = new;
+        pub fn set_new_health(&mut self, new_health: Option<HealthState>) -> bool {
+            if new_health.is_some() {
+                self.new_health = new_health;
+                true
+            } else {
+                false
             }
         }
 
-        pub fn update(&mut self, days_to: &mut DaysTo, pfs: &ParamsForStep) -> Option<HealthDiff> {
-            if let Some(t) = self.transition.take() {
+        pub fn update(&mut self) -> Option<HealthDiff> {
+            if let Some(new_health) = self.new_health.take() {
                 let from = (&self.state).into();
-                let to = (&t).into();
-                use std::ptr;
-                unsafe {
-                    let tmp = ptr::read(&mut self.state);
-                    let mut ip = None;
-                    match tmp {
-                        HealthState::Vaccinated(vp) => {
-                            self.vaccination = Some(vp);
-                        }
-                        HealthState::Symptomatic(SymptomaticParam(_ip)) => ip = Some(_ip),
-                        HealthState::Asymptomatic(AsymptomaticParam(_ip)) => ip = Some(_ip),
-                        _ => {}
-                    }
-                    let new = match t {
-                        HealthTransition::Susceptible => HealthState::Susceptible,
-                        HealthTransition::Asymptomatic {
-                            immunity,
-                            virus_variant,
-                        } => HealthState::Asymptomatic(AsymptomaticParam(InfectionParam::new(
-                            immunity,
-                            virus_variant,
-                        ))),
-                        HealthTransition::Symptomatic => {
-                            HealthState::Symptomatic(SymptomaticParam(ip.unwrap()))
-                        }
-                        HealthTransition::Recovered => HealthState::Recovered(RecoverParam::new(
-                            days_to.setup_acquired_immunity(&pfs.rp),
-                            ip.unwrap().virus_variant,
-                        )),
-                        HealthTransition::Vaccinated {
-                            vaccine_type,
-                            immunity,
-                        } => HealthState::Vaccinated(self.vaccinate(
-                            days_to,
-                            immunity,
-                            vaccine_type,
-                            pfs,
-                        )),
-                        HealthTransition::Died => HealthState::Died,
-                    };
-                    ptr::write(&mut self.state, new);
-                }
+                let to = (&new_health).into();
 
+                let old = std::mem::replace(&mut self.state, new_health);
+                match old {
+                    HealthState::Vaccinated(vp) => {
+                        self.vaccination = Some(vp);
+                    }
+                    _ => {}
+                }
                 Some(HealthDiff::new(from, to))
             } else {
                 None
@@ -344,23 +295,21 @@ mod health {
             hist: &mut Option<HistInfo>,
             pfs: &ParamsForStep,
         ) -> ControlFlow<WarpParam> {
-            let transition = self.try_vaccinate().or_else(|| match &mut self.state {
-                HealthState::Asymptomatic(ap) => {
-                    ap.step::<false>(days_to, &self.vaccination, pfs, hist)
-                }
-                HealthState::Symptomatic(sp) => {
-                    sp.step::<false>(days_to, &self.vaccination, pfs, hist)
-                }
-                HealthState::Recovered(rp) => rp.step(days_to, activeness, age, pfs),
-                HealthState::Vaccinated(vp) => vp.step(days_to, activeness, age, pfs),
-                _ => None,
-            });
+            let new_health = self
+                .try_vaccinate(days_to, pfs)
+                .or_else(|| match &mut self.state {
+                    HealthState::Infected(ip, inf_mode) => {
+                        ip.step::<false>(days_to, &self.vaccination, pfs, hist, inf_mode)
+                    }
+                    HealthState::Recovered(rp) => rp.step(days_to, activeness, age, pfs),
+                    HealthState::Vaccinated(vp) => vp.step(days_to, activeness, age, pfs),
+                    _ => None,
+                });
 
-            self.set_transition(transition);
-            if let Some(HealthTransition::Died) = self.transition {
-                ControlFlow::Break(WarpParam::cemetery(pfs.wp))
-            } else {
-                ControlFlow::Continue(())
+            self.set_new_health(new_health);
+            match self.new_health {
+                Some(HealthState::Died) => ControlFlow::Break(WarpParam::cemetery(pfs.wp)),
+                _ => ControlFlow::Continue(()),
             }
         }
 
@@ -371,35 +320,35 @@ mod health {
             hist: &mut Option<HistInfo>,
             pfs: &ParamsForStep,
         ) -> Option<WarpParam> {
-            let t = match &mut self.state {
-                HealthState::Asymptomatic(ap) => {
-                    ap.step::<true>(days_to, &self.vaccination, pfs, hist)
-                }
-                HealthState::Symptomatic(sp) => {
-                    sp.step::<true>(days_to, &self.vaccination, pfs, hist)
+            let new_health = match &mut self.state {
+                HealthState::Infected(ip, inf_mode) => {
+                    ip.step::<true>(days_to, &self.vaccination, pfs, hist, inf_mode)
                 }
                 _ => None,
             };
 
-            if let Some(t) = t {
-                self.set_transition(Some(t));
-                match self.transition {
-                    Some(HealthTransition::Died) => Some(WarpParam::cemetery(pfs.wp)),
-                    Some(HealthTransition::Recovered) => Some(WarpParam::back(origin)),
-                    _ => None,
-                }
-            } else {
-                Some(WarpParam::back(origin))
+            self.set_new_health(new_health);
+            match self.new_health {
+                Some(HealthState::Died) => Some(WarpParam::cemetery(pfs.wp)),
+                Some(HealthState::Recovered(..)) => Some(WarpParam::back(origin)),
+                Some(_) => Some(WarpParam::back(origin)),
+                _ => None,
             }
         }
 
-        fn try_vaccinate(&mut self) -> Option<HealthTransition> {
+        fn try_vaccinate(
+            &mut self,
+            days_to: &mut DaysTo,
+            pfs: &ParamsForStep,
+        ) -> Option<HealthState> {
             let vaccine_type = self.vaccine_ticket.take()?;
             let immunity = self.get_immunity()?;
-            Some(HealthTransition::Vaccinated {
-                vaccine_type,
+            Some(HealthState::Vaccinated(self.vaccinate(
+                days_to,
                 immunity,
-            })
+                vaccine_type,
+                pfs,
+            )))
         }
 
         fn vaccinate(
@@ -432,6 +381,7 @@ mod health {
     }
 }
 
+#[derive(Debug)]
 pub struct InfectionParam {
     pub virus_variant: usize,
     on_recovery: bool,
@@ -494,15 +444,24 @@ impl InfectionParam {
         true
     }
 
-    fn step<const IS_SYMPTOMATIC: bool, const IS_IN_HOSPITAL: bool>(
+    fn step<const IS_IN_HOSPITAL: bool>(
         &mut self,
         days_to: &mut DaysTo,
         vp: &Option<VaccinationParam>,
         pfs: &ParamsForStep,
         hist: &mut Option<HistInfo>,
-    ) -> Option<HealthTransition> {
+        inf_mode: &mut InfMode,
+    ) -> Option<HealthState> {
+        fn new_recover(
+            days_to: &mut DaysTo,
+            rp: &RuntimeParams,
+            virus_variant: usize,
+        ) -> RecoverParam {
+            RecoverParam::new(days_to.setup_acquired_immunity(&rp), virus_variant)
+        }
+
         self.days_infected += pfs.wp.days_per_step();
-        if IS_SYMPTOMATIC {
+        if inf_mode == &InfMode::Sym {
             self.days_diseased += pfs.wp.days_per_step();
         }
 
@@ -510,14 +469,18 @@ impl InfectionParam {
             self.severity -= 1.0 / MAX_DAYS_FOR_RECOVERY * pfs.wp.days_per_step();
             // recovered
             if self.severity <= 0.0 {
-                if IS_SYMPTOMATIC {
+                if inf_mode == &InfMode::Sym {
                     // SET_HIST(hist_recov, days_diseased);
                     *hist = Some(HistInfo {
                         mode: HistgramType::HistRecov,
                         days: self.days_diseased,
                     });
                 }
-                return Some(HealthTransition::Recovered);
+                return Some(HealthState::Recovered(new_recover(
+                    days_to,
+                    pfs.rp,
+                    self.virus_variant,
+                )));
             }
             return None;
         }
@@ -526,10 +489,14 @@ impl InfectionParam {
         let excrbt = exacerbation(vr_info.reproductivity);
 
         let days_to_recov = self.get_days_to_recov::<IS_IN_HOSPITAL>(days_to, pfs.rp);
-        if !IS_SYMPTOMATIC {
+        if inf_mode == &InfMode::Asym {
             if self.days_infected < days_to.onset / excrbt {
                 if self.days_infected > days_to_recov {
-                    return Some(HealthTransition::Recovered);
+                    return Some(HealthState::Recovered(new_recover(
+                        days_to,
+                        pfs.rp,
+                        self.virus_variant,
+                    )));
                 }
                 return None;
             }
@@ -555,20 +522,20 @@ impl InfectionParam {
                 mode: HistgramType::HistDeath,
                 days: self.days_diseased,
             });
-            return Some(HealthTransition::Died);
+            return Some(HealthState::Died);
         }
 
         if self.days_infected > days_to_recov {
             self.on_recovery = true;
         }
 
-        if !IS_SYMPTOMATIC {
+        if inf_mode == &InfMode::Asym {
             // SET_HIST(hist_incub, days_infected)
             *hist = Some(HistInfo {
                 mode: HistgramType::HistIncub,
                 days: self.days_infected,
             });
-            return Some(HealthTransition::Symptomatic);
+            *inf_mode = InfMode::Sym;
         }
 
         None
@@ -587,34 +554,7 @@ impl InfectionParam {
     }
 }
 
-pub struct AsymptomaticParam(InfectionParam);
-
-impl AsymptomaticParam {
-    fn step<const IS_IN_HOSPITAL: bool>(
-        &mut self,
-        days_to: &mut DaysTo,
-        vp: &Option<VaccinationParam>,
-        pfs: &ParamsForStep,
-        hist: &mut Option<HistInfo>,
-    ) -> Option<HealthTransition> {
-        self.0.step::<false, IS_IN_HOSPITAL>(days_to, vp, pfs, hist)
-    }
-}
-
-pub struct SymptomaticParam(InfectionParam);
-
-impl SymptomaticParam {
-    fn step<const IS_IN_HOSPITAL: bool>(
-        &mut self,
-        days_to: &mut DaysTo,
-        vp: &Option<VaccinationParam>,
-        pfs: &ParamsForStep,
-        hist: &mut Option<HistInfo>,
-    ) -> Option<HealthTransition> {
-        self.0.step::<true, IS_IN_HOSPITAL>(days_to, vp, pfs, hist)
-    }
-}
-
+#[derive(Debug)]
 pub struct RecoverParam {
     virus_variant: usize,
     days_recovered: f64,
@@ -636,7 +576,7 @@ impl RecoverParam {
         activeness: f64,
         age: f64,
         pfs: &ParamsForStep,
-    ) -> Option<HealthTransition> {
+    ) -> Option<HealthState> {
         self.days_recovered += pfs.wp.days_per_step();
         if self.days_recovered > days_to.expire_immunity {
             Some(days_to.expire_immunity(activeness, age, pfs))
@@ -646,6 +586,7 @@ impl RecoverParam {
     }
 }
 
+#[derive(Debug)]
 pub struct VaccinationParam {
     vaccine_type: usize,
     dose_date: f64,
@@ -708,7 +649,7 @@ impl VaccinationParam {
         activeness: f64,
         age: f64,
         pfs: &ParamsForStep,
-    ) -> Option<HealthTransition> {
+    ) -> Option<HealthState> {
         if let Some(i) = self.new_immunity(pfs) {
             self.immunity = i;
             None
@@ -780,14 +721,9 @@ impl DaysTo {
         self.expire_immunity += Self::ALT_RATE * (temp.expire_immunity - self.expire_immunity);
     }
 
-    fn expire_immunity(
-        &mut self,
-        activeness: f64,
-        age: f64,
-        pfs: &ParamsForStep,
-    ) -> HealthTransition {
+    fn expire_immunity(&mut self, activeness: f64, age: f64, pfs: &ParamsForStep) -> HealthState {
         self.alter_days(activeness, age, pfs);
-        HealthTransition::Susceptible
+        HealthState::Susceptible
     }
 
     fn setup_acquired_immunity(&mut self, rp: &RuntimeParams) -> f64 {
@@ -1017,7 +953,8 @@ impl AgentCore {
 
     #[inline]
     fn force_infected(&mut self) -> bool {
-        self.health.force_infected(&self.days_to)
+        self.health.force_infected(&self.days_to);
+        self.health.is_symptomatic()
     }
 
     fn force_recovered(&mut self, rp: &RuntimeParams) {
@@ -1075,26 +1012,24 @@ impl AgentCore {
             b: &AgentCore,
             d: f64,
             pfs: &ParamsForStep,
-        ) -> Option<HealthTransition> {
+        ) -> Option<HealthState> {
             let ip = a.health.get_infected()?;
             let immunity = b.health.get_immune_factor(ip, pfs)?;
             if ip.check_infection(immunity, d, a.days_to.onset, pfs) {
-                Some(HealthTransition::Asymptomatic {
-                    immunity,
-                    virus_variant: ip.virus_variant,
-                })
+                Some(HealthState::Infected(
+                    InfectionParam::new(immunity, ip.virus_variant),
+                    InfMode::Asym,
+                ))
             } else {
                 None
             }
         }
 
         if !b.health.become_infected() {
-            if let Some(t) = infect(self, b, d, pfs) {
-                b.health.set_transition(Some(t));
-                return true;
-            }
+            b.health.set_new_health(infect(self, b, d, pfs))
+        } else {
+            false
         }
-        false
     }
 
     fn calc_gathering_effect(&self) -> (Option<Point>, Option<f64>) {
@@ -1240,8 +1175,8 @@ impl AgentCore {
     }
 
     #[inline]
-    fn update_health(&mut self, pfs: &ParamsForStep) -> Option<HealthDiff> {
-        self.health.update(&mut self.days_to, pfs)
+    fn update_health(&mut self) -> Option<HealthDiff> {
+        self.health.update()
     }
 
     fn replace_gathering(
@@ -1503,7 +1438,7 @@ impl FieldAgent {
             testee: test_reason.map(|reason| agent.reserve_test(self.agent.clone(), reason, pfs)),
             hist,
             infct: agent.update_n_infects(self.interaction.new_n_infects),
-            health: agent.update_health(pfs),
+            health: agent.update_health(),
         };
         (fsi, transfer)
     }
@@ -1566,7 +1501,7 @@ impl HospitalAgent {
         (
             HospitalStepInfo {
                 hist,
-                health: agent.update_health(pfs),
+                health: agent.update_health(),
             },
             warp,
         )
