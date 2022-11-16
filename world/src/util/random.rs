@@ -3,7 +3,18 @@ use std::ops;
 use rand::Rng;
 use rand_distr::StandardNormal;
 
-use super::DistInfo;
+#[derive(Default, Debug)]
+pub struct DistInfo<T> {
+    pub min: T,
+    pub mode: T,
+    pub max: T,
+}
+
+impl<T> DistInfo<T> {
+    pub fn new(min: T, mode: T, max: T) -> Self {
+        Self { min, mode, max }
+    }
+}
 
 static EXP_BASE: f64 = 0.02;
 

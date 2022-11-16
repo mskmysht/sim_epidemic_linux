@@ -161,7 +161,7 @@ impl<'a, T: Send + 'a, V: Send + 'a, const C0: usize, const C1: usize, const FLI
         }
     }
 
-    pub(in crate::table) fn from_slice(t: &'a mut [Vec<T>], column: usize) -> Self {
+    pub(in super::super) fn from_slice(t: &'a mut [Vec<T>], column: usize) -> Self {
         let row = t.len();
         let mid = if row % 2 == 1 {
             &mut t[0..(row - 1)]

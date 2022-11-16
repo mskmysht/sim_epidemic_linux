@@ -776,9 +776,7 @@ impl<'a, T, V> IterMut<'a, T, V> {
 
 #[cfg(test)]
 mod tests {
-    use crate::table::iter::T2;
-
-    use super::DoubleMut;
+    use super::{super::T2, DoubleMut};
 
     #[test]
     fn test_flip() {

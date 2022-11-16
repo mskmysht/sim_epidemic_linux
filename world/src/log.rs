@@ -1,9 +1,7 @@
 use crate::{
-    commons::{
-        enum_map::{Enum, EnumMap},
-        HealthType,
-    },
+    commons::HealthType,
     stat::{HistInfo, InfectionCntInfo},
+    util::enum_map::{Enum, EnumMap},
 };
 use csv::Writer;
 use std::{collections::VecDeque, error, fmt::Display};

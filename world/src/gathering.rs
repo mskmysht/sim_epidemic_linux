@@ -1,13 +1,15 @@
-use crate::agent::location::Field;
-use crate::agent::Agent;
-use crate::commons::{math, WrkPlcMode};
-use crate::commons::{math::Point, random, RuntimeParams, WorldParams};
-use rand::seq::SliceRandom;
-use rand::Rng;
+use crate::agent::{location::Field, Agent};
+use crate::commons::{RuntimeParams, WorldParams, WrkPlcMode};
+use crate::util::{
+    math::{self, Point},
+    random,
+};
+use rand::{seq::SliceRandom, Rng};
 use rayon::iter::{IntoParallelIterator, ParallelIterator};
-use std::sync::Arc;
-use std::sync::Mutex;
-use std::{f64, ops};
+use std::{
+    f64, ops,
+    sync::{Arc, Mutex},
+};
 
 const SURROUND: f64 = 5.;
 const GATHERING_FORCE: f64 = 5.;

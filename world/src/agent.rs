@@ -1,15 +1,16 @@
 use crate::{
-    commons::{
-        math::{Percentage, Point},
-        random::{self, modified_prob},
-        DistInfo, Either, HealthType, RuntimeParams, WorldParams, WrkPlcMode,
-    },
+    commons::{HealthType, RuntimeParams, WorldParams, WrkPlcMode},
     contact::Contacts,
     gathering::Gathering,
     log::HealthDiff,
     stat::{HistInfo, HistgramType, InfectionCntInfo},
-    table::TableIndex,
     testing::{TestReason, TestResult, Testee},
+    util::{
+        math::{Percentage, Point},
+        random::{self, modified_prob, DistInfo},
+        table::TableIndex,
+        Either,
+    },
 };
 use health::AgentHealth;
 use rand::{self, Rng};
@@ -140,11 +141,7 @@ fn back_home_force(pt: &Point, origin: &Point) -> Option<Point> {
 
 mod health {
     use super::{DaysTo, InfectionParam, ParamsForStep, RecoverParam, VaccinationParam, WarpParam};
-    use crate::{
-        commons::{math::Point, HealthType},
-        log::HealthDiff,
-        stat::HistInfo,
-    };
+    use crate::{commons::HealthType, log::HealthDiff, stat::HistInfo, util::math::Point};
     use rand::{self, Rng};
     use std::{f64, ops::ControlFlow};
 
@@ -180,14 +177,14 @@ mod health {
     #[derive(Default)]
     pub struct AgentHealth {
         state: HealthState,
-        new_health: Option<HealthState>,
+        new_state: Option<HealthState>,
         vaccination: Option<VaccinationParam>,
         vaccine_ticket: Option<usize>,
     }
 
     impl AgentHealth {
         pub fn force_susceptible(&mut self) {
-            self.new_health = None;
+            self.new_state = None;
             self.state = HealthState::Susceptible;
         }
 
@@ -202,21 +199,26 @@ mod health {
                 InfMode::Asym
             };
             self.state = HealthState::Infected(ip, inf_mode);
-            self.new_health = None;
+            self.new_state = None;
         }
 
         pub fn force_recovered(&mut self, days_recovered: f64) {
             let mut rcp = RecoverParam::new(0.0, 0);
             rcp.days_recovered = days_recovered;
             self.state = HealthState::Recovered(rcp);
-            self.new_health = None;
+            self.new_state = None;
         }
 
-        pub fn become_infected(&self) -> bool {
-            matches!(
-                self.new_health,
-                Some(HealthState::Infected(_, InfMode::Asym))
-            )
+        pub fn get_state(&self) -> &HealthState {
+            &self.state
+        }
+
+        pub fn has_new_state(&self) -> bool {
+            self.new_state.is_some()
+        }
+
+        pub fn insert_new_state(&mut self, new_state: HealthState) -> &HealthState {
+            self.new_state.insert(new_state)
         }
 
         pub fn get_immune_factor(&self, bip: &InfectionParam, pfs: &ParamsForStep) -> Option<f64> {
@@ -260,17 +262,8 @@ mod health {
             }
         }
 
-        pub fn set_new_health(&mut self, new_health: Option<HealthState>) -> bool {
-            if new_health.is_some() {
-                self.new_health = new_health;
-                true
-            } else {
-                false
-            }
-        }
-
         pub fn update(&mut self) -> Option<HealthDiff> {
-            if let Some(new_health) = self.new_health.take() {
+            if let Some(new_health) = self.new_state.take() {
                 let from = (&self.state).into();
                 let to = (&new_health).into();
 
@@ -295,21 +288,23 @@ mod health {
             hist: &mut Option<HistInfo>,
             pfs: &ParamsForStep,
         ) -> ControlFlow<WarpParam> {
-            let new_health = self
-                .try_vaccinate(days_to, pfs)
-                .or_else(|| match &mut self.state {
-                    HealthState::Infected(ip, inf_mode) => {
-                        ip.step::<false>(days_to, &self.vaccination, pfs, hist, inf_mode)
-                    }
-                    HealthState::Recovered(rp) => rp.step(days_to, activeness, age, pfs),
-                    HealthState::Vaccinated(vp) => vp.step(days_to, activeness, age, pfs),
-                    _ => None,
-                });
+            let Some(new_health) =
+                self.try_vaccinate(days_to, pfs)
+                    .or_else(|| match &mut self.state {
+                        HealthState::Infected(ip, inf_mode) => {
+                            ip.step::<false>(days_to, &self.vaccination, pfs, hist, inf_mode)
+                        }
+                        HealthState::Recovered(rp) => rp.step(days_to, activeness, age, pfs),
+                        HealthState::Vaccinated(vp) => vp.step(days_to, activeness, age, pfs),
+                        _ => None,
+                    }) else {
+                return ControlFlow::Continue(());
+            };
 
-            self.set_new_health(new_health);
-            match self.new_health {
-                Some(HealthState::Died) => ControlFlow::Break(WarpParam::cemetery(pfs.wp)),
-                _ => ControlFlow::Continue(()),
+            if matches!(self.insert_new_state(new_health), HealthState::Died) {
+                ControlFlow::Break(WarpParam::cemetery(pfs.wp))
+            } else {
+                ControlFlow::Continue(())
             }
         }
 
@@ -320,19 +315,15 @@ mod health {
             hist: &mut Option<HistInfo>,
             pfs: &ParamsForStep,
         ) -> Option<WarpParam> {
-            let new_health = match &mut self.state {
-                HealthState::Infected(ip, inf_mode) => {
-                    ip.step::<true>(days_to, &self.vaccination, pfs, hist, inf_mode)
-                }
-                _ => None,
+            let HealthState::Infected(ip, inf_mode) = &mut self.state else {
+                return None;
             };
+            let new_health = ip.step::<true>(days_to, &self.vaccination, pfs, hist, inf_mode)?;
 
-            self.set_new_health(new_health);
-            match self.new_health {
-                Some(HealthState::Died) => Some(WarpParam::cemetery(pfs.wp)),
-                Some(HealthState::Recovered(..)) => Some(WarpParam::back(origin)),
-                Some(_) => Some(WarpParam::back(origin)),
-                _ => None,
+            match self.insert_new_state(new_health) {
+                HealthState::Died => Some(WarpParam::cemetery(pfs.wp)),
+                HealthState::Recovered(..) => Some(WarpParam::back(origin)),
+                _ => Some(WarpParam::back(origin)),
             }
         }
 
@@ -1006,30 +997,27 @@ impl AgentCore {
         matches!(self.location, Location::Field)
     }
 
-    fn try_infect(&self, b: &mut Self, d: f64, pfs: &ParamsForStep) -> bool {
-        fn infect(
-            a: &AgentCore,
-            b: &AgentCore,
-            d: f64,
-            pfs: &ParamsForStep,
-        ) -> Option<HealthState> {
-            let ip = a.health.get_infected()?;
-            let immunity = b.health.get_immune_factor(ip, pfs)?;
-            if ip.check_infection(immunity, d, a.days_to.onset, pfs) {
-                Some(HealthState::Infected(
-                    InfectionParam::new(immunity, ip.virus_variant),
-                    InfMode::Asym,
-                ))
-            } else {
-                None
-            }
+    /// `self` tries to infect `b` with the virus data of [InfectionParam] in `self`
+    /// if `b.health.new_state` is `None` (`b` does not have a new health state)
+    /// and `self.health` is [HealthState::Infected] (`self` is infected).
+    fn infect(&self, b: &mut Self, d: f64, pfs: &ParamsForStep) -> bool {
+        if b.health.has_new_state() {
+            return false;
         }
-
-        if !b.health.become_infected() {
-            b.health.set_new_health(infect(self, b, d, pfs))
-        } else {
-            false
+        let HealthState::Infected(ip, _) = self.health.get_state() else {
+            return false;
+        };
+        let Some(immunity) = b.health.get_immune_factor(ip, pfs) else {
+            return false;
+        };
+        if !ip.check_infection(immunity, d, self.days_to.onset, pfs) {
+            return false;
         }
+        b.health.insert_new_state(HealthState::Infected(
+            InfectionParam::new(immunity, ip.virus_variant),
+            InfMode::Asym,
+        ));
+        true
     }
 
     fn calc_gathering_effect(&self) -> (Option<Point>, Option<f64>) {
@@ -1218,7 +1206,7 @@ impl Agent {
         wp: &WorldParams,
         rp: &RuntimeParams,
     ) -> (Vec<HealthType>, usize) {
-        use crate::commons::math;
+        use crate::util::math;
         let mut cats = {
             let r = n_pop - n_infected;
             if r == 0 {
@@ -1452,10 +1440,10 @@ impl FieldAgent {
             self.interaction.update_best(&a.body, &b.body);
             fb.interaction.update_best(&b.body, &a.body);
 
-            if b.try_infect(a, d, pfs) {
+            if b.infect(a, d, pfs) {
                 self.interaction.new_n_infects = 1;
             }
-            if a.try_infect(b, d, pfs) {
+            if a.infect(b, d, pfs) {
                 fb.interaction.new_n_infects += 1;
             }
 
@@ -1591,11 +1579,15 @@ impl WarpAgent {
 pub mod location {
     use super::{Agent, FieldAgent, HospitalAgent, ParamsForStep, WarpAgent, WarpMode, WarpParam};
     use crate::{
-        commons::{math::Percentage, DistInfo, DrainMap, DrainWith, Either},
         gathering::Gathering,
         log::StepLog,
-        table::{Table, TableIndex},
         testing::TestQueue,
+        util::{
+            math::Percentage,
+            random::DistInfo,
+            table::{Table, TableIndex},
+            DrainMap, DrainWith, Either,
+        },
     };
     use rayon::iter::ParallelIterator;
     use std::sync::{Arc, Mutex};

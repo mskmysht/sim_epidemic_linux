@@ -4,7 +4,7 @@ mod contact;
 mod gathering;
 mod log;
 mod stat;
-mod table;
 mod testing;
+mod util;
 pub mod world;
 pub use world::*;

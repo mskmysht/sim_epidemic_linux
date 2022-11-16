@@ -1,8 +1,11 @@
-use crate::commons::{
-    enum_map::{Enum, EnumMap},
-    HealthType, UnionMap,
+use crate::{
+    commons::HealthType,
+    testing::{TestReason, TestResult},
+    util::{
+        enum_map::{Enum, EnumMap},
+        UnionMap,
+    },
 };
-use crate::testing::{TestReason, TestResult};
 
 // const IMG_WIDTH: i32 = 320 * 4;
 // const IMG_HEIGHT: i32 = 320;

@@ -1,20 +1,21 @@
-use chrono::serde::ts_seconds;
-use chrono::Local;
+use chrono::{serde::ts_seconds, Local};
 use ipc_channel::ipc::{IpcReceiver, IpcSender};
 use serde::{Deserialize, Serialize};
 
-use crate::agent::{
-    location::{Cemetery, Field, Hospital, Warps},
-    Agent, ParamsForStep, VaccineInfo, VariantInfo,
+use crate::{
+    agent::{
+        location::{Cemetery, Field, Hospital, Warps},
+        Agent, ParamsForStep, VaccineInfo, VariantInfo,
+    },
+    commons::{HealthType, RuntimeParams, WorldParams, WrkPlcMode},
+    gathering::Gatherings,
+    log::StepLog,
+    testing::TestQueue,
+    util::{enum_map::EnumMap, math::Point, random::DistInfo},
 };
-use crate::commons::{enum_map::EnumMap, math::Point, RuntimeParams, WorldParams};
-use crate::commons::{DistInfo, HealthType, WrkPlcMode};
-use crate::gathering::Gatherings;
-use crate::log::StepLog;
-use crate::testing::TestQueue;
-use std::{error, io, thread::JoinHandle};
 use std::{
-    f64, fmt, thread,
+    error, f64, fmt, io,
+    thread::{self, JoinHandle},
     time::{SystemTime, UNIX_EPOCH},
     usize,
 };
