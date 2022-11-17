@@ -16,3 +16,4 @@ csv = "1.1"
 rand = { version = "0.8", features = ["alloc"] }
 rand_distr = "0.4"
 serde = { version = "1.0", features = ["derive"] }
+parking_lot = "0.12"

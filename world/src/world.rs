@@ -127,7 +127,7 @@ impl World {
                     self.hospital.add(a);
                 }
                 _ => {
-                    let idx = self.world_params.into_grid_index(&a.get_pt());
+                    let idx = self.world_params.into_grid_index(&a.read().get_pt());
                     self.field.add(a, idx);
                 }
             }
@@ -154,13 +154,13 @@ impl World {
             &self.vaccine_info,
         );
 
-        self.field.reset_for_step();
-
         let mut count_reason = EnumMap::default();
         let mut count_result = EnumMap::default();
+        self.test_queue
+            .accept(&pfs, &mut count_reason, &mut count_result);
 
         if !pfs.go_home_back() {
-            self.gatherings.steps(
+            self.gatherings.step(
                 &self.field,
                 &self.gat_spots_fixed,
                 &self.agents,
@@ -169,20 +169,15 @@ impl World {
             );
         }
 
-        self.field.intersect(&pfs);
-
-        self.test_queue
-            .accept(&pfs, &mut count_reason, &mut count_result);
-
-        self.field.steps(
+        self.field.step(
             &mut self.warps,
             &mut self.test_queue,
             &mut self.step_log,
             &pfs,
         );
         self.hospital
-            .steps(&mut self.warps, &mut self.step_log, &pfs);
-        self.warps.steps(
+            .step(&mut self.warps, &mut self.step_log, &pfs);
+        self.warps.step(
             &mut self.field,
             &mut self.hospital,
             &mut self.cemetery,

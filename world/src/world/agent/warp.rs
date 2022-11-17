@@ -32,10 +32,10 @@ impl WarpAgent {
     }
 
     fn step(&mut self, pfs: &ParamsForStep) -> (WarpStepInfo, bool) {
-        let mut agent = self.agent.0.lock().unwrap();
+        let mut agent = self.agent.write();
         let mut contact_testees = None;
         if let WarpMode::Inside = self.param.mode {
-            match agent.quarantine(pfs, &mut contact_testees) {
+            match agent.quarantine(&mut contact_testees, pfs) {
                 Some(w) => self.param = w,
                 _ => {}
             }
@@ -61,7 +61,7 @@ impl Warps {
         self.0.push(WarpAgent::new(agent, param));
     }
 
-    pub fn steps(
+    pub fn step(
         &mut self,
         field: &mut Field,
         hospital: &mut Hospital,

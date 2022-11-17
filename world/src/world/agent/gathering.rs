@@ -8,11 +8,9 @@ use crate::util::{
     random,
 };
 
-use std::{
-    f64, ops,
-    sync::{Arc, Mutex},
-};
+use std::{f64, ops, sync::Arc};
 
+use parking_lot::RwLock;
 use rand::{seq::SliceRandom, Rng};
 use rayon::iter::{IntoParallelIterator, ParallelIterator};
 
@@ -43,7 +41,7 @@ impl Gathering {
                 y: rng.gen::<f64>() * wp.field_size(),
             }
         } else {
-            agents.choose(rng).unwrap().get_origin()
+            agents.choose(rng).unwrap().read().origin
         };
         let size = {
             let size = random::my_random(rng, &rp.gat_sz);
@@ -122,7 +120,7 @@ impl Gathering {
     }
 }
 
-pub struct Gatherings(Vec<Arc<Mutex<Gathering>>>);
+pub struct Gatherings(Vec<Arc<RwLock<Gathering>>>);
 
 impl Gatherings {
     pub fn new() -> Self {
@@ -133,7 +131,7 @@ impl Gatherings {
         self.0.clear()
     }
 
-    pub fn steps(
+    pub fn step(
         &mut self,
         field: &Field,
         gat_spots_fixed: &[Point],
@@ -141,13 +139,7 @@ impl Gatherings {
         wp: &WorldParams,
         rp: &RuntimeParams,
     ) {
-        self.0.retain_mut(|gat| {
-            let is_expired = {
-                let mut gat = gat.lock().unwrap();
-                gat.step(wp.steps_per_day)
-            };
-            !is_expired
-        });
+        self.0.retain_mut(|gat| !gat.write().step(wp.steps_per_day));
 
         //	caliculate the number of gathering circles
         //	using random number in exponetial distribution.
@@ -159,7 +151,7 @@ impl Gatherings {
         for _ in 0..n_new_gat {
             let gat = Gathering::new(gat_spots_fixed, agents, wp, rp);
             let locs = gat.get_allocations(wp);
-            let gat = Arc::new(Mutex::new(gat));
+            let gat = Arc::new(RwLock::new(gat));
             locs.into_par_iter().for_each(|(row, range)| {
                 field.replace_gathering(row, range, &rp.gat_freq, &gat);
             });

@@ -1,4 +1,8 @@
-use super::{agent::Agent, commons::ParamsForStep, testing::Testee};
+use super::{
+    agent::Agent,
+    commons::ParamsForStep,
+    testing::{TestReason, Testee},
+};
 
 use std::collections::VecDeque;
 
@@ -21,7 +25,9 @@ impl Contacts {
             .drain(..)
             .filter_map(|ci| {
                 if pfs.rp.step - ci.time_stamp < retention_steps {
-                    ci.agent.reserve_test(pfs)
+                    ci.agent
+                        .write()
+                        .reserve_test(ci.agent.clone(), TestReason::AsContact, pfs)
                 } else {
                     None
                 }

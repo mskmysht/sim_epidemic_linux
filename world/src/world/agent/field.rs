@@ -18,34 +18,20 @@ use crate::{
     },
 };
 
-use std::{
-    ops::DerefMut,
-    sync::{Arc, Mutex},
-};
+use std::{ops::DerefMut, sync::Arc};
 
+use parking_lot::RwLock;
 use rayon::iter::ParallelIterator;
 
-struct InteractionUpdate {
+#[derive(Default)]
+struct TempParam {
     force: Point,
     best: Option<(Point, f64)>,
     new_n_infects: u64,
     new_contacts: Vec<Agent>,
 }
 
-impl InteractionUpdate {
-    fn new() -> Self {
-        Self {
-            force: Point::new(0.0, 0.0),
-            best: None,
-            new_n_infects: 0,
-            new_contacts: Vec::new(),
-        }
-    }
-
-    fn reset(&mut self) {
-        *self = Self::new();
-    }
-
+impl TempParam {
     fn update_best(&mut self, a: &Body, b: &Body) {
         let x = a.calc_dist(b);
         match self.best {
@@ -67,7 +53,7 @@ impl InteractionUpdate {
 pub struct FieldAgent {
     agent: Agent,
     idx: TableIndex,
-    interaction: InteractionUpdate,
+    temp: TempParam,
 }
 
 impl LocationLabel for FieldAgent {
@@ -87,76 +73,76 @@ impl FieldAgent {
         Self {
             agent: Self::label(agent),
             idx,
-            interaction: InteractionUpdate::new(),
+            temp: TempParam::default(),
         }
     }
 
-    fn reset_for_step(&mut self) {
-        self.interaction.reset();
+    fn reset_temp(&mut self) {
+        self.temp = TempParam::default();
     }
 
     fn step(
         &mut self,
         pfs: &ParamsForStep,
     ) -> (FieldStepInfo, Option<Either<WarpParam, TableIndex>>) {
-        let mut agent = self.agent.0.lock().unwrap();
+        let mut agent = self.agent.write();
         let mut hist = None;
         let mut contact_testees = None;
         let mut test_reason = None;
         let transfer = 'block: {
             let agent = agent.deref_mut();
-            if let Some(w) = agent.quarantine(pfs, &mut contact_testees) {
+            if let Some(w) = agent.quarantine(&mut contact_testees, pfs) {
                 break 'block Some(Either::Left(w));
             }
             if let Some(w) = agent.field_step(&mut hist, pfs) {
                 break 'block Some(Either::Left(w));
             }
-            test_reason = agent.check_test(pfs.wp, pfs.rp);
+            test_reason = agent.check_test(pfs);
             if let Some(w) = agent.warp_inside(pfs) {
                 break 'block Some(Either::Left(w));
             }
             agent
-                .move_internal(
-                    self.interaction.force,
-                    &self.interaction.best,
-                    &self.idx,
-                    pfs,
-                )
+                .move_internal(self.temp.force, &self.temp.best, &self.idx, pfs)
                 .map(Either::Right)
         };
 
         agent
             .contacts
-            .append(&mut self.interaction.new_contacts, pfs.rp.step);
+            .append(&mut self.temp.new_contacts, pfs.rp.step);
 
         let fsi = FieldStepInfo {
             contact_testees,
-            testee: test_reason.map(|reason| agent.reserve_test(self.agent.clone(), reason, pfs)),
+            testee: test_reason
+                .and_then(|reason| agent.reserve_test(self.agent.clone(), reason, pfs)),
             hist,
-            infct: agent.update_n_infects(self.interaction.new_n_infects),
+            infct: agent.update_n_infects(self.temp.new_n_infects),
             health: agent.update_health(),
         };
+
+        drop(agent);
+        self.reset_temp();
+
         (fsi, transfer)
     }
 
     fn interacts(&mut self, fb: &mut Self, pfs: &ParamsForStep) {
-        let a = &mut self.agent.0.lock().unwrap();
-        let b = &mut fb.agent.0.lock().unwrap();
-        if let Some((df, d)) = a.body.calc_force_delta(&b.body, pfs.wp, pfs.rp) {
-            self.interaction.force -= df;
-            fb.interaction.force += df;
-            self.interaction.update_best(&a.body, &b.body);
-            fb.interaction.update_best(&b.body, &a.body);
+        let a = &mut self.agent.write();
+        let b = &mut fb.agent.write();
+        if let Some((df, d)) = a.body.calc_force_delta(&b.body, pfs) {
+            self.temp.force -= df;
+            fb.temp.force += df;
+            self.temp.update_best(&a.body, &b.body);
+            fb.temp.update_best(&b.body, &a.body);
 
             if b.infect(a, d, pfs) {
-                self.interaction.new_n_infects = 1;
+                self.temp.new_n_infects = 1;
             }
             if a.infect(b, d, pfs) {
-                fb.interaction.new_n_infects += 1;
+                fb.temp.new_n_infects += 1;
             }
 
-            self.interaction.record_contact(&fb.agent, d, pfs);
-            fb.interaction.record_contact(&self.agent, d, pfs);
+            self.temp.record_contact(&fb.agent, d, pfs);
+            fb.temp.record_contact(&self.agent, d, pfs);
         }
     }
 }
@@ -180,21 +166,14 @@ impl Field {
             .for_each(|(_, c)| c.clear());
     }
 
-    pub fn reset_for_step(&mut self) {
-        self.table.par_iter_mut().horizontal().for_each(|(_, ags)| {
-            for fa in ags {
-                fa.reset_for_step();
-            }
-        });
-    }
-
-    pub fn steps(
+    pub fn step(
         &mut self,
         warps: &mut Warps,
         test_queue: &mut TestQueue,
         step_log: &mut StepLog,
         pfs: &ParamsForStep,
     ) {
+        self.interact(&pfs);
         let tmp = self
             .table
             .par_iter_mut()
@@ -231,7 +210,7 @@ impl Field {
         self.table[idx.clone()].push(FieldAgent::new(agent, idx));
     }
 
-    pub fn intersect(&mut self, pfs: &ParamsForStep) {
+    fn interact(&mut self, pfs: &ParamsForStep) {
         // |x|a|b|a|b|
         self.table
             .par_iter_mut()
@@ -322,13 +301,11 @@ impl Field {
         row: usize,
         column: usize,
         gat_freq: &DistInfo<Percentage>,
-        gat: &Arc<Mutex<Gathering>>,
+        gat: &Arc<RwLock<Gathering>>,
     ) {
         for fa in self.table[(row, column)].iter() {
             fa.agent
-                .0
-                .lock()
-                .unwrap()
+                .write()
                 .replace_gathering(gat_freq, Arc::downgrade(gat));
         }
     }

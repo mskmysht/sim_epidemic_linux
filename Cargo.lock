@@ -2418,6 +2418,7 @@ dependencies = [
  "csv",
  "custom_macro",
  "ipc-channel",
+ "parking_lot",
  "pico-args",
  "rand 0.8.5",
  "rand_distr",

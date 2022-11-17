@@ -149,17 +149,4 @@ impl Gaussian {
         self.gen(rng)
     }
 }
-
-static GUASSIAN: MRef<Gaussian> = Arc::new(Mutex::new(Gaussian::new()));
-
-pub struct ActivenessEffect {
-    x: f64,
-    m_x: f64,
-}
-
-impl ActivenessEffect {
-    pub fn new(x: f64, m_x: f64) -> Self {
-        Self { x, m_x }
-    }
-}
 */

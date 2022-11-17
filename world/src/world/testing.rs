@@ -46,7 +46,9 @@ impl Testee {
     }
 
     fn finish_test(self) {
-        self.agent.deliver_test_result(self.time_stamp, self.result);
+        self.agent
+            .write()
+            .deliver_test_result(self.time_stamp, self.result);
     }
 }
 

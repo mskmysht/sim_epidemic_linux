@@ -23,9 +23,11 @@ use crate::{
 
 use std::{
     f64,
-    sync::{Arc, Mutex, Weak},
+    ops::Deref,
+    sync::{Arc, Weak},
 };
 
+use parking_lot::RwLock;
 use rand::{self, Rng};
 
 const AGENT_RADIUS: f64 = 0.75;
@@ -134,29 +136,8 @@ struct AgentHealth {
 }
 
 impl AgentHealth {
-    fn force_susceptible(&mut self) {
-        self.new_state = None;
-        self.state = HealthState::Susceptible;
-    }
-
-    fn force_infected(&mut self, days_to: &DaysTo) {
-        let mut ip = InfectionParam::new(0.0, 0);
-        ip.days_infected = rand::thread_rng().gen::<f64>() * days_to.recover.min(days_to.die);
-        let d = ip.days_infected - days_to.onset;
-        let inf_mode = if d >= 0.0 {
-            ip.days_diseased = d;
-            InfMode::Sym
-        } else {
-            InfMode::Asym
-        };
-        self.state = HealthState::Infected(ip, inf_mode);
-        self.new_state = None;
-    }
-
-    fn force_recovered(&mut self, days_recovered: f64) {
-        let mut rcp = RecoverParam::new(0.0, 0);
-        rcp.days_recovered = days_recovered;
-        self.state = HealthState::Recovered(rcp);
+    pub fn reset(&mut self, state: HealthState) {
+        self.state = state;
         self.new_state = None;
     }
 
@@ -333,16 +314,11 @@ impl Body {
         (if x < 0.5 { x } else { 1.0 - x }) * 2.0
     }
 
-    fn calc_force_delta(
-        &self,
-        b: &Self,
-        wp: &WorldParams,
-        rp: &RuntimeParams,
-    ) -> Option<(Point, f64)> {
+    fn calc_force_delta(&self, b: &Self, pfs: &ParamsForStep) -> Option<(Point, f64)> {
         let delta = b.pt - self.pt;
         let d2 = (delta.x * delta.x + delta.y * delta.y).max(1e-4);
         let d = d2.sqrt();
-        let view_range = wp.view_range();
+        let view_range = pfs.wp.view_range();
         if d >= view_range {
             return None;
         }
@@ -352,7 +328,7 @@ impl Body {
         } else {
             (1.0 - d / view_range) / 0.2
         };
-        dd = dd / d / d2 * AVOIDANCE * rp.avoidance / 50.0;
+        dd = dd / d / d2 * AVOIDANCE * pfs.rp.avoidance / 50.0;
         let df = delta * dd;
 
         Some((df, d))
@@ -453,7 +429,7 @@ impl Body {
 }
 
 #[derive(Default)]
-struct AgentCore {
+pub struct AgentCore {
     pub id: usize,
     body: Body,
     pub origin: Point,
@@ -466,7 +442,7 @@ struct AgentCore {
     last_tested: Option<u64>,
 
     contacts: Contacts,
-    gathering: Weak<Mutex<Gathering>>,
+    gathering: Weak<RwLock<Gathering>>,
     n_infects: u64,
 
     activeness: f64,
@@ -514,41 +490,64 @@ impl AgentCore {
     }
 
     #[inline]
-    fn get_pt(&self) -> Point {
-        self.body.pt
+    pub fn get_pt(&self) -> &Point {
+        &self.body.pt
     }
 
-    #[inline]
     fn force_susceptible(&mut self) {
-        self.health.force_susceptible();
+        self.health.reset(HealthState::Susceptible);
     }
 
-    #[inline]
     fn force_infected(&mut self) {
-        self.health.force_infected(&self.days_to);
+        let mut ip = InfectionParam::new(0.0, 0);
+        ip.days_infected =
+            rand::thread_rng().gen::<f64>() * self.days_to.recover.min(self.days_to.die);
+        let d = ip.days_infected - self.days_to.onset;
+        let inf_mode = if d >= 0.0 {
+            ip.days_diseased = d;
+            InfMode::Sym
+        } else {
+            InfMode::Asym
+        };
+        self.health.reset(HealthState::Infected(ip, inf_mode));
     }
 
     fn force_recovered(&mut self, rp: &RuntimeParams) {
         let rng = &mut rand::thread_rng();
         self.days_to.expire_immunity = rng.gen::<f64>() * rp.imn_max_dur;
         let days_recovered = rng.gen::<f64>() * self.days_to.expire_immunity;
-        self.health.force_recovered(days_recovered);
+        let mut rcp = RecoverParam::new(0.0, 0);
+        rcp.days_recovered = days_recovered;
+        self.health.reset(HealthState::Recovered(rcp));
     }
 
-    fn reserve_test(&mut self, a: Agent, reason: TestReason, pfs: &ParamsForStep) -> Testee {
+    pub fn reserve_test(
+        &mut self,
+        a: Agent,
+        reason: TestReason,
+        pfs: &ParamsForStep,
+    ) -> Option<Testee> {
+        if !self.is_testable(pfs) {
+            return None;
+        }
         self.test_reserved = true;
         let rng = &mut rand::thread_rng();
-        let p = if let Some(ip) = self.health.get_infected() {
-            rng.gen::<f64>()
-                < 1.0
-                    - (1.0 - pfs.rp.tst_sens.r()).powf(pfs.vr_info[ip.virus_variant].reproductivity)
-        } else {
-            rng.gen::<f64>() > pfs.rp.tst_spec.r()
+        let result = {
+            let b = if let Some(ip) = self.health.get_infected() {
+                // P(U < 1 - (1-p)^x) = 1 - (1-p)^x = P(U > (1-p)^x)
+                random::at_least_once_hit_in(
+                    pfs.vr_info[ip.virus_variant].reproductivity,
+                    pfs.rp.tst_sens.r(),
+                )
+            } else {
+                rng.gen::<f64>() > pfs.rp.tst_spec.r()
+            };
+            b.into()
         };
-        Testee::new(a, reason, p.into(), pfs.rp.step)
+        Some(Testee::new(a, reason, result, pfs.rp.step))
     }
 
-    fn deliver_test_result(&mut self, time_stamp: u64, result: TestResult) {
+    pub fn deliver_test_result(&mut self, time_stamp: u64, result: TestResult) {
         self.test_reserved = false;
         self.last_tested = Some(time_stamp);
         if let TestResult::Positive = result {
@@ -556,19 +555,18 @@ impl AgentCore {
         }
     }
 
-    fn is_testable(&self, wp: &WorldParams, rp: &RuntimeParams) -> bool {
+    fn is_testable(&self, pfs: &ParamsForStep) -> bool {
         if !self.is_in_field() || self.test_reserved
         /*|| todo!("self.for_vcn == VcnNoTest") */
         {
             return false;
         }
 
-        match self.last_tested {
-            Some(d) => {
-                let ds = (rp.step - d) as f64;
-                ds >= rp.tst_interval * wp.steps_per_day()
-            }
-            None => true,
+        if let Some(d) = self.last_tested {
+            let ds = (pfs.rp.step - d) as f64;
+            ds >= pfs.rp.tst_interval * pfs.wp.steps_per_day()
+        } else {
+            true
         }
     }
 
@@ -603,22 +601,22 @@ impl AgentCore {
     fn calc_gathering_effect(&self) -> (Option<Point>, Option<f64>) {
         match self.gathering.upgrade() {
             None => (None, None),
-            Some(gat) => gat.lock().unwrap().get_effect(&self.body.pt),
+            Some(gat) => gat.read().get_effect(&self.body.pt),
         }
     }
 
-    fn check_test(&self, wp: &WorldParams, rp: &RuntimeParams) -> Option<TestReason> {
-        if !self.is_testable(wp, rp) {
+    fn check_test(&self, pfs: &ParamsForStep) -> Option<TestReason> {
+        if !self.is_testable(pfs) {
             return None;
         }
         if let Some(ip) = self.health.get_symptomatic() {
-            if ip.days_diseased >= rp.tst_delay
-                && random::at_least_once_hit_in(wp.days_per_step(), rp.tst_sbj_sym.r())
+            if ip.days_diseased >= pfs.rp.tst_delay
+                && random::at_least_once_hit_in(pfs.wp.days_per_step(), pfs.rp.tst_sbj_sym.r())
             {
                 return Some(TestReason::AsSymptom);
             }
         }
-        if random::at_least_once_hit_in(wp.days_per_step(), rp.tst_sbj_asy.r()) {
+        if random::at_least_once_hit_in(pfs.wp.days_per_step(), pfs.rp.tst_sbj_asy.r()) {
             return Some(TestReason::AsSuspected);
         }
         None
@@ -730,8 +728,8 @@ impl AgentCore {
 
     fn quarantine(
         &mut self,
-        pfs: &ParamsForStep,
         contact_testees: &mut Option<Vec<Testee>>,
+        pfs: &ParamsForStep,
     ) -> Option<WarpParam> {
         if !self.quarantine_reserved {
             return None;
@@ -817,7 +815,7 @@ impl AgentCore {
     fn replace_gathering(
         &mut self,
         gat_freq: &DistInfo<Percentage>,
-        gathering: Weak<Mutex<Gathering>>,
+        gathering: Weak<RwLock<Gathering>>,
     ) {
         if !self.health.is_symptomatic()
             && rand::thread_rng().gen::<f64>() < random::modified_prob(self.gat_freq, gat_freq).r()
@@ -838,10 +836,11 @@ impl AgentCore {
 }
 
 #[derive(Clone)]
-pub struct Agent(Arc<Mutex<AgentCore>>);
+pub struct Agent(Arc<RwLock<AgentCore>>);
+
 impl Agent {
     pub fn new() -> Self {
-        Agent(Arc::new(Mutex::new(AgentCore::default())))
+        Agent(Arc::new(RwLock::new(AgentCore::default())))
     }
 
     pub fn reset_all(
@@ -899,7 +898,7 @@ impl Agent {
 
         let mut n_symptomatic = 0;
         for (i, h) in cats.iter_mut().enumerate() {
-            let mut a = agents[i].0.lock().unwrap();
+            let mut a = agents[i].0.write();
             a.reset(wp, rp, i, i < n_dist);
             match h {
                 HealthType::Susceptible => a.force_susceptible(),
@@ -917,32 +916,21 @@ impl Agent {
         (cats, n_symptomatic)
     }
 
-    pub fn reserve_test(&self, pfs: &ParamsForStep) -> Option<Testee> {
-        let mut a = self.0.lock().unwrap();
-        if a.is_testable(pfs.wp, pfs.rp) {
-            Some(a.reserve_test(self.clone(), TestReason::AsContact, pfs))
-        } else {
-            None
-        }
-    }
+    // pub fn reserve_test(&self, pfs: &ParamsForStep) -> Option<Testee> {
+    //     let mut a = self.0.write();
+    //     if a.is_testable(pfs.wp, pfs.rp) {
+    //         Some(a.reserve_test(self.clone(), TestReason::AsContact, pfs))
+    //     } else {
+    //         None
+    //     }
+    // }
+}
 
-    pub fn deliver_test_result(&self, time_stamp: u64, result: TestResult) {
-        self.0
-            .lock()
-            .unwrap()
-            .deliver_test_result(time_stamp, result);
-    }
+impl Deref for Agent {
+    type Target = Arc<RwLock<AgentCore>>;
 
-    fn set_location(&self, location: Location) {
-        self.0.lock().unwrap().location = location;
-    }
-
-    pub fn get_origin(&self) -> Point {
-        self.0.lock().unwrap().origin
-    }
-
-    pub fn get_pt(&self) -> Point {
-        self.0.lock().unwrap().get_pt()
+    fn deref(&self) -> &Self::Target {
+        &self.0
     }
 }
 
@@ -958,7 +946,7 @@ pub enum Location {
 trait LocationLabel {
     const LABEL: Location;
     fn label(agent: Agent) -> Agent {
-        agent.set_location(Self::LABEL);
+        agent.write().location = Self::LABEL;
         agent
     }
 }

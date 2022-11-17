@@ -1,4 +1,4 @@
-use super::{warp::Warps, Agent, AgentCore, Location, LocationLabel, ParamsForStep, WarpParam};
+use super::{warp::Warps, Agent, Location, LocationLabel, ParamsForStep, WarpParam};
 use crate::{log::HealthDiff, log::StepLog, stat::HistInfo, util::DrainMap};
 
 pub struct HospitalStepInfo {
@@ -22,16 +22,9 @@ impl HospitalAgent {
     }
 
     fn step(&mut self, pfs: &ParamsForStep) -> (HospitalStepInfo, Option<WarpParam>) {
-        fn local_step(
-            agent: &mut AgentCore,
-            hist: &mut Option<HistInfo>,
-            pfs: &ParamsForStep,
-        ) -> Option<WarpParam> {
-            agent.hospital_step(hist, pfs)
-        }
-        let agent = &mut self.agent.0.lock().unwrap();
+        let agent = &mut self.agent.write();
         let mut hist = None;
-        let warp = local_step(agent, &mut hist, pfs);
+        let warp = agent.hospital_step(&mut hist, pfs);
         (
             HospitalStepInfo {
                 hist,
@@ -57,7 +50,7 @@ impl Hospital {
         self.0.push(HospitalAgent::new(agent));
     }
 
-    pub fn steps(&mut self, warps: &mut Warps, step_log: &mut StepLog, pfs: &ParamsForStep) {
+    pub fn step(&mut self, warps: &mut Warps, step_log: &mut StepLog, pfs: &ParamsForStep) {
         let tmp = self.0.drain_map_mut(|ha| ha.step(pfs));
 
         for (hsi, opt) in tmp.into_iter() {
