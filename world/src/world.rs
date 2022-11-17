@@ -112,18 +112,16 @@ impl World {
                 HealthType::Symptomatic if n_q_symptomatic > 0 => {
                     n_q_symptomatic -= 1;
                     self.hospital.add(a);
-                    continue;
                 }
                 HealthType::Asymptomatic if n_q_asymptomatic > 0 => {
                     n_q_asymptomatic -= 1;
                     self.hospital.add(a);
-                    continue;
                 }
-                _ => {}
+                _ => {
+                    let idx = self.world_params.into_grid_index(&a.get_pt());
+                    self.field.add(a, idx);
+                }
             }
-
-            let idx = self.world_params.into_grid_index(&a.get_pt());
-            self.field.add(a, idx);
         }
 
         // reset test queue
@@ -515,14 +513,6 @@ pub fn spawn_world(
             }
         })?;
 
-    // thread::spawn(move || {
-    //     if let Ok(id) = handle.join() {
-    //         println!("[info] Delete world {id}.");
-    //         res_status!(ok_);
-    //     } else {
-    //         // drop_tx.send(()).unwrap();
-    //     }
-    // });
     Ok((handle, status))
 }
 

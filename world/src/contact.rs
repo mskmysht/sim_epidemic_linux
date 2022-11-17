@@ -23,7 +23,7 @@ impl Contacts {
             .drain(..)
             .filter_map(|ci| {
                 if pfs.rp.step - ci.time_stamp < retention_steps {
-                    ci.agent.try_reserve_test(pfs)
+                    ci.agent.reserve_test(pfs)
                 } else {
                     None
                 }
