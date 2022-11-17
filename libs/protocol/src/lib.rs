@@ -1,3 +1,6 @@
+pub mod parse;
+pub mod quic;
+
 use std::io;
 
 pub fn deserialize<D: for<'a> serde::Deserialize<'a>>(data: &[u8]) -> bincode::Result<D> {
@@ -16,7 +19,6 @@ where
     let data = serialize(value).expect("Failed to serialize");
     writer.write(&data.len().to_ne_bytes())?;
     writer.write(&data)
-    // writer.flush()?; Ok(data.len())
 }
 
 pub fn read_data<T, R>(reader: &mut R) -> io::Result<T>

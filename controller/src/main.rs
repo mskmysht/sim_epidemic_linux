@@ -1,57 +1,39 @@
-use container::interface::{
-    socket::{self, Request},
-    stdio,
+use poem::{
+    endpoint::make_sync, listener::TcpListener, middleware::Cors, web::Html, EndpointExt, Route,
 };
-use std::{
-    error,
-    net::{Ipv4Addr, SocketAddrV4, TcpStream},
-    ops,
-};
+use poem_openapi::{param::Query, payload::PlainText, OpenApi, OpenApiService, Tags};
 
-#[argopt::cmd]
-fn main(container1: Ipv4Addr, /*, container2: Ipv4Addr */) -> Result<(), Box<dyn error::Error>> {
-    if let Ok(stream) = TcpStream::connect(SocketAddrV4::new(container1, 8080)) {
-        println!("Connected to the server!");
-        stdio::input_loop(MyListener(stream, "container-1"));
-    } else {
-        println!("Couldn't connect to server...");
-    }
-    Ok(())
+#[derive(Tags)]
+enum ApiTags {
+    /// Operations about job
+    Job,
 }
 
-struct MyListener<'a>(TcpStream, &'a str);
+struct JobApi;
 
-impl<'a> stdio::Listener<()> for MyListener<'a> {
-    type Arg = stdio::Command;
-
-    fn callback(&mut self, arg: Self::Arg) -> ops::ControlFlow<()> {
-        let req = match arg {
-            stdio::Command::None => return ops::ControlFlow::Continue(()),
-            stdio::Command::Quit => return ops::ControlFlow::Break(()),
-            stdio::Command::List => Request::List,
-            stdio::Command::New => Request::New,
-            stdio::Command::Info(id) => Request::Info(id),
-            stdio::Command::Delete(id) => Request::Delete(id),
-            stdio::Command::Msg(_, _) => todo!(),
-        };
-
-        match comm::write_data(&mut self.0, &req) {
-            Ok(n) => eprintln!("[info] sent {n} bytes data"),
-            Err(e) => {
-                eprintln!("[error] {e:?}");
-                return ops::ControlFlow::Break(());
-            }
+#[OpenApi(prefix_path = "/user", tag = "ApiTags::Job")]
+impl JobApi {
+    #[oai(path = "/hello", method = "get")]
+    async fn index(&self, name: Query<Option<String>>) -> PlainText<String> {
+        match name.0 {
+            Some(name) => PlainText(format!("hello, {}!", name)),
+            None => PlainText("hello!".to_string()),
         }
-        match comm::read_data::<socket::Response, _>(&mut self.0) {
-            Ok(res) => {
-                println!("{res:?}");
-            }
-            Err(e) => {
-                eprintln!("[error] {e:?}");
-                return ops::ControlFlow::Break(());
-            }
-        }
-
-        ops::ControlFlow::Continue(())
     }
+}
+
+#[tokio::main]
+async fn main() -> Result<(), std::io::Error> {
+    let api_service =
+        OpenApiService::new(JobApi, "Hello World", "1.0").server("http://localhost:3000/api");
+    let spec = api_service.spec_endpoint();
+    let app = Route::new()
+        .nest("/api", api_service)
+        .nest("/spec.json", spec)
+        .at("/", make_sync(|_| Html(include_str!("index.html"))))
+        .with(Cors::new());
+
+    poem::Server::new(TcpListener::bind("0.0.0.0:3000"))
+        .run(app)
+        .await
 }

@@ -1,40 +1,104 @@
-use container::interface::{socket::event, stdio, WorldManager};
+use container::world::WorldManager;
+use futures_util::StreamExt;
+use parking_lot::Mutex;
+use quinn::{Endpoint, ServerConfig};
 use std::{
-    io,
-    net::{Ipv4Addr, SocketAddrV4, TcpListener},
+    error::Error,
+    net::{Ipv4Addr, SocketAddr, SocketAddrV4, TcpListener},
+    sync::Arc,
 };
 
-fn main() {
-    let mut pargs = pico_args::Arguments::from_env();
-    let world_path = pargs.value_from_str("--world-path").unwrap();
-    if pargs.contains("-c") {
-        stdio::input_loop(stdio::StdListener::new(world_path));
-    } else {
-        connect(world_path).unwrap();
-    }
+type DynResult<T> = Result<T, Box<dyn Error>>;
+
+#[argopt::cmd_group(commands = [gen, start_tcp, start])]
+fn main() -> DynResult<()> {}
+
+#[argopt::subcmd]
+fn gen(
+    /// subject alternative names
+    #[opt(long)]
+    names: Vec<String>,
+) -> DynResult<()> {
+    println!("{names:?}");
+    let cert = rcgen::generate_simple_self_signed(names)?;
+    security::dump_ca_cert_der(&cert.serialize_der()?)?;
+    security::dump_ca_pkey_der(&cert.serialize_private_key_der())?;
+    println!("successfully generated a certificate & a private key.");
+    Ok(())
 }
 
-fn connect(world_path: String) -> io::Result<()> {
+#[argopt::subcmd]
+fn start_tcp(
+    /// world binary path
+    #[opt(long)]
+    world_path: String,
+) -> DynResult<()> {
+    run_tcp(world_path)
+}
+
+#[argopt::subcmd]
+fn start(
+    /// world binary path
+    #[opt(long)]
+    world_path: String,
+    /// world binary path
+    #[opt(long)]
+    addr: SocketAddr,
+) -> DynResult<()> {
+    let rt = tokio::runtime::Runtime::new()?;
+    rt.block_on(run(world_path, addr))
+}
+
+fn config_server() -> DynResult<ServerConfig> {
+    let cert = rustls::Certificate(security::load_ca_cert_der()?);
+    let key = rustls::PrivateKey(security::load_ca_pkey_der()?);
+    Ok(ServerConfig::with_single_cert(vec![cert], key)?)
+}
+
+async fn run(world_path: String, addr: SocketAddr) -> DynResult<()> {
+    let (_, mut incoming) = Endpoint::server(config_server()?, addr)?;
+    let manager = Arc::new(Mutex::new(WorldManager::new(world_path)));
+
+    while let Some(conn) = incoming.next().await {
+        let ip = conn.remote_address().to_string();
+        println!("[info] Acceept {}", ip);
+
+        let mut new_conn = conn.await?;
+        while let Some(Ok((mut send, mut recv))) = new_conn.bi_streams.next().await {
+            let manager = Arc::clone(&manager);
+            tokio::spawn(async move {
+                let req = protocol::quic::read_data(&mut recv).await.unwrap();
+                println!("[request] {req:?}");
+                let res = manager.lock().callback(req);
+                println!("[response] {res:?}");
+                protocol::quic::write_data(&mut send, &res).await.unwrap();
+            });
+        }
+        println!("[info] Disconnect {}", ip);
+    }
+    Ok(())
+}
+
+fn run_tcp(world_path: String) -> DynResult<()> {
     let listener = TcpListener::bind(SocketAddrV4::new(Ipv4Addr::UNSPECIFIED, 8080))?;
     let mut manager = WorldManager::new(world_path);
-    loop {
-        match listener.accept() {
-            Ok((mut stream, addr)) => {
-                {
-                    let stream = stream.try_clone()?;
-                    ctrlc::set_handler(move || {
-                        println!("Shutting down a stream ...");
-                        stream.shutdown(std::net::Shutdown::Both).unwrap();
-                        println!("Done.");
-                        std::process::exit(0);
-                    })
-                    .expect("Error setting Ctrl-C handler");
-                }
-                println!("[info] Acceept {addr}");
-                event::event_loop(&mut stream, &mut manager);
-                println!("[info] Disconnect {addr}");
+    for stream in listener.incoming() {
+        let mut stream = stream?;
+        let addr = stream.peer_addr()?.to_string();
+        println!("[info] Acceept {addr}");
+        loop {
+            let req = match protocol::read_data(&mut stream) {
+                Ok(req) => req,
+                Err(_) => break,
+            };
+            println!("[request] {req:?}");
+            let res = manager.callback(req);
+            println!("[response] {res:?}");
+            if let Err(e) = protocol::write_data(&mut stream, &res) {
+                eprintln!("{e}");
             }
-            Err(e) => println!("{e:?}"),
         }
+        println!("[info] Disconnect {addr}");
     }
+    Ok(())
 }

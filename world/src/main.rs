@@ -27,7 +27,7 @@ fn main() {
     let (stream_tx, stream_rx) = ipc::channel().unwrap();
     let tx = IpcSender::connect(args.server_name).unwrap();
     let (handle, status) = world::spawn_world(args.id, stream_tx, req_rx, res_tx).unwrap();
-    tx.send(world::WorldInfo::new(req_tx, res_rx, stream_rx, status))
+    tx.send(world_if::WorldInfo::new(req_tx, res_rx, stream_rx, status))
         .unwrap();
     let id = match handle.join() {
         Ok(id) => id,

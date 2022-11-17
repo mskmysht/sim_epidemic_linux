@@ -6,6 +6,15 @@ edition = "2021"
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 
 [dependencies]
-comm = { path = "../comm" }
-container = { path = "../container" }
+container-if = { path = "../libs/container-if" }
+protocol = { path = "../libs/protocol" }
+world-if = { path = "../libs/world-if" }
+security = { path = "../libs/security" }
+repl = { path = "../libs/repl" }
+async-trait = "0.1"
 argopt = "0.3"
+quinn = "0.8"
+rustls = "0.20"
+tokio = { version = "1.21", features = ["full"] }
+poem = "1"
+poem-openapi = { version = "2", features = ["rapidoc"] }
