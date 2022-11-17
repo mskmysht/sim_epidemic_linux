@@ -3,8 +3,10 @@ use crate::{
     stat::{HistInfo, InfectionCntInfo},
     util::enum_map::{Enum, EnumMap},
 };
-use csv::Writer;
+
 use std::{collections::VecDeque, error, fmt::Display};
+
+use csv::Writer;
 
 #[derive(Default)]
 pub struct StepLog {

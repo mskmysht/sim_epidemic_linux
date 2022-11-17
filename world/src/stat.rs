@@ -1,9 +1,11 @@
 use crate::{
-    commons::HealthType,
-    testing::{TestReason, TestResult},
     util::{
         enum_map::{Enum, EnumMap},
         UnionMap,
+    },
+    world::{
+        commons::HealthType,
+        testing::{TestReason, TestResult},
     },
 };
 

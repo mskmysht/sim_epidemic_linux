@@ -4,6 +4,7 @@ use crate::util::{
     random::DistInfo,
     table::TableIndex,
 };
+
 use rand::Rng;
 
 #[derive(Debug)]
@@ -229,4 +230,77 @@ pub enum WrkPlcMode {
     WrkPlcUniform,
     WrkPlcCentered,
     //[todo] WrkPlcPopDistImg,
+}
+
+pub struct VariantInfo {
+    pub reproductivity: f64,
+    pub toxicity: f64,
+    pub efficacy: Vec<f64>,
+}
+
+impl VariantInfo {
+    fn new(reproductivity: f64, toxicity: f64, efficacy: Vec<f64>) -> Self {
+        Self {
+            reproductivity,
+            toxicity,
+            efficacy,
+        }
+    }
+
+    pub fn default_list() -> Vec<Self> {
+        vec![VariantInfo::new(1.0, 1.0, vec![1.0])]
+    }
+}
+
+pub struct VaccineInfo {
+    pub interval: usize,
+    pub efficacy: Vec<f64>,
+}
+
+impl VaccineInfo {
+    fn new(interval: usize, efficacy: Vec<f64>) -> Self {
+        Self { interval, efficacy }
+    }
+
+    pub fn default_list() -> Vec<Self> {
+        vec![VaccineInfo::new(21, vec![1.0])]
+    }
+}
+
+pub struct ParamsForStep<'a> {
+    pub wp: &'a WorldParams,
+    pub rp: &'a RuntimeParams,
+    pub vr_info: &'a [VariantInfo],
+    pub vx_info: &'a [VaccineInfo],
+    go_home_back: bool,
+}
+
+impl<'a> ParamsForStep<'a> {
+    pub fn new(
+        wp: &'a WorldParams,
+        rp: &'a RuntimeParams,
+        vr_info: &'a [VariantInfo],
+        vx_info: &'a [VaccineInfo],
+    ) -> Self {
+        ParamsForStep {
+            rp,
+            wp,
+            vr_info,
+            vx_info,
+            go_home_back: wp.wrk_plc_mode != WrkPlcMode::WrkPlcNone && Self::is_daytime(wp, rp),
+        }
+    }
+
+    pub fn go_home_back(&self) -> bool {
+        self.go_home_back
+        //[todo] wp.wrk_plc_mode != WrkPlcMode::WrkPlcNone && self.is_daytime()
+    }
+
+    fn is_daytime(wp: &WorldParams, rp: &RuntimeParams) -> bool {
+        if wp.steps_per_day < 3 {
+            rp.step % 2 == 0
+        } else {
+            rp.step % wp.steps_per_day < wp.steps_per_day * 2 / 3
+        }
+    }
 }

@@ -1,7 +1,5 @@
-use crate::{
-    agent::{Agent, ParamsForStep},
-    testing::Testee,
-};
+use super::{agent::Agent, commons::ParamsForStep, testing::Testee};
+
 use std::collections::VecDeque;
 
 /// a vector guarantees the ascending order of `time_stamp`

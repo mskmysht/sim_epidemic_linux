@@ -1,15 +1,20 @@
-use crate::agent::{location::Field, Agent};
-use crate::commons::{RuntimeParams, WorldParams, WrkPlcMode};
+use super::{
+    super::commons::{RuntimeParams, WorldParams, WrkPlcMode},
+    field::Field,
+    Agent,
+};
 use crate::util::{
     math::{self, Point},
     random,
 };
-use rand::{seq::SliceRandom, Rng};
-use rayon::iter::{IntoParallelIterator, ParallelIterator};
+
 use std::{
     f64, ops,
     sync::{Arc, Mutex},
 };
+
+use rand::{seq::SliceRandom, Rng};
+use rayon::iter::{IntoParallelIterator, ParallelIterator};
 
 const SURROUND: f64 = 5.;
 const GATHERING_FORCE: f64 = 5.;

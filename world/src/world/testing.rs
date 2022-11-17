@@ -1,9 +1,9 @@
-use crate::{
-    agent::{Agent, ParamsForStep},
-    util::enum_map::{Enum, EnumMap},
-};
-use rand::Rng;
+use super::{agent::Agent, commons::ParamsForStep};
+use crate::util::enum_map::{Enum, EnumMap};
+
 use std::collections::VecDeque;
+
+use rand::Rng;
 
 #[derive(Eq, PartialEq, Clone, Enum, Debug)]
 pub enum TestReason {

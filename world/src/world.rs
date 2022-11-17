@@ -1,25 +1,34 @@
-use chrono::{serde::ts_seconds, Local};
-use ipc_channel::ipc::{IpcReceiver, IpcSender};
-use serde::{Deserialize, Serialize};
+mod agent;
+pub(super) mod commons;
+mod contact;
+pub(super) mod testing;
 
-use crate::{
+use self::{
     agent::{
-        location::{Cemetery, Field, Hospital, Warps},
-        Agent, ParamsForStep, VaccineInfo, VariantInfo,
+        cemetery::Cemetery, field::Field, gathering::Gatherings, hospital::Hospital, warp::Warps,
+        Agent,
     },
-    commons::{HealthType, RuntimeParams, WorldParams, WrkPlcMode},
-    gathering::Gatherings,
-    log::StepLog,
+    commons::{
+        HealthType, ParamsForStep, RuntimeParams, VaccineInfo, VariantInfo, WorldParams, WrkPlcMode,
+    },
     testing::TestQueue,
+};
+use crate::{
+    log::StepLog,
     util::{enum_map::EnumMap, math::Point, random::DistInfo},
 };
+
 use std::{
-    error, f64, fmt, io,
+    error, f64, io,
     thread::{self, JoinHandle},
     time::{SystemTime, UNIX_EPOCH},
     usize,
 };
+
 use world_if::{ErrorStatus, LoopMode, Request, Response, WorldStatus};
+
+use chrono::Local;
+use ipc_channel::ipc::{IpcReceiver, IpcSender};
 
 struct World {
     id: String,
@@ -35,7 +44,7 @@ struct World {
     //[todo] predicate_to_stop: bool,
     step_log: StepLog,
     scenario_index: i32,
-    scenario: Vec<i32>, //[todo] Vec<Scenario>
+    //[todo] scenario: Vec<i32>,
     gatherings: Gatherings,
     gat_spots_fixed: Vec<Point>,
     //[todo] n_mesh: usize,
@@ -54,7 +63,6 @@ impl World {
             is_finished: false,
             step_log: StepLog::default(),
             scenario_index: 0,
-            scenario: Vec::new(),
             gatherings: Gatherings::new(),
             variant_info: VariantInfo::default_list(),
             vaccine_info: VaccineInfo::default_list(),
@@ -136,10 +144,6 @@ impl World {
         //[todo] self.exec_scenario();
 
         self.is_finished = false;
-    }
-
-    fn exec_scenario(&mut self) {
-        todo!("execute scenario");
     }
 
     fn do_one_step(&mut self) {

@@ -16,9 +16,13 @@ impl<T> DistInfo<T> {
     }
 }
 
+pub fn at_least_once_hit_in(shots: f64, prob: f64) -> bool {
+    rand::thread_rng().gen::<f64>() > (1.0 - prob).powf(shots)
+}
+
 static EXP_BASE: f64 = 0.02;
 
-pub fn revise_prob(x: f64, mode: f64) -> f64 {
+fn revise_prob(x: f64, mode: f64) -> f64 {
     let a = mode / (1.0 - mode);
     a * x / ((a - 1.0) * x + 1.0)
 }
