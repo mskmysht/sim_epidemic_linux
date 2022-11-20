@@ -1,5 +1,10 @@
 use super::{warp::Warps, Agent, Location, LocationLabel, ParamsForStep, WarpParam};
-use crate::{log::HealthDiff, log::StepLog, stat::HistInfo, util::DrainMap};
+use crate::{
+    log::HealthDiff,
+    log::StepLog,
+    stat::HistInfo,
+    util::{math::Point, DrainMap},
+};
 
 pub struct HospitalStepInfo {
     hist: Option<HistInfo>,
@@ -8,6 +13,7 @@ pub struct HospitalStepInfo {
 
 pub struct HospitalAgent {
     agent: Agent,
+    back_to: Point,
 }
 
 impl LocationLabel for HospitalAgent {
@@ -15,20 +21,21 @@ impl LocationLabel for HospitalAgent {
 }
 
 impl HospitalAgent {
-    fn new(agent: Agent) -> Self {
+    fn new(agent: Agent, back_to: Point) -> Self {
         Self {
             agent: Self::label(agent),
+            back_to,
         }
     }
 
     fn step(&mut self, pfs: &ParamsForStep) -> (HospitalStepInfo, Option<WarpParam>) {
         let agent = &mut self.agent.write();
         let mut hist = None;
-        let warp = agent.hospital_step(&mut hist, pfs);
+        let warp = agent.hospital_step(&mut hist, self.back_to, pfs);
         (
             HospitalStepInfo {
                 hist,
-                health: agent.update_health(),
+                health: agent.health.update(),
             },
             warp,
         )
@@ -46,8 +53,8 @@ impl Hospital {
         self.0.clear();
     }
 
-    pub fn add(&mut self, agent: Agent) {
-        self.0.push(HospitalAgent::new(agent));
+    pub fn add(&mut self, agent: Agent, back_to: Point) {
+        self.0.push(HospitalAgent::new(agent, back_to));
     }
 
     pub fn step(&mut self, warps: &mut Warps, step_log: &mut StepLog, pfs: &ParamsForStep) {

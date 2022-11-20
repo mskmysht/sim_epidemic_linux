@@ -10,8 +10,9 @@ use super::{
 };
 use crate::util::DrainWith;
 
+#[derive(Default)]
 struct WarpStepInfo {
-    contact_testees: Option<Vec<Testee>>,
+    contacted_testees: Option<Vec<Testee>>,
 }
 
 pub struct WarpAgent {
@@ -33,16 +34,15 @@ impl WarpAgent {
 
     fn step(&mut self, pfs: &ParamsForStep) -> (WarpStepInfo, bool) {
         let mut agent = self.agent.write();
-        let mut contact_testees = None;
+        let mut wsi = WarpStepInfo::default();
         if let WarpMode::Inside = self.param.mode {
-            match agent.quarantine(&mut contact_testees, pfs) {
-                Some(w) => self.param = w,
-                _ => {}
+            if let Some(w) = agent.check_quarantine(&mut wsi.contacted_testees, pfs) {
+                self.param = w;
             }
         }
         let at_goal = agent.body.warp_update(self.param.goal, pfs.wp);
 
-        (WarpStepInfo { contact_testees }, at_goal)
+        (wsi, at_goal)
     }
 }
 
@@ -71,7 +71,7 @@ impl Warps {
     ) {
         let tmp = self.0.drain_with_mut(|a| a.step(pfs));
         for (wsi, opt) in tmp.into_iter() {
-            if let Some(testees) = wsi.contact_testees {
+            if let Some(testees) = wsi.contacted_testees {
                 test_queue.extend(testees);
             }
             if let Some(wa) = opt {
@@ -82,7 +82,7 @@ impl Warps {
                 match mode {
                     WarpMode::Back => field.add(agent, pfs.wp.into_grid_index(&goal)),
                     WarpMode::Inside => field.add(agent, pfs.wp.into_grid_index(&goal)),
-                    WarpMode::Hospital => hospital.add(agent),
+                    WarpMode::Hospital(back_to) => hospital.add(agent, back_to),
                     WarpMode::Cemetery => cemetery.add(agent),
                 }
             }

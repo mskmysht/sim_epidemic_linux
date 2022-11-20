@@ -60,8 +60,9 @@ impl LocationLabel for FieldAgent {
     const LABEL: Location = Location::Field;
 }
 
+#[derive(Default)]
 pub struct FieldStepInfo {
-    contact_testees: Option<Vec<Testee>>,
+    contacted_testees: Option<Vec<Testee>>,
     testee: Option<Testee>,
     hist: Option<HistInfo>,
     infct: Option<InfectionCntInfo>,
@@ -77,50 +78,33 @@ impl FieldAgent {
         }
     }
 
-    fn reset_temp(&mut self) {
-        self.temp = TempParam::default();
-    }
-
     fn step(
         &mut self,
         pfs: &ParamsForStep,
     ) -> (FieldStepInfo, Option<Either<WarpParam, TableIndex>>) {
+        let temp = std::mem::replace(&mut self.temp, TempParam::default());
+        let mut fsi = FieldStepInfo::default();
         let mut agent = self.agent.write();
-        let mut hist = None;
-        let mut contact_testees = None;
-        let mut test_reason = None;
         let transfer = 'block: {
             let agent = agent.deref_mut();
-            if let Some(w) = agent.quarantine(&mut contact_testees, pfs) {
+            if let Some(w) = agent.check_quarantine(&mut fsi.contacted_testees, pfs) {
                 break 'block Some(Either::Left(w));
             }
-            if let Some(w) = agent.field_step(&mut hist, pfs) {
+            if let Some(w) = agent.field_step(&mut fsi.hist, pfs) {
                 break 'block Some(Either::Left(w));
             }
-            test_reason = agent.check_test(pfs);
             if let Some(w) = agent.warp_inside(pfs) {
                 break 'block Some(Either::Left(w));
             }
             agent
-                .move_internal(self.temp.force, &self.temp.best, &self.idx, pfs)
+                .move_internal(temp.force, temp.best, &self.idx, pfs)
                 .map(Either::Right)
         };
 
-        agent
-            .contacts
-            .append(&mut self.temp.new_contacts, pfs.rp.step);
-
-        let fsi = FieldStepInfo {
-            contact_testees,
-            testee: test_reason
-                .and_then(|reason| agent.reserve_test(self.agent.clone(), reason, pfs)),
-            hist,
-            infct: agent.update_n_infects(self.temp.new_n_infects),
-            health: agent.update_health(),
-        };
-
-        drop(agent);
-        self.reset_temp();
+        agent.contacts.append(temp.new_contacts, pfs.rp.step);
+        fsi.infct = agent.log.update_n_infects(temp.new_n_infects);
+        fsi.health = agent.health.update();
+        fsi.testee = self.agent.reserve_test(pfs, |a| a.check_test_in_field(pfs));
 
         (fsi, transfer)
     }
@@ -191,7 +175,7 @@ impl Field {
             if let Some(i) = fsi.infct {
                 step_log.infcts.push(i);
             }
-            if let Some(testees) = fsi.contact_testees {
+            if let Some(testees) = fsi.contacted_testees {
                 test_queue.extend(testees);
             }
             if let Some(testee) = fsi.testee {

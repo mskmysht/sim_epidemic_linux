@@ -13,21 +13,25 @@ pub struct Contacts(VecDeque<ContactInfo>);
 impl Contacts {
     const RETENTION_PERIOD: u64 = 14; // two weeks
 
-    pub fn append(&mut self, agents: &mut Vec<Agent>, step: u64) {
-        for agent in agents.drain(..) {
+    pub fn append(&mut self, agents: Vec<Agent>, step: u64) {
+        for agent in agents.into_iter() {
             self.0.push_back(ContactInfo::new(agent, step))
         }
     }
 
-    pub fn get_testees(&mut self, pfs: &ParamsForStep) -> Vec<Testee> {
+    pub fn drain_testees(&mut self, pfs: &ParamsForStep) -> Vec<Testee> {
         let retention_steps = pfs.wp.steps_per_day * Self::RETENTION_PERIOD;
         self.0
             .drain(..)
             .filter_map(|ci| {
                 if pfs.rp.step - ci.time_stamp < retention_steps {
-                    ci.agent
-                        .write()
-                        .reserve_test(ci.agent.clone(), TestReason::AsContact, pfs)
+                    ci.agent.reserve_test(pfs, |a| {
+                        if a.is_in_field() {
+                            Some(TestReason::AsContact)
+                        } else {
+                            None
+                        }
+                    })
                 } else {
                     None
                 }

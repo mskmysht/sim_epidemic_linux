@@ -116,19 +116,21 @@ impl World {
         let mut n_q_asymptomatic =
             ((n_infected - n_symptomatic) as f64 * self.world_params.q_asymptomatic.r()) as u64;
         for (i, t) in cats.into_iter().enumerate() {
-            let a = self.agents[i].clone();
+            let agent = self.agents[i].clone();
             match t {
                 HealthType::Symptomatic if n_q_symptomatic > 0 => {
                     n_q_symptomatic -= 1;
-                    self.hospital.add(a);
+                    let back_to = agent.read().get_back_to();
+                    self.hospital.add(agent, back_to);
                 }
                 HealthType::Asymptomatic if n_q_asymptomatic > 0 => {
                     n_q_asymptomatic -= 1;
-                    self.hospital.add(a);
+                    let back_to = agent.read().get_back_to();
+                    self.hospital.add(agent, back_to);
                 }
                 _ => {
-                    let idx = self.world_params.into_grid_index(&a.read().get_pt());
-                    self.field.add(a, idx);
+                    let idx = self.world_params.into_grid_index(&agent.read().get_pt());
+                    self.field.add(agent, idx);
                 }
             }
         }

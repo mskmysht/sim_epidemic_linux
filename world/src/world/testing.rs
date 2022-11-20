@@ -31,24 +31,29 @@ impl From<bool> for TestResult {
 pub struct Testee {
     agent: Agent,
     reason: TestReason,
-    result: TestResult,
+    // result: TestResult,
     time_stamp: u64,
 }
 
 impl Testee {
-    pub fn new(agent: Agent, reason: TestReason, result: TestResult, time_stamp: u64) -> Self {
+    pub fn new(agent: Agent, reason: TestReason, time_stamp: u64) -> Self {
         Self {
             agent,
             reason,
-            result,
+            // result,
             time_stamp,
         }
     }
 
-    fn finish_test(self) {
-        self.agent
-            .write()
-            .deliver_test_result(self.time_stamp, self.result);
+    fn conduct(self, pfs: &ParamsForStep) -> (TestReason, TestResult) {
+        (
+            self.reason,
+            self.agent.write().get_test(self.time_stamp, pfs),
+        )
+    }
+
+    fn cancel(self) {
+        self.agent.write().cancel_test();
     }
 }
 
@@ -95,21 +100,14 @@ impl TestQueue {
                 break;
             }
             let t = self.0.pop_front().unwrap();
-            if t.time_stamp > oldest {
+            if t.time_stamp > oldest && t.agent.read().is_in_field() {
                 max_tests -= 1;
-                self.deliver(t, count_reason, count_result);
+                let (reason, result) = t.conduct(pfs);
+                count_reason[&reason] += 1;
+                count_result[&result] += 1;
+            } else {
+                t.cancel();
             }
         }
-    }
-
-    fn deliver(
-        &mut self,
-        t: Testee,
-        count_reason: &mut EnumMap<TestReason, u64>,
-        count_result: &mut EnumMap<TestResult, u64>,
-    ) {
-        count_result[&t.result] += 1;
-        count_reason[&t.reason] += 1;
-        t.finish_test();
     }
 }
