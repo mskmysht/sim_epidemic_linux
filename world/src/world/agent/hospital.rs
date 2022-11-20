@@ -1,15 +1,8 @@
 use super::{warp::Warps, Agent, Location, LocationLabel, ParamsForStep, WarpParam};
 use crate::{
-    log::HealthDiff,
-    log::StepLog,
-    stat::HistInfo,
+    log::{LocalStepLog, MyLog},
     util::{math::Point, DrainMap},
 };
-
-pub struct HospitalStepInfo {
-    hist: Option<HistInfo>,
-    health: Option<HealthDiff>,
-}
 
 pub struct HospitalAgent {
     agent: Agent,
@@ -28,17 +21,12 @@ impl HospitalAgent {
         }
     }
 
-    fn step(&mut self, pfs: &ParamsForStep) -> (HospitalStepInfo, Option<WarpParam>) {
+    fn step(&mut self, pfs: &ParamsForStep) -> (LocalStepLog, Option<WarpParam>) {
         let agent = &mut self.agent.write();
-        let mut hist = None;
-        let warp = agent.hospital_step(&mut hist, self.back_to, pfs);
-        (
-            HospitalStepInfo {
-                hist,
-                health: agent.health.update(),
-            },
-            warp,
-        )
+        let mut log = LocalStepLog::default();
+        let warp = agent.hospital_step(self.back_to, &mut log, pfs);
+
+        (log, warp)
     }
 }
 
@@ -57,16 +45,11 @@ impl Hospital {
         self.0.push(HospitalAgent::new(agent, back_to));
     }
 
-    pub fn step(&mut self, warps: &mut Warps, step_log: &mut StepLog, pfs: &ParamsForStep) {
+    pub fn step(&mut self, warps: &mut Warps, log: &mut MyLog, pfs: &ParamsForStep) {
         let tmp = self.0.drain_map_mut(|ha| ha.step(pfs));
 
-        for (hsi, opt) in tmp.into_iter() {
-            if let Some(h) = hsi.hist {
-                step_log.hists.push(h);
-            }
-            if let Some(h) = hsi.health {
-                step_log.apply_difference(h);
-            }
+        for (llog, opt) in tmp.into_iter() {
+            log.apply(llog);
             if let Some((param, ha)) = opt {
                 warps.add(ha.agent.clone(), param);
             }

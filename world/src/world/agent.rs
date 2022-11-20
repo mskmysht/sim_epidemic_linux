@@ -12,8 +12,7 @@ use super::{
     testing::{TestReason, TestResult, Testee},
 };
 use crate::{
-    log::HealthDiff,
-    stat::{HistInfo, InfectionCntInfo},
+    log::LocalStepLog,
     util::{
         math::{Percentage, Point},
         random::{self, modified_prob, DistInfo},
@@ -208,26 +207,27 @@ struct AgentHealth {
     days_to: DaysTo,
     vaccine_state: VaccineState,
     state: HealthState,
-    new_state: Option<HealthState>,
+    // new_inf_mode: Option<InfMode>,
+    // new_state: Option<HealthState>,
 }
 
 impl AgentHealth {
     pub fn reset(&mut self, state: HealthState) {
         self.state = state;
-        self.new_state = None;
+        // self.new_state = None;
     }
 
     fn get_state(&self) -> &HealthState {
         &self.state
     }
 
-    fn has_new_state(&self) -> bool {
-        self.new_state.is_some()
-    }
+    // fn has_new_state(&self) -> bool {
+    //     self.new_state.is_some()
+    // }
 
-    fn insert_new_state(&mut self, new_state: HealthState) -> &HealthState {
-        self.new_state.insert(new_state)
-    }
+    // fn insert_new_state(&mut self, new_state: HealthState) -> &HealthState {
+    //     self.new_state.insert(new_state)
+    // }
 
     fn get_immune_factor(&self, bip: &InfectionParam, pfs: &ParamsForStep) -> Option<f64> {
         let immune_factor = match &self.state {
@@ -270,78 +270,85 @@ impl AgentHealth {
         }
     }
 
-    #[inline]
-    fn update(&mut self) -> Option<HealthDiff> {
-        let Some(new_health) = self.new_state.take() else {
-            return None;
-        };
-        let from = (&self.state).into();
-        let to = (&new_health).into();
-
-        if let HealthState::Vaccinated(vp) = std::mem::replace(&mut self.state, new_health) {
-            self.vaccine_state.insert_param(vp);
-        }
-        Some(HealthDiff::new(from, to))
-    }
-
     fn field_step(
         &mut self,
+        infected: Option<(f64, usize)>,
         activeness: f64,
         age: f64,
-        hist: &mut Option<HistInfo>,
+        log: &mut LocalStepLog,
         pfs: &ParamsForStep,
     ) -> Option<WarpParam> {
-        let new_health = 'block: {
+        let from_hd = (&self.state).into();
+
+        let new_state = 'block: {
             if let Some(immunity) = self.get_immunity() {
-                if let Some(new_health) =
+                if let Some(new_state) =
                     self.vaccine_state
                         .vaccinate(immunity, &mut self.days_to, pfs)
                 {
-                    break 'block new_health;
+                    break 'block Some(new_state);
                 }
             }
-            // let s = self.get_state_mut();
             match &mut self.state {
                 HealthState::Infected(ip, inf_mode) => ip.step::<false>(
                     &mut self.days_to,
-                    &self.vaccine_state.param,
-                    pfs,
-                    hist,
                     inf_mode,
-                )?,
-                HealthState::Recovered(rp) => rp.step(&mut self.days_to, activeness, age, pfs)?,
-                HealthState::Vaccinated(vp) => vp.step(&mut self.days_to, activeness, age, pfs)?,
-                _ => return None,
+                    &self.vaccine_state.param,
+                    log,
+                    pfs,
+                ),
+                HealthState::Recovered(rp) => rp.step(&mut self.days_to, activeness, age, pfs),
+                HealthState::Vaccinated(vp) => vp.step(&mut self.days_to, activeness, age, pfs),
+                _ => infected.map(|(immunity, virus_variant)| {
+                    HealthState::Infected(
+                        InfectionParam::new(immunity, virus_variant),
+                        InfMode::Asym,
+                    )
+                }),
             }
         };
-        if matches!(self.insert_new_state(new_health), HealthState::Died) {
-            return Some(WarpParam::cemetery(pfs.wp));
-        }
-        None
+
+        let mut warp = None;
+        if let Some(new_state) = new_state {
+            match std::mem::replace(&mut self.state, new_state) {
+                HealthState::Vaccinated(vp) => {
+                    self.vaccine_state.insert_param(vp);
+                }
+                HealthState::Died => warp = Some(WarpParam::cemetery(pfs.wp)),
+                _ => {}
+            }
+        };
+        log.set_health(from_hd, (&self.state).into());
+        warp
     }
 
     fn hospital_step(
         &mut self,
-        hist: &mut Option<HistInfo>,
         back_to: Point,
+        log: &mut LocalStepLog,
         pfs: &ParamsForStep,
     ) -> Option<WarpParam> {
-        let HealthState::Infected(ip, inf_mode) = &mut self.state else {
-                return None;
-            };
-        let new_health = ip.step::<true>(
-            &mut self.days_to,
-            &self.vaccine_state.param,
-            pfs,
-            hist,
-            inf_mode,
-        )?;
+        let from_hd = (&self.state).into();
 
-        match self.insert_new_state(new_health) {
-            HealthState::Died => Some(WarpParam::cemetery(pfs.wp)),
-            _ => Some(WarpParam::back(back_to)),
-            // _ => Some(WarpParam::back(self.origin)),
-        }
+        let HealthState::Infected(ip, inf_mode) = &mut self.state else {
+            return None;
+        };
+        let mut warp = None;
+        if let Some(new_state) = ip.step::<true>(
+            &mut self.days_to,
+            inf_mode,
+            &self.vaccine_state.param,
+            log,
+            pfs,
+        ) {
+            warp = match std::mem::replace(&mut self.state, new_state) {
+                HealthState::Died => Some(WarpParam::cemetery(pfs.wp)),
+                _ => Some(WarpParam::back(back_to)),
+            };
+        };
+
+        log.set_health(from_hd, (&self.state).into());
+        warp
     }
 }
 
@@ -498,19 +505,17 @@ impl AgentLog {
         *self = AgentLog::default();
     }
 
-    fn update_n_infects(&mut self, new_n_infects: u64) -> Option<InfectionCntInfo> {
+    fn update_n_infects(&mut self, new_n_infects: u64, log: &mut LocalStepLog) {
         if new_n_infects > 0 {
             let prev_n_infects = self.n_infects;
             self.n_infects += new_n_infects;
-            Some(InfectionCntInfo::new(prev_n_infects, self.n_infects))
-        } else {
-            None
+            log.set_infect(prev_n_infects, self.n_infects);
         }
     }
 }
 
 #[derive(Default)]
-pub struct AgentCore {
+pub struct InnerAgent {
     pub id: usize,
     body: Body,
     /// [`None`] means it has no home. (e.g. [`wrk_plc_mode`](WorldParams::wrk_plc_mode) equals [`WrkPlcMode::WrkPlcNone`].)
@@ -531,7 +536,7 @@ pub struct AgentCore {
     log: AgentLog,
 }
 
-impl AgentCore {
+impl InnerAgent {
     fn reset(&mut self, wp: &WorldParams, rp: &RuntimeParams, id: usize, distancing: bool) {
         self.testing.reset();
         self.log.reset();
@@ -645,24 +650,25 @@ impl AgentCore {
     /// `self` tries to infect `b` with the virus data of [`InfectionParam`] in `self`
     /// if `b.health.new_state` is `None` (`b` does not have a new health state)
     /// and `self.health` is [`HealthState::Infected`] (`self` is infected).
-    fn infect(&self, b: &mut Self, d: f64, pfs: &ParamsForStep) -> bool {
-        if b.health.has_new_state() {
-            return false;
-        }
+    fn infect(&self, b: &Self, d: f64, pfs: &ParamsForStep) -> Option<(f64, usize)> {
+        // if b.health.has_new_state() {
+        //     return false;
+        // }
         let HealthState::Infected(ip, _) = self.health.get_state() else {
-            return false;
+            return None;
         };
         let Some(immunity) = b.health.get_immune_factor(ip, pfs) else {
-            return false;
+            return None;
         };
         if !ip.check_infection(immunity, d, self.health.days_to.onset, pfs) {
-            return false;
+            return None;
         }
-        b.health.insert_new_state(HealthState::Infected(
-            InfectionParam::new(immunity, ip.virus_variant),
-            InfMode::Asym,
-        ));
-        true
+        // b.health.insert_new_state(HealthState::Infected(
+        //     InfectionParam::new(immunity, ip.virus_variant),
+        //     InfMode::Asym,
+        // ));
+        // true
+        Some((immunity, ip.virus_variant))
     }
 
     fn calc_gathering_effect(&self) -> (Option<Point>, Option<f64>) {
@@ -787,6 +793,33 @@ impl AgentCore {
         }
     }
 
+    pub fn reserve_test_in_field(&mut self, agent: Agent, pfs: &ParamsForStep) -> Option<Testee> {
+        let reason = {
+            if !self.testing.is_reservable(pfs) {
+                return None;
+            }
+            self.check_test_in_field(pfs)?
+        };
+        self.testing.reserve();
+        Some(Testee::new(agent, reason, pfs.rp.step))
+    }
+
+    pub fn reserve_test_with<F: Fn(&Self) -> Option<TestReason>>(
+        &mut self,
+        agent: Agent,
+        pfs: &ParamsForStep,
+        f: F,
+    ) -> Option<Testee> {
+        let reason = {
+            if !self.testing.is_reservable(pfs) {
+                return None;
+            }
+            f(&self)?
+        };
+        self.testing.reserve();
+        Some(Testee::new(agent, reason, pfs.rp.step))
+    }
+
     fn check_quarantine(
         &mut self,
         contacted_testees: &mut Option<Vec<Testee>>,
@@ -803,19 +836,24 @@ impl AgentCore {
 
     fn field_step(
         &mut self,
-        hist: &mut Option<HistInfo>,
+        infected: Option<(f64, usize)>,
+        agent: Agent,
+        testee: &mut Option<Testee>,
+        log: &mut LocalStepLog,
         pfs: &ParamsForStep,
     ) -> Option<WarpParam> {
-        self.health.field_step(self.activeness, self.age, hist, pfs)
+        *testee = self.reserve_test_in_field(agent, pfs);
+        self.health
+            .field_step(infected, self.activeness, self.age, log, pfs)
     }
 
     fn hospital_step(
         &mut self,
-        hist: &mut Option<HistInfo>,
         back_to: Point,
+        log: &mut LocalStepLog,
         pfs: &ParamsForStep,
     ) -> Option<WarpParam> {
-        self.health.hospital_step(hist, back_to, pfs)
+        self.health.hospital_step(back_to, log, pfs)
     }
 
     fn replace_gathering(
@@ -832,11 +870,11 @@ impl AgentCore {
 }
 
 #[derive(Clone)]
-pub struct Agent(Arc<RwLock<AgentCore>>);
+pub struct Agent(Arc<RwLock<InnerAgent>>);
 
 impl Agent {
     pub fn new() -> Self {
-        Agent(Arc::new(RwLock::new(AgentCore::default())))
+        Agent(Arc::new(RwLock::new(InnerAgent::default())))
     }
 
     pub fn reset_all(
@@ -912,20 +950,21 @@ impl Agent {
         (cats, n_symptomatic)
     }
 
-    pub fn reserve_test<F: Fn(&AgentCore) -> Option<TestReason>>(
-        &self,
-        pfs: &ParamsForStep,
-        f: F,
-    ) -> Option<Testee> {
-        self.write().testing.reserve(
-            || {
-                let ra = self.read();
-                let reason = f(&ra)?;
-                Some(Testee::new(self.clone(), reason, pfs.rp.step))
-            },
-            pfs,
-        )
-    }
+    // pub fn reserve_test<F: Fn(&InnerAgent) -> Option<TestReason>>(
+    //     &self,
+    //     pfs: &ParamsForStep,
+    //     f: F,
+    // ) -> Option<Testee> {
+    //     let reason = {
+    //         let ra = self.read();
+    //         if !ra.testing.is_reservable(pfs) {
+    //             return None;
+    //         }
+    //         f(&ra)?
+    //     };
+    //     self.write().testing.reserve();
+    //     Some(Testee::new(self.clone(), reason, pfs.rp.step))
+    // }
 }
 
 #[derive(Default)]
@@ -940,7 +979,7 @@ impl TestState {
         *self = Self::default();
     }
 
-    fn is_testable(&self, pfs: &ParamsForStep) -> bool {
+    fn is_reservable(&self, pfs: &ParamsForStep) -> bool {
         /*|| todo!("self.for_vcn == VcnNoTest") */
         if self.reserved {
             return false;
@@ -953,13 +992,8 @@ impl TestState {
         ds >= pfs.rp.tst_interval * pfs.wp.steps_per_day()
     }
 
-    fn reserve<F: Fn() -> Option<Testee>>(&mut self, f: F, pfs: &ParamsForStep) -> Option<Testee> {
-        if !self.is_testable(pfs) {
-            return None;
-        }
-        let t = f()?;
+    fn reserve(&mut self) {
         self.reserved = true;
-        Some(t)
     }
 
     fn notify_result(&mut self, time_stamp: u64, result: TestResult) {
@@ -978,7 +1012,7 @@ impl TestState {
 }
 
 impl Deref for Agent {
-    type Target = Arc<RwLock<AgentCore>>;
+    type Target = Arc<RwLock<InnerAgent>>;
 
     fn deref(&self) -> &Self::Target {
         &self.0

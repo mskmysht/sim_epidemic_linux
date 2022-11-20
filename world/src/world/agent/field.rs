@@ -8,8 +8,7 @@ use super::{
     Agent, Body, Location, LocationLabel, WarpParam,
 };
 use crate::{
-    log::{HealthDiff, StepLog},
-    stat::{HistInfo, InfectionCntInfo},
+    log::{LocalStepLog, MyLog},
     util::{
         math::{Percentage, Point},
         random::{self, DistInfo},
@@ -29,6 +28,7 @@ struct TempParam {
     best: Option<(Point, f64)>,
     new_n_infects: u64,
     new_contacts: Vec<Agent>,
+    infected: Option<(f64, usize)>,
 }
 
 impl TempParam {
@@ -61,12 +61,10 @@ impl LocationLabel for FieldAgent {
 }
 
 #[derive(Default)]
-pub struct FieldStepInfo {
+struct FieldStepInfo {
     contacted_testees: Option<Vec<Testee>>,
     testee: Option<Testee>,
-    hist: Option<HistInfo>,
-    infct: Option<InfectionCntInfo>,
-    health: Option<HealthDiff>,
+    log: LocalStepLog,
 }
 
 impl FieldAgent {
@@ -82,15 +80,25 @@ impl FieldAgent {
         &mut self,
         pfs: &ParamsForStep,
     ) -> (FieldStepInfo, Option<Either<WarpParam, TableIndex>>) {
-        let temp = std::mem::replace(&mut self.temp, TempParam::default());
         let mut fsi = FieldStepInfo::default();
         let mut agent = self.agent.write();
+
+        let temp = std::mem::replace(&mut self.temp, TempParam::default());
+        agent.contacts.append(temp.new_contacts, pfs.rp.step);
+        agent.log.update_n_infects(temp.new_n_infects, &mut fsi.log);
+
         let transfer = 'block: {
             let agent = agent.deref_mut();
             if let Some(w) = agent.check_quarantine(&mut fsi.contacted_testees, pfs) {
                 break 'block Some(Either::Left(w));
             }
-            if let Some(w) = agent.field_step(&mut fsi.hist, pfs) {
+            if let Some(w) = agent.field_step(
+                temp.infected,
+                self.agent.clone(),
+                &mut fsi.testee,
+                &mut fsi.log,
+                pfs,
+            ) {
                 break 'block Some(Either::Left(w));
             }
             if let Some(w) = agent.warp_inside(pfs) {
@@ -100,11 +108,6 @@ impl FieldAgent {
                 .move_internal(temp.force, temp.best, &self.idx, pfs)
                 .map(Either::Right)
         };
-
-        agent.contacts.append(temp.new_contacts, pfs.rp.step);
-        fsi.infct = agent.log.update_n_infects(temp.new_n_infects);
-        fsi.health = agent.health.update();
-        fsi.testee = self.agent.reserve_test(pfs, |a| a.check_test_in_field(pfs));
 
         (fsi, transfer)
     }
@@ -118,11 +121,17 @@ impl FieldAgent {
             self.temp.update_best(&a.body, &b.body);
             fb.temp.update_best(&b.body, &a.body);
 
-            if b.infect(a, d, pfs) {
-                self.temp.new_n_infects = 1;
+            // if b.infect(a, d, pfs) {
+            //     self.temp.new_n_infects = 1;
+            // }
+            // if a.infect(b, d, pfs) {
+            //     fb.temp.new_n_infects += 1;
+            // }
+            if self.temp.infected.is_none() {
+                self.temp.infected = b.infect(a, d, pfs);
             }
-            if a.infect(b, d, pfs) {
-                fb.temp.new_n_infects += 1;
+            if fb.temp.infected.is_none() {
+                fb.temp.infected = a.infect(b, d, pfs);
             }
 
             self.temp.record_contact(&fb.agent, d, pfs);
@@ -154,7 +163,7 @@ impl Field {
         &mut self,
         warps: &mut Warps,
         test_queue: &mut TestQueue,
-        step_log: &mut StepLog,
+        log: &mut MyLog,
         pfs: &ParamsForStep,
     ) {
         self.interact(&pfs);
@@ -166,15 +175,7 @@ impl Field {
             .collect::<Vec<_>>();
 
         for (fsi, opt) in tmp.into_iter().flatten() {
-            if let Some(h) = fsi.hist {
-                step_log.hists.push(h);
-            }
-            if let Some(h) = fsi.health {
-                step_log.apply_difference(h);
-            }
-            if let Some(i) = fsi.infct {
-                step_log.infcts.push(i);
-            }
+            log.apply(fsi.log);
             if let Some(testees) = fsi.contacted_testees {
                 test_queue.extend(testees);
             }

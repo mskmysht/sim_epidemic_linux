@@ -1,8 +1,5 @@
 use crate::{
-    util::{
-        enum_map::{Enum, EnumMap},
-        UnionMap,
-    },
+    util::{enum_map::EnumMap, UnionMap},
     world::{
         commons::HealthType,
         testing::{TestReason, TestResult},
@@ -12,29 +9,6 @@ use crate::{
 // const IMG_WIDTH: i32 = 320 * 4;
 // const IMG_HEIGHT: i32 = 320;
 // const MAX_N_REC: i32 = IMG_WIDTH;
-
-pub struct InfectionCntInfo {
-    pub org_v: u64,
-    pub new_v: u64,
-}
-
-impl InfectionCntInfo {
-    pub fn new(org_v: u64, new_v: u64) -> Self {
-        Self { org_v, new_v }
-    }
-}
-
-#[derive(Enum, Clone)]
-pub enum HistgramType {
-    HistIncub,
-    HistRecov,
-    HistDeath,
-}
-
-pub struct HistInfo {
-    pub mode: HistgramType,
-    pub days: f64,
-}
 
 #[derive(Default, Debug)]
 pub struct StatData {

@@ -1,6 +1,5 @@
 use crate::{
     commons::HealthType,
-    stat::{HistInfo, InfectionCntInfo},
     util::enum_map::{Enum, EnumMap},
 };
 
@@ -8,14 +7,60 @@ use std::{collections::VecDeque, error, fmt::Display};
 
 use csv::Writer;
 
-#[derive(Default)]
-pub struct StepLog {
-    pub hists: Vec<HistInfo>,
-    health_counts: VecDeque<HealthLog>,
-    pub infcts: Vec<InfectionCntInfo>,
+pub struct InfectionCntInfo {
+    pub org_v: u64,
+    pub new_v: u64,
 }
 
-impl Display for StepLog {
+impl InfectionCntInfo {
+    pub fn new(org_v: u64, new_v: u64) -> Self {
+        Self { org_v, new_v }
+    }
+}
+
+#[derive(Enum, Clone)]
+pub enum HistgramType {
+    HistIncub,
+    HistRecov,
+    HistDeath,
+}
+
+pub struct HistInfo {
+    pub mode: HistgramType,
+    pub days: f64,
+}
+
+#[derive(Default)]
+pub struct LocalStepLog {
+    hist: Option<HistInfo>,
+    infct: Option<InfectionCntInfo>,
+    health: Option<HealthDiff>,
+}
+
+impl LocalStepLog {
+    pub fn set_infect(&mut self, prev_n_infects: u64, curr_n_infects: u64) {
+        self.infct = Some(InfectionCntInfo::new(prev_n_infects, curr_n_infects))
+    }
+
+    pub fn set_hist(&mut self, mode: HistgramType, days: f64) {
+        self.hist = Some(HistInfo { mode, days })
+    }
+
+    pub fn set_health(&mut self, from: HealthType, to: HealthType) {
+        if from != to {
+            self.health = Some(HealthDiff { from, to })
+        }
+    }
+}
+
+#[derive(Default)]
+pub struct MyLog {
+    hists: Vec<HistInfo>,
+    health_counts: VecDeque<HealthLog>,
+    infcts: Vec<InfectionCntInfo>,
+}
+
+impl Display for MyLog {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         writeln!(
             f,
@@ -27,7 +72,7 @@ impl Display for StepLog {
     }
 }
 
-impl StepLog {
+impl MyLog {
     pub fn reset(&mut self, n_susceptible: usize, n_symptomatic: usize, n_asymptomatic: usize) {
         let mut cnt = EnumMap::default();
         cnt[&HealthType::Susceptible] = n_susceptible;
@@ -41,13 +86,21 @@ impl StepLog {
         self.health_counts[0].n_infected()
     }
 
+    pub fn apply(&mut self, local: LocalStepLog) {
+        if let Some(h) = local.hist {
+            self.hists.push(h);
+        }
+        if let Some(hd) = local.health {
+            self.health_counts[0].apply_difference(hd);
+        }
+        if let Some(i) = local.infct {
+            self.infcts.push(i);
+        }
+    }
+
     pub fn push(&mut self) -> bool {
         self.health_counts.push_front(self.health_counts[0].clone());
         self.n_infected() == 0
-    }
-
-    pub fn apply_difference(&mut self, hd: HealthDiff) {
-        self.health_counts[0].apply_difference(hd);
     }
 
     pub fn write(&self, name: &str, dir: &str) -> Result<(), Box<dyn error::Error>> {
@@ -70,15 +123,10 @@ impl StepLog {
     }
 }
 
+#[derive(Debug)]
 pub struct HealthDiff {
     from: HealthType,
     to: HealthType,
-}
-
-impl HealthDiff {
-    pub fn new(from: HealthType, to: HealthType) -> Self {
-        Self { from, to }
-    }
 }
 
 #[derive(Clone, Default, Debug)]

@@ -24,17 +24,19 @@ impl Contacts {
         self.0
             .drain(..)
             .filter_map(|ci| {
-                if pfs.rp.step - ci.time_stamp < retention_steps {
-                    ci.agent.reserve_test(pfs, |a| {
-                        if a.is_in_field() {
+                // if pfs.rp.step - ci.time_stamp < retention_steps {
+                // } else {
+                //     None
+                // }
+                ci.agent
+                    .write()
+                    .reserve_test_with(ci.agent.clone(), pfs, |a| {
+                        if a.is_in_field() && pfs.rp.step - ci.time_stamp < retention_steps {
                             Some(TestReason::AsContact)
                         } else {
                             None
                         }
                     })
-                } else {
-                    None
-                }
             })
             .collect()
     }

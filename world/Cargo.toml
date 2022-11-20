@@ -17,3 +17,6 @@ rand = { version = "0.8", features = ["alloc"] }
 rand_distr = "0.4"
 serde = { version = "1.0", features = ["derive"] }
 parking_lot = "0.12"
+repl = { path = "../libs/repl" }
+protocol = { path = "../libs/protocol" }
+container-if = { path = "../libs/container-if" }

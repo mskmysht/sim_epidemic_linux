@@ -3,7 +3,7 @@ use super::{
     DaysTo, HealthState,
 };
 use crate::{
-    stat::{HistInfo, HistgramType},
+    log::{HistgramType, LocalStepLog},
     util::random,
 };
 
@@ -88,10 +88,11 @@ impl InfectionParam {
     pub fn step<const IS_IN_HOSPITAL: bool>(
         &mut self,
         days_to: &mut DaysTo,
-        vp: &Option<VaccinationParam>,
-        pfs: &ParamsForStep,
-        hist: &mut Option<HistInfo>,
         inf_mode: &mut InfMode,
+        vp: &Option<VaccinationParam>,
+        log: &mut LocalStepLog,
+        pfs: &ParamsForStep,
+        // hist: &mut Option<HistInfo>,
     ) -> Option<HealthState> {
         fn new_recover(
             days_to: &mut DaysTo,
@@ -112,10 +113,7 @@ impl InfectionParam {
             if self.severity <= 0.0 {
                 if inf_mode == &InfMode::Sym {
                     // SET_HIST(hist_recov, days_diseased);
-                    *hist = Some(HistInfo {
-                        mode: HistgramType::HistRecov,
-                        days: self.days_diseased,
-                    });
+                    log.set_hist(HistgramType::HistRecov, self.days_diseased);
                 }
                 return Some(HealthState::Recovered(new_recover(
                     days_to,
@@ -159,10 +157,7 @@ impl InfectionParam {
         // died
         if self.severity >= 1.0 {
             // SET_HIST(hist_death, days_diseased)
-            *hist = Some(HistInfo {
-                mode: HistgramType::HistDeath,
-                days: self.days_diseased,
-            });
+            log.set_hist(HistgramType::HistDeath, self.days_diseased);
             return Some(HealthState::Died);
         }
 
@@ -172,10 +167,7 @@ impl InfectionParam {
 
         if inf_mode == &InfMode::Asym {
             // SET_HIST(hist_incub, days_infected)
-            *hist = Some(HistInfo {
-                mode: HistgramType::HistIncub,
-                days: self.days_infected,
-            });
+            log.set_hist(HistgramType::HistIncub, self.days_infected);
             *inf_mode = InfMode::Sym;
         }
 
