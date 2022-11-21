@@ -2,11 +2,10 @@ use std::error;
 
 use async_trait::async_trait;
 use container::world::WorldManager;
-use container_if as cif;
 use world_if as wif;
 
-type Req = cif::Request<wif::Request>;
-type Ret = cif::Response<wif::Success, wif::ErrorStatus>;
+type Req = container_if::Request<wif::Request>;
+type Ret = container_if::Response<wif::Success, wif::ErrorStatus>;
 
 pub struct StdHandler {
     manager: WorldManager,
@@ -24,7 +23,7 @@ impl repl::Parsable for StdHandler {
     type Parsed = Req;
 
     fn parse(buf: &str) -> repl::ParseResult<Self::Parsed> {
-        protocol::parse::request(buf)
+        container_if::parse::request(buf)?.map_r(|s| world_if::parse::request(&s))
     }
 }
 

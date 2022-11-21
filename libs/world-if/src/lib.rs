@@ -1,3 +1,5 @@
+pub mod parse;
+
 use chrono::serde::ts_seconds;
 use ipc_channel::ipc::{IpcReceiver, IpcSender};
 use serde::{Deserialize, Serialize};

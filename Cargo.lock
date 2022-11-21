@@ -276,6 +276,7 @@ dependencies = [
 name = "container-if"
 version = "0.1.0"
 dependencies = [
+ "peg",
  "serde",
 ]
 
@@ -2444,6 +2445,7 @@ version = "0.1.0"
 dependencies = [
  "chrono",
  "ipc-channel",
+ "peg",
  "serde",
 ]
 

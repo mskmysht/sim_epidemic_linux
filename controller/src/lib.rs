@@ -55,7 +55,7 @@ pub mod quic {
     impl repl::Parsable for MyHandler {
         type Parsed = Req;
         fn parse(buf: &str) -> repl::ParseResult<Self::Parsed> {
-            protocol::parse::request(buf)
+            container_if::parse::request(buf)?.map_r(|s| world_if::parse::request(&s))
         }
     }
 
@@ -97,8 +97,8 @@ pub mod tcp {
 
     impl<'a> repl::Parsable for MyHandler<'a> {
         type Parsed = Req;
-        fn parse(input: &str) -> repl::ParseResult<Self::Parsed> {
-            protocol::parse::request(input)
+        fn parse(buf: &str) -> repl::ParseResult<Self::Parsed> {
+            container_if::parse::request(buf)?.map_r(|s| world_if::parse::request(&s))
         }
     }
 
