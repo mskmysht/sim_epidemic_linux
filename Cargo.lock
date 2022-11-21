@@ -1419,12 +1419,10 @@ version = "0.1.0"
 dependencies = [
  "bincode",
  "bytes",
- "container-if",
  "peg",
  "quinn",
  "serde",
  "tokio",
- "world-if",
 ]
 
 [[package]]
