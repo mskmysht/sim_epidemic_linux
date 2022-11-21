@@ -58,7 +58,6 @@ impl Drop for MyHandler {
 }
 
 fn main() {
-    // repl::Repl::new(runtime)
     let (req_tx, req_rx) = mpsc::channel();
     let (res_tx, res_rx) = mpsc::channel();
     let (stream_tx, stream_rx) = mpsc::channel();

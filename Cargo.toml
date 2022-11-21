@@ -10,4 +10,5 @@ members = [
   "libs/protocol",
   "libs/security",
   "libs/repl",
+  "libs/table",
 ]

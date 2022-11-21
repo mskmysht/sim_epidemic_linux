@@ -35,12 +35,8 @@ impl Gathering {
         let rng = &mut rand::thread_rng();
         let p = if !gat_spots_fixed.is_empty() && rp.gat_rnd_rt.r() < rng.gen::<f64>() {
             *gat_spots_fixed.choose(rng).unwrap()
-        // } else if wp.wrk_plc_mode == WrkPlcMode::WrkPlcNone {
-        //     Point {
-        //         x: rng.gen::<f64>() * wp.field_size(),
-        //         y: rng.gen::<f64>() * wp.field_size(),
-        //     }
         } else {
+            // wp.wrk_plc_mode == WrkPlcMode::WrkPlcNone
             agents.choose(rng).unwrap().read().origin.unwrap_or(Point {
                 x: rng.gen::<f64>() * wp.field_size(),
                 y: rng.gen::<f64>() * wp.field_size(),
@@ -144,8 +140,8 @@ impl Gatherings {
     ) {
         self.0.retain_mut(|gat| !gat.write().step(wp.steps_per_day));
 
-        //	caliculate the number of gathering circles
-        //	using random number in exponetial distribution.
+        // caliculate the number of gathering circles
+        // using random number in exponetial distribution.
         let rng = &mut rand::thread_rng();
         let n_new_gat =
             (rp.gat_fr / wp.steps_per_day as f64 * (wp.field_size * wp.field_size) as f64 / 1e5

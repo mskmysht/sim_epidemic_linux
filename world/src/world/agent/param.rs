@@ -92,7 +92,6 @@ impl InfectionParam {
         vp: &Option<VaccinationParam>,
         log: &mut LocalStepLog,
         pfs: &ParamsForStep,
-        // hist: &mut Option<HistInfo>,
     ) -> Option<HealthState> {
         fn new_recover(
             days_to: &mut DaysTo,

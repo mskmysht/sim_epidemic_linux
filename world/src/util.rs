@@ -1,16 +1,6 @@
 pub mod enum_map;
 pub mod math;
 pub mod random;
-pub mod table;
-
-use self::enum_map::EnumMap;
-
-pub type UnionMap<K0, K1, V> = (EnumMap<K0, V>, EnumMap<K1, V>);
-
-pub enum Either<L, R> {
-    Left(L),
-    Right(R),
-}
 
 pub trait DrainMap<T, U, V, F: FnMut(&mut T) -> (U, Option<V>)> {
     type Target;

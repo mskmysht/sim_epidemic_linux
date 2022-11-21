@@ -5,19 +5,20 @@ use super::{
     },
     gathering::Gathering,
     warp::Warps,
-    Agent, Body, Location, LocationLabel, WarpParam,
+    Agent, AgentHealth, Body, Location, LocationLabel, WarpParam,
 };
 use crate::{
     log::{LocalStepLog, MyLog},
     util::{
         math::{Percentage, Point},
         random::{self, DistInfo},
-        table::{Table, TableIndex},
-        DrainMap, Either,
+        DrainMap,
     },
 };
 
 use std::{ops::DerefMut, sync::Arc};
+
+use table::{Table, TableIndex};
 
 use parking_lot::RwLock;
 use rayon::iter::ParallelIterator;
@@ -48,6 +49,16 @@ impl TempParam {
             self.new_contacts.push(b.clone());
         }
     }
+
+    fn infected(&mut self, a: &AgentHealth, b: &AgentHealth, d: f64, pfs: &ParamsForStep) {
+        if self.infected.is_none() {
+            if let Some(infected) = a.infected_by(&b, d, pfs) {
+                self.infected = Some(infected);
+                self.new_n_infects += 1;
+                // fb.new_n_infects = 1;
+            }
+        }
+    }
 }
 
 pub struct FieldAgent {
@@ -67,6 +78,11 @@ struct FieldStepInfo {
     log: LocalStepLog,
 }
 
+enum Transfer {
+    Extra(WarpParam),
+    Intra(TableIndex),
+}
+
 impl FieldAgent {
     fn new(agent: Agent, idx: TableIndex) -> Self {
         Self {
@@ -76,10 +92,7 @@ impl FieldAgent {
         }
     }
 
-    fn step(
-        &mut self,
-        pfs: &ParamsForStep,
-    ) -> (FieldStepInfo, Option<Either<WarpParam, TableIndex>>) {
+    fn step(&mut self, pfs: &ParamsForStep) -> (FieldStepInfo, Option<Transfer>) {
         let mut fsi = FieldStepInfo::default();
         let mut agent = self.agent.write();
 
@@ -90,7 +103,7 @@ impl FieldAgent {
         let transfer = 'block: {
             let agent = agent.deref_mut();
             if let Some(w) = agent.check_quarantine(&mut fsi.contacted_testees, pfs) {
-                break 'block Some(Either::Left(w));
+                break 'block Some(Transfer::Extra(w));
             }
             if let Some(w) = agent.field_step(
                 temp.infected,
@@ -99,14 +112,14 @@ impl FieldAgent {
                 &mut fsi.log,
                 pfs,
             ) {
-                break 'block Some(Either::Left(w));
+                break 'block Some(Transfer::Extra(w));
             }
             if let Some(w) = agent.warp_inside(pfs) {
-                break 'block Some(Either::Left(w));
+                break 'block Some(Transfer::Extra(w));
             }
             agent
                 .move_internal(temp.force, temp.best, &self.idx, pfs)
-                .map(Either::Right)
+                .map(Transfer::Intra)
         };
 
         (fsi, transfer)
@@ -121,18 +134,8 @@ impl FieldAgent {
             self.temp.update_best(&a.body, &b.body);
             fb.temp.update_best(&b.body, &a.body);
 
-            // if b.infect(a, d, pfs) {
-            //     self.temp.new_n_infects = 1;
-            // }
-            // if a.infect(b, d, pfs) {
-            //     fb.temp.new_n_infects += 1;
-            // }
-            if self.temp.infected.is_none() {
-                self.temp.infected = b.infect(a, d, pfs);
-            }
-            if fb.temp.infected.is_none() {
-                fb.temp.infected = a.infect(b, d, pfs);
-            }
+            self.temp.infected(&a.health, &b.health, d, pfs);
+            fb.temp.infected(&b.health, &a.health, d, pfs);
 
             self.temp.record_contact(&fb.agent, d, pfs);
             fb.temp.record_contact(&self.agent, d, pfs);
@@ -184,8 +187,8 @@ impl Field {
             }
             if let Some((t, fa)) = opt {
                 match t {
-                    Either::Left(warp) => warps.add(fa.agent, warp),
-                    Either::Right(idx) => self.add(fa.agent, idx),
+                    Transfer::Extra(warp) => warps.add(fa.agent, warp),
+                    Transfer::Intra(idx) => self.add(fa.agent, idx),
                 }
             }
         }
@@ -196,7 +199,7 @@ impl Field {
     }
 
     fn interact(&mut self, pfs: &ParamsForStep) {
-        // |x|a|b|a|b|
+        // |-|a|b|a|b|
         self.table
             .par_iter_mut()
             .east()
@@ -220,7 +223,7 @@ impl Field {
                 Self::interact_intercells(a_ags, b_ags, pfs);
             });
 
-        // |x|
+        // |-|
         // |a|
         // |b|
         self.table
@@ -248,7 +251,7 @@ impl Field {
                 Self::interact_intercells(a_ags, b_ags, pfs);
             });
 
-        // | | |
+        // |-|-|
         // |a| |
         // | |b|
         self.table
@@ -258,7 +261,7 @@ impl Field {
                 Self::interact_intercells(a_ags, b_ags, pfs);
             });
 
-        // | | |
+        // |-|-|
         // | |a|
         // |b| |
         self.table

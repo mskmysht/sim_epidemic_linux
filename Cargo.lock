@@ -1963,6 +1963,13 @@ dependencies = [
 ]
 
 [[package]]
+name = "table"
+version = "0.1.0"
+dependencies = [
+ "rayon",
+]
+
+[[package]]
 name = "tempfile"
 version = "3.3.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2427,6 +2434,7 @@ dependencies = [
  "rayon",
  "repl",
  "serde",
+ "table",
  "world-if",
 ]
 

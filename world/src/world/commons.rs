@@ -2,8 +2,9 @@ use crate::util::{
     enum_map::Enum,
     math::{self, Percentage, Permille, Point},
     random::DistInfo,
-    table::TableIndex,
 };
+
+use table::TableIndex;
 
 use rand::Rng;
 
@@ -13,17 +14,23 @@ pub struct RuntimeParams {
     pub friction: Percentage,
     pub avoidance: f64,
     pub max_speed: f64,
-    pub act_mode: Percentage, // activeness as individuality
+    /// activeness as individuality
+    pub act_mode: Percentage,
     pub act_kurt: Percentage,
-    pub mob_act: Percentage, // pub mass_act: f64,
-    pub gat_act: Percentage, // bias for mility and gatherings
+    /// pub mass_act: f64,
+    pub mob_act: Percentage,
+    /// bias for mility and gatherings
+    pub gat_act: Percentage,
     pub incub_act: Percentage,
     pub fatal_act: Percentage,
-
-    pub infec: Percentage, // infection probability
-    pub infec_dst: f64,    // infection distance
-    pub contag_delay: f64, // contagion delay
-    pub contag_peak: f64,  // contagion peak
+    /// infection probability
+    pub infec: Percentage,
+    /// infection distance
+    pub infec_dst: f64,
+    /// contagion delay
+    pub contag_delay: f64,
+    /// contagion peak
+    pub contag_peak: f64,
     pub incub: DistInfo<f64>,
     pub fatal: DistInfo<f64>,
     pub therapy_effc: Percentage,
@@ -32,29 +39,46 @@ pub struct RuntimeParams {
     pub imn_max_effc: Percentage,
     pub imn_max_effc_sv: Percentage,
 
-    pub dst_st: f64,                  // Distancing strength
-    pub dst_ob: Percentage,           // Distancing obedience
-    pub mob_freq: DistInfo<Permille>, // Participation frequency in long travel
+    /// Distancing strength
+    pub dst_st: f64,
+    /// Distancing obedience
+    pub dst_ob: Percentage,
+    /// Participation frequency in long travel
+    pub mob_freq: DistInfo<Permille>,
     pub mob_dist: DistInfo<Percentage>,
     pub back_hm_rt: Percentage,
 
-    pub gat_fr: f64,                    // Gathering's frequency
-    pub gat_rnd_rt: Percentage,         // Gathering's random spot rate (%)
-    pub gat_sz: DistInfo<f64>,          // gathering's size
-    pub gat_dr: DistInfo<f64>,          // gathering's duration
-    pub gat_st: DistInfo<f64>,          // gathering's strength
-    pub gat_freq: DistInfo<Percentage>, // Participation frequency in gathering
-    pub cntct_trc: Percentage,          // Contact tracing
+    /// Gathering's frequency
+    pub gat_fr: f64,
+    /// Gathering's random spot rate (%)
+    pub gat_rnd_rt: Percentage,
+    /// gathering's size
+    pub gat_sz: DistInfo<f64>,
+    /// gathering's duration
+    pub gat_dr: DistInfo<f64>,
+    /// gathering's strength
+    pub gat_st: DistInfo<f64>,
+    /// Participation frequency in gathering
+    pub gat_freq: DistInfo<Percentage>,
+    /// Contact tracing
+    pub cntct_trc: Percentage,
 
     pub tst_delay: f64,
-    pub tst_proc: f64, // test process
+    /// test process
+    pub tst_proc: f64,
     pub tst_interval: f64,
-    pub tst_sens: Percentage,    // test sensitivity
-    pub tst_spec: Percentage,    // test specificity
-    pub tst_sbj_asy: Percentage, // Subjects for test of asymptomatic. contacts are tested 100%.
-    pub tst_sbj_sym: Percentage, // Subjects for test of symptomatic. contacts are tested 100%.
-    pub tst_capa: Permille,      // Test capacity (per 1,000 persons per day)
-    pub tst_dly_lim: f64,        // Test delay limit (days)
+    /// test sensitivity
+    pub tst_sens: Percentage,
+    /// test specificity
+    pub tst_spec: Percentage,
+    /// Subjects for test of asymptomatic. contacts are tested 100%.
+    pub tst_sbj_asy: Percentage,
+    /// Subjects for test of symptomatic. contacts are tested 100%.
+    pub tst_sbj_sym: Percentage,
+    /// Test capacity (per 1,000 persons per day)
+    pub tst_capa: Permille,
+    /// Test delay limit (days)
+    pub tst_dly_lim: f64,
     //[todo] pub trc_ope: TracingOperation, // How to treat the contacts, tests or vaccination, or both
     //[todo] pub trc_vcn_type: u32, // vaccine type for tracing vaccination
     pub step: u64,

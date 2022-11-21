@@ -31,7 +31,6 @@ impl From<bool> for TestResult {
 pub struct Testee {
     agent: Agent,
     reason: TestReason,
-    // result: TestResult,
     time_stamp: u64,
 }
 
@@ -40,7 +39,6 @@ impl Testee {
         Self {
             agent,
             reason,
-            // result,
             time_stamp,
         }
     }
@@ -64,16 +62,16 @@ impl TestQueue {
         Self(VecDeque::new())
     }
 
-    // enqueue a new test
+    /// register a new testee
     pub fn push(&mut self, testee: Testee) {
         self.0.push_back(testee);
     }
-    // enqueue new tests
+    /// register new testees
     pub fn extend(&mut self, testees: Vec<Testee>) {
         self.0.extend(testees);
     }
 
-    // check the results of tests
+    /// accept testees
     pub fn accept(
         &mut self,
         pfs: &ParamsForStep,

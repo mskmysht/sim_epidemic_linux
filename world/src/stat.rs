@@ -1,5 +1,5 @@
 use crate::{
-    util::{enum_map::EnumMap, UnionMap},
+    util::enum_map::EnumMap,
     world::{
         commons::HealthType,
         testing::{TestReason, TestResult},
@@ -9,6 +9,8 @@ use crate::{
 // const IMG_WIDTH: i32 = 320 * 4;
 // const IMG_HEIGHT: i32 = 320;
 // const MAX_N_REC: i32 = IMG_WIDTH;
+
+pub type UnionMap<K0, K1, V> = (EnumMap<K0, V>, EnumMap<K1, V>);
 
 #[derive(Default, Debug)]
 pub struct StatData {

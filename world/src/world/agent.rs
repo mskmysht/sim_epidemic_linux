@@ -16,7 +16,6 @@ use crate::{
     util::{
         math::{Percentage, Point},
         random::{self, modified_prob, DistInfo},
-        table::TableIndex,
     },
 };
 
@@ -25,6 +24,8 @@ use std::{
     ops::Deref,
     sync::{Arc, Weak},
 };
+
+use table::TableIndex;
 
 use parking_lot::RwLock;
 use rand::{self, Rng};
@@ -207,36 +208,60 @@ struct AgentHealth {
     days_to: DaysTo,
     vaccine_state: VaccineState,
     state: HealthState,
-    // new_inf_mode: Option<InfMode>,
-    // new_state: Option<HealthState>,
 }
 
 impl AgentHealth {
-    pub fn reset(&mut self, state: HealthState) {
-        self.state = state;
-        // self.new_state = None;
+    pub fn reset(&mut self, activeness: f64, age: f64, wp: &WorldParams, rp: &RuntimeParams) {
+        self.days_to.reset(activeness, age, wp, rp);
+        self.vaccine_state = VaccineState::default();
+        self.state = HealthState::default();
     }
 
-    fn get_state(&self) -> &HealthState {
-        &self.state
+    pub fn force_susceptible(&mut self) {
+        self.state = HealthState::Susceptible;
     }
 
-    // fn has_new_state(&self) -> bool {
-    //     self.new_state.is_some()
-    // }
+    pub fn force_infected(&mut self) {
+        let mut ip = InfectionParam::new(0.0, 0);
+        ip.days_infected =
+            rand::thread_rng().gen::<f64>() * self.days_to.recover.min(self.days_to.die);
+        let d = ip.days_infected - self.days_to.onset;
+        let inf_mode = if d >= 0.0 {
+            ip.days_diseased = d;
+            InfMode::Sym
+        } else {
+            InfMode::Asym
+        };
+        self.state = HealthState::Infected(ip, inf_mode);
+    }
 
-    // fn insert_new_state(&mut self, new_state: HealthState) -> &HealthState {
-    //     self.new_state.insert(new_state)
-    // }
+    pub fn force_recovered(&mut self, rp: &RuntimeParams) {
+        let rng = &mut rand::thread_rng();
+        self.days_to.expire_immunity = rng.gen::<f64>() * rp.imn_max_dur;
+        let days_recovered = rng.gen::<f64>() * self.days_to.expire_immunity;
+        let mut rcp = RecoverParam::new(0.0, 0);
+        rcp.days_recovered = days_recovered;
+        self.state = HealthState::Recovered(rcp);
+    }
 
-    fn get_immune_factor(&self, bip: &InfectionParam, pfs: &ParamsForStep) -> Option<f64> {
+    fn infected_by(&self, b: &Self, d: f64, pfs: &ParamsForStep) -> Option<(f64, usize)> {
+        let ip = b.get_infected()?;
+        let immunity = self.get_immune_factor(ip.virus_variant, pfs)?;
+        if ip.check_infection(immunity, d, b.days_to.onset, pfs) {
+            Some((immunity, ip.virus_variant))
+        } else {
+            None
+        }
+    }
+
+    fn get_immune_factor(&self, virus_variant: usize, pfs: &ParamsForStep) -> Option<f64> {
         let immune_factor = match &self.state {
             HealthState::Susceptible => 0.0,
             HealthState::Recovered(rp) => {
-                rp.immunity * pfs.vr_info[rp.virus_variant].efficacy[bip.virus_variant]
+                rp.immunity * pfs.vr_info[rp.virus_variant].efficacy[virus_variant]
             }
             HealthState::Vaccinated(vp) => {
-                vp.immunity * pfs.vx_info[vp.vaccine_type].efficacy[bip.virus_variant]
+                vp.immunity * pfs.vx_info[vp.vaccine_type].efficacy[virus_variant]
             }
             _ => return None,
         };
@@ -542,7 +567,7 @@ impl InnerAgent {
         self.log.reset();
 
         let rng = &mut rand::thread_rng();
-        self.health.days_to.reset(self.activeness, self.age, wp, rp);
+        self.health.reset(self.activeness, self.age, wp, rp);
 
         self.activeness = random::random_mk(rng, rp.act_mode.r(), rp.act_kurt.r());
         self.gathering = Weak::new();
@@ -575,33 +600,6 @@ impl InnerAgent {
     #[inline]
     pub fn get_pt(&self) -> &Point {
         &self.body.pt
-    }
-
-    fn force_susceptible(&mut self) {
-        self.health.reset(HealthState::Susceptible);
-    }
-
-    fn force_infected(&mut self) {
-        let mut ip = InfectionParam::new(0.0, 0);
-        ip.days_infected = rand::thread_rng().gen::<f64>()
-            * self.health.days_to.recover.min(self.health.days_to.die);
-        let d = ip.days_infected - self.health.days_to.onset;
-        let inf_mode = if d >= 0.0 {
-            ip.days_diseased = d;
-            InfMode::Sym
-        } else {
-            InfMode::Asym
-        };
-        self.health.reset(HealthState::Infected(ip, inf_mode));
-    }
-
-    fn force_recovered(&mut self, rp: &RuntimeParams) {
-        let rng = &mut rand::thread_rng();
-        self.health.days_to.expire_immunity = rng.gen::<f64>() * rp.imn_max_dur;
-        let days_recovered = rng.gen::<f64>() * self.health.days_to.expire_immunity;
-        let mut rcp = RecoverParam::new(0.0, 0);
-        rcp.days_recovered = days_recovered;
-        self.health.reset(HealthState::Recovered(rcp));
     }
 
     fn check_test_in_field(&self, pfs: &ParamsForStep) -> Option<TestReason> {
@@ -645,30 +643,6 @@ impl InnerAgent {
 
     pub fn get_back_to(&self) -> Point {
         self.origin.unwrap_or(self.body.pt)
-    }
-
-    /// `self` tries to infect `b` with the virus data of [`InfectionParam`] in `self`
-    /// if `b.health.new_state` is `None` (`b` does not have a new health state)
-    /// and `self.health` is [`HealthState::Infected`] (`self` is infected).
-    fn infect(&self, b: &Self, d: f64, pfs: &ParamsForStep) -> Option<(f64, usize)> {
-        // if b.health.has_new_state() {
-        //     return false;
-        // }
-        let HealthState::Infected(ip, _) = self.health.get_state() else {
-            return None;
-        };
-        let Some(immunity) = b.health.get_immune_factor(ip, pfs) else {
-            return None;
-        };
-        if !ip.check_infection(immunity, d, self.health.days_to.onset, pfs) {
-            return None;
-        }
-        // b.health.insert_new_state(HealthState::Infected(
-        //     InfectionParam::new(immunity, ip.virus_variant),
-        //     InfMode::Asym,
-        // ));
-        // true
-        Some((immunity, ip.virus_variant))
     }
 
     fn calc_gathering_effect(&self) -> (Option<Point>, Option<f64>) {
@@ -935,36 +909,20 @@ impl Agent {
             let mut a = agents[i].0.write();
             a.reset(wp, rp, i, i < n_dist);
             match h {
-                HealthType::Susceptible => a.force_susceptible(),
+                HealthType::Susceptible => a.health.force_susceptible(),
                 HealthType::Asymptomatic => {
-                    a.force_infected();
+                    a.health.force_infected();
                     if a.health.is_symptomatic() {
                         n_symptomatic += 1;
                         *h = HealthType::Symptomatic;
                     }
                 }
-                HealthType::Recovered => a.force_recovered(rp),
+                HealthType::Recovered => a.health.force_recovered(rp),
                 _ => {}
             }
         }
         (cats, n_symptomatic)
     }
-
-    // pub fn reserve_test<F: Fn(&InnerAgent) -> Option<TestReason>>(
-    //     &self,
-    //     pfs: &ParamsForStep,
-    //     f: F,
-    // ) -> Option<Testee> {
-    //     let reason = {
-    //         let ra = self.read();
-    //         if !ra.testing.is_reservable(pfs) {
-    //             return None;
-    //         }
-    //         f(&ra)?
-    //     };
-    //     self.write().testing.reserve();
-    //     Some(Testee::new(self.clone(), reason, pfs.rp.step))
-    // }
 }
 
 #[derive(Default)]

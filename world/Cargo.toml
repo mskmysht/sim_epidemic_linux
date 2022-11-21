@@ -6,6 +6,7 @@ edition = "2021"
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 
 [dependencies]
+table = { path = "../libs/table" }
 custom_macro = { path = "../custom_macro" }
 world-if = { path = "../libs/world-if" }
 ipc-channel = "0.16"

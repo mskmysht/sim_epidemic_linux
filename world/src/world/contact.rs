@@ -24,10 +24,6 @@ impl Contacts {
         self.0
             .drain(..)
             .filter_map(|ci| {
-                // if pfs.rp.step - ci.time_stamp < retention_steps {
-                // } else {
-                //     None
-                // }
                 ci.agent
                     .write()
                     .reserve_test_with(ci.agent.clone(), pfs, |a| {
