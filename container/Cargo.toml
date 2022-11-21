@@ -19,7 +19,7 @@ serde = { version = "1.0", features = ["derive"] }
 parking_lot = "0.12"
 async-trait = "0.1"
 tokio = { version = "1.21", features = ["full"] }
-quinn = "0.8"
+quinn = "0.9"
 rustls = "0.20"
 rcgen = "0.10"
 futures-util = "0.3"
