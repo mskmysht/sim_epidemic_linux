@@ -10,24 +10,27 @@ fn main() -> Result<(), Box<dyn Error>> {}
 #[argopt::subcmd]
 fn start(
     addr: SocketAddr,
-    con_addr: SocketAddr,
-    con_cert: String,
-    con_name: String,
+    cert_path: String,
+    server_addr: SocketAddr,
+    server_name: String,
+    name: String,
 ) -> Result<(), Box<dyn Error>> {
     let rt = tokio::runtime::Runtime::new()?;
-    rt.block_on(run(addr, con_addr, con_cert, con_name))
+    rt.block_on(run(addr, cert_path, server_addr, server_name, name))
 }
 
 async fn run(
     addr: SocketAddr,
-    con_addr: SocketAddr,
-    con_cert: String,
-    con_name: String,
+    cert_path: String,
+    server_addr: SocketAddr,
+    server_name: String,
+    name: String,
 ) -> Result<(), Box<dyn Error>> {
-    let connection = quic::get_connection(addr, con_addr, con_cert).await?;
-    repl::AsyncRepl::new(quic::MyHandler::new(connection, con_name))
-        .run()
-        .await;
+    repl::AsyncRepl::new(
+        quic::MyHandler::new(addr, cert_path, server_addr, server_name, name).await?,
+    )
+    .run()
+    .await;
     Ok(())
 }
 
