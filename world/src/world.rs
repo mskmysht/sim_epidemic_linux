@@ -19,7 +19,6 @@ use crate::{
 };
 
 use std::{
-    error::{self, Error},
     f64, io,
     sync::mpsc,
     thread::{self, JoinHandle},
@@ -30,9 +29,9 @@ use std::{
 use world_if::{ErrorStatus, LoopMode, Request, Response, WorldStatus};
 
 use chrono::Local;
-use ipc_channel::ipc::{IpcReceiver, IpcSender};
+use ipc_channel::ipc::{self, IpcReceiver, IpcSender};
 
-struct InnerWorld {
+struct World {
     id: String,
     runtime_params: RuntimeParams,
     world_params: WorldParams,
@@ -55,9 +54,9 @@ struct InnerWorld {
     vaccine_info: Vec<VaccineInfo>,
 }
 
-impl InnerWorld {
-    pub fn new(id: String, runtime_params: RuntimeParams, world_params: WorldParams) -> InnerWorld {
-        let mut w = InnerWorld {
+impl World {
+    pub fn new(id: String, runtime_params: RuntimeParams, world_params: WorldParams) -> World {
+        let mut w = World {
             id,
             runtime_params,
             world_params,
@@ -150,7 +149,7 @@ impl InnerWorld {
         self.is_finished = false;
     }
 
-    fn do_one_step(&mut self) {
+    fn step(&mut self) {
         let pfs = ParamsForStep::new(
             &self.world_params,
             &self.runtime_params,
@@ -189,7 +188,7 @@ impl InnerWorld {
         // [todo] self.predicate_to_stop
     }
 
-    fn export(&self, dir: &str) -> Result<(), Box<dyn error::Error>> {
+    fn export(&self, dir: &str) -> io::Result<()> {
         self.log.write(
             &format!("{}_{}", self.id, Local::now().format("%F_%H-%M-%S")),
             dir,
@@ -211,32 +210,24 @@ fn get_uptime() -> f64 {
         .as_secs_f64()
 }
 
-#[derive(Default, Debug)]
-struct WorldStepInfo {
-    prev_time: f64,
-    steps_per_sec: f64,
+pub trait SpawnerChannel {
+    type SendError<T>;
+    type RecvError;
+    type TryRecvError;
+
+    fn recv(&self) -> Result<Request, Self::RecvError>;
+    fn try_recv(&self) -> Result<Request, Self::TryRecvError>;
+    fn send_response(&self, data: Response) -> Result<(), Self::SendError<Response>>;
+    fn send_on_stream(&self, data: WorldStatus) -> Result<(), Self::SendError<WorldStatus>>;
 }
 
-pub struct World<C: WorldChannel> {
-    inner: InnerWorld,
-    info: WorldStepInfo,
-    channel: C,
-}
-
-pub trait WorldChannel {
-    fn recv(&self) -> Result<Request, Box<dyn Error>>;
-    fn try_recv(&self) -> Result<Request, Box<dyn Error>>;
-    fn send_response(&self, data: Response) -> Result<(), Box<dyn Error>>;
-    fn send_on_stream(&self, data: WorldStatus) -> Result<(), Box<dyn Error>>;
-}
-
-pub struct MpscWorldChannel {
+pub struct MpscSpawnerChannel {
     stream_tx: mpsc::Sender<WorldStatus>,
     req_rx: mpsc::Receiver<Request>,
     res_tx: mpsc::Sender<Response>,
 }
 
-impl MpscWorldChannel {
+impl MpscSpawnerChannel {
     pub fn new(
         stream_tx: mpsc::Sender<WorldStatus>,
         req_rx: mpsc::Receiver<Request>,
@@ -250,31 +241,35 @@ impl MpscWorldChannel {
     }
 }
 
-impl WorldChannel for MpscWorldChannel {
-    fn recv(&self) -> Result<Request, Box<dyn Error>> {
-        Ok(self.req_rx.recv()?)
+impl SpawnerChannel for MpscSpawnerChannel {
+    type SendError<T> = mpsc::SendError<T>;
+    type RecvError = mpsc::RecvError;
+    type TryRecvError = mpsc::TryRecvError;
+
+    fn recv(&self) -> Result<Request, Self::RecvError> {
+        self.req_rx.recv()
     }
 
-    fn try_recv(&self) -> Result<Request, Box<dyn Error>> {
-        Ok(self.req_rx.try_recv()?)
+    fn try_recv(&self) -> Result<Request, Self::TryRecvError> {
+        self.req_rx.try_recv()
     }
 
-    fn send_response(&self, data: Response) -> Result<(), Box<dyn Error>> {
-        Ok(self.res_tx.send(data)?)
+    fn send_response(&self, data: Response) -> Result<(), Self::SendError<Response>> {
+        self.res_tx.send(data)
     }
 
-    fn send_on_stream(&self, data: WorldStatus) -> Result<(), Box<dyn Error>> {
-        Ok(self.stream_tx.send(data)?)
+    fn send_on_stream(&self, data: WorldStatus) -> Result<(), Self::SendError<WorldStatus>> {
+        self.stream_tx.send(data)
     }
 }
 
-pub struct IpcWorldChannel {
+pub struct IpcSpawnerChannel {
     stream_tx: IpcSender<WorldStatus>,
     req_rx: IpcReceiver<Request>,
     res_tx: IpcSender<Response>,
 }
 
-impl IpcWorldChannel {
+impl IpcSpawnerChannel {
     pub fn new(
         stream_tx: IpcSender<WorldStatus>,
         req_rx: IpcReceiver<Request>,
@@ -288,32 +283,54 @@ impl IpcWorldChannel {
     }
 }
 
-impl WorldChannel for IpcWorldChannel {
-    fn recv(&self) -> Result<Request, Box<dyn Error>> {
-        Ok(self.req_rx.recv()?)
+impl SpawnerChannel for IpcSpawnerChannel {
+    type SendError<T> = ipc_channel::Error;
+    type RecvError = ipc::IpcError;
+    type TryRecvError = ipc::TryRecvError;
+
+    fn recv(&self) -> Result<Request, Self::RecvError> {
+        self.req_rx.recv()
     }
 
-    fn try_recv(&self) -> Result<Request, Box<dyn Error>> {
-        Ok(self.req_rx.try_recv()?)
+    fn try_recv(&self) -> Result<Request, Self::TryRecvError> {
+        self.req_rx.try_recv()
     }
 
-    fn send_response(&self, data: Response) -> Result<(), Box<dyn Error>> {
-        Ok(self.res_tx.send(data)?)
+    fn send_response(&self, data: Response) -> Result<(), Self::SendError<Response>> {
+        self.res_tx.send(data)
     }
 
-    fn send_on_stream(&self, data: WorldStatus) -> Result<(), Box<dyn Error>> {
-        Ok(self.stream_tx.send(data)?)
+    fn send_on_stream(&self, data: WorldStatus) -> Result<(), Self::SendError<WorldStatus>> {
+        self.stream_tx.send(data)
     }
 }
 
-impl<C: WorldChannel + Send + 'static> World<C> {
+#[derive(Default, Debug)]
+struct WorldStepInfo {
+    prev_time: f64,
+    steps_per_sec: f64,
+}
+
+pub struct WorldSpawner<C: SpawnerChannel> {
+    world: World,
+    info: WorldStepInfo,
+    channel: C,
+}
+
+impl<C> WorldSpawner<C>
+where
+    C: SpawnerChannel + Send + 'static,
+    C::RecvError: std::fmt::Debug,
+    C::SendError<Response>: std::fmt::Debug,
+    C::SendError<WorldStatus>: std::fmt::Debug,
+{
     pub fn spawn(id: String, channel: C) -> io::Result<(JoinHandle<String>, WorldStatus)> {
         let world = Self {
-            inner: InnerWorld::new(id, new_runtime_params(), new_world_params()),
+            world: World::new(id, new_runtime_params(), new_world_params()),
             info: WorldStepInfo::default(),
             channel,
         };
-        let status = WorldStatus::new(world.inner.runtime_params.step, LoopMode::LoopNone);
+        let status = WorldStatus::new(world.world.runtime_params.step, LoopMode::LoopNone);
         Ok((world.get_handle()?, status))
     }
 
@@ -330,20 +347,20 @@ impl<C: WorldChannel + Send + 'static> World<C> {
     #[inline]
     fn send_status(&self, mode: LoopMode) {
         self.channel
-            .send_on_stream(WorldStatus::new(self.inner.runtime_params.step, mode))
+            .send_on_stream(WorldStatus::new(self.world.runtime_params.step, mode))
             .unwrap();
     }
 
     #[inline]
     fn reset(&mut self) {
-        self.inner.reset();
+        self.world.reset();
         self.info = WorldStepInfo::default();
         self.send_status(LoopMode::LoopNone);
     }
 
     #[inline]
     fn step(&mut self, default_mode: LoopMode) -> bool {
-        self.inner.do_one_step();
+        self.world.step();
         //    if loop_mode == LoopMode::LoopEndByCondition
         //        && world.scenario_index < self.scenario.len() as i32
         //    {
@@ -357,7 +374,7 @@ impl<C: WorldChannel + Send + 'static> World<C> {
                 ((1.0 / time_passed).min(30.0) - self.info.steps_per_sec) * 0.2;
         }
         self.info.prev_time = new_time;
-        if self.inner.is_finished {
+        if self.world.is_finished {
             self.send_status(LoopMode::LoopFinished);
             true
         } else {
@@ -368,7 +385,7 @@ impl<C: WorldChannel + Send + 'static> World<C> {
 
     #[inline]
     fn auto_stopped(&self, stop_at: u64) -> bool {
-        if self.inner.runtime_params.step >= stop_at * self.inner.world_params.steps_per_day - 1 {
+        if self.world.runtime_params.step >= stop_at * self.world.world_params.steps_per_day - 1 {
             self.send_status(LoopMode::LoopEndAsDaysPassed);
             true
         } else {
@@ -383,12 +400,12 @@ impl<C: WorldChannel + Send + 'static> World<C> {
 
     #[inline]
     fn debug(&self) -> String {
-        format!("{}\n{:?}", self.inner.log, self.info)
+        format!("{}\n{:?}", self.world.log, self.info)
     }
 
     fn get_handle(self) -> io::Result<JoinHandle<String>> {
         thread::Builder::new()
-            .name(format!("world_{}", self.inner.id.clone()))
+            .name(format!("world_{}", self.world.id.clone()))
             .spawn(move || self.run_loop())
     }
 
@@ -397,14 +414,14 @@ impl<C: WorldChannel + Send + 'static> World<C> {
             match self.channel.recv().unwrap() {
                 Request::Delete => {
                     self.res_status_ok(None);
-                    break self.inner.id;
+                    break self.world.id;
                 }
                 Request::Reset => {
                     self.reset();
                     self.res_status_ok(None);
                 }
                 Request::Step => {
-                    if !self.inner.is_finished {
+                    if !self.world.is_finished {
                         self.step(LoopMode::LoopEndByUser);
                         self.res_status_ok(None);
                     } else {
@@ -412,7 +429,7 @@ impl<C: WorldChannel + Send + 'static> World<C> {
                     }
                 }
                 Request::Start(stop_at) => {
-                    if self.inner.is_finished {
+                    if self.world.is_finished {
                         self.res_status_err(ErrorStatus::AlreadyFinished);
                     } else {
                         self.res_status_ok(None);
@@ -427,7 +444,7 @@ impl<C: WorldChannel + Send + 'static> World<C> {
                                 match msg {
                                     Request::Delete => {
                                         self.res_status_ok(None);
-                                        break 'outer self.inner.id;
+                                        break 'outer self.world.id;
                                     }
                                     Request::Stop => {
                                         self.stop();
@@ -447,7 +464,7 @@ impl<C: WorldChannel + Send + 'static> World<C> {
                     }
                 }
                 Request::Debug => self.res_status_ok(Some(self.debug())),
-                Request::Export(dir) => match self.inner.export(&dir) {
+                Request::Export(dir) => match self.world.export(&dir) {
                     Ok(_) => self.res_status_ok(Some(format!("{} was successfully exported", dir))),
                     Err(_) => self.res_status_err(ErrorStatus::FileExportFailed),
                 },
@@ -456,163 +473,6 @@ impl<C: WorldChannel + Send + 'static> World<C> {
         }
     }
 }
-
-/**/
-pub fn spawn_world(
-    id: String,
-    stream_tx: IpcSender<WorldStatus>,
-    req_rx: IpcReceiver<Request>,
-    res_tx: IpcSender<Response>,
-    // drop_tx: mpsc::Sender<()>,
-) -> io::Result<(JoinHandle<String>, WorldStatus)> {
-    let mut world = InnerWorld::new(id, new_runtime_params(), new_world_params());
-    let mut info = WorldStepInfo::default();
-    let status = WorldStatus::new(world.runtime_params.step, LoopMode::LoopNone);
-
-    let _res_tx = res_tx.clone();
-    macro_rules! res_status {
-        (ok) => {
-            res_tx.send(Ok(None)).unwrap()
-        };
-        (ok; $msg:expr) => {
-            res_tx.send(Ok(Some($msg))).unwrap()
-        };
-        (err; $err:expr) => {
-            res_tx.send(Err($err)).unwrap()
-        };
-    }
-
-    macro_rules! debug {
-        () => {{
-            format!("{}\n{:?}", world.log, info)
-        }};
-    }
-
-    macro_rules! send_status {
-        ($mode:expr) => {
-            stream_tx
-                .send(WorldStatus::new(world.runtime_params.step, $mode))
-                .unwrap()
-        };
-    }
-
-    macro_rules! reset {
-        () => {
-            world.reset();
-            info = WorldStepInfo::default();
-            send_status!(LoopMode::LoopNone);
-        };
-    }
-
-    macro_rules! step {
-        ($default_mode:expr) => {{
-            world.do_one_step();
-            //    if loop_mode == LoopMode::LoopEndByCondition
-            //        && world.scenario_index < self.scenario.len() as i32
-            //    {
-            //        world.exec_scenario();
-            //        loop_mode = LoopMode::LoopRunning;
-            //    }
-            let new_time = get_uptime();
-            let time_passed = new_time - info.prev_time;
-            if time_passed < 1.0 {
-                info.steps_per_sec += ((1.0 / time_passed).min(30.0) - info.steps_per_sec) * 0.2;
-            }
-            info.prev_time = new_time;
-            if world.is_finished {
-                send_status!(LoopMode::LoopFinished);
-                true
-            } else {
-                send_status!($default_mode);
-                false
-            }
-        }};
-    }
-
-    macro_rules! auto_stopped {
-        ($stop_at:expr) => {
-            if world.runtime_params.step >= $stop_at * world.world_params.steps_per_day - 1 {
-                send_status!(LoopMode::LoopEndAsDaysPassed);
-                true
-            } else {
-                false
-            }
-        };
-    }
-
-    macro_rules! stop {
-        () => {
-            send_status!(LoopMode::LoopEndByUser);
-        };
-    }
-
-    let handle = thread::Builder::new()
-        .name(format!("world_{}", world.id.clone()))
-        .spawn(move || 'outer: loop {
-            match req_rx.recv().unwrap() {
-                Request::Delete => {
-                    res_status!(ok);
-                    break world.id;
-                }
-                Request::Reset => {
-                    reset!();
-                    res_status!(ok);
-                }
-                Request::Step => {
-                    if !world.is_finished {
-                        step!(LoopMode::LoopEndByUser);
-                        res_status!(ok);
-                    } else {
-                        res_status!(err; ErrorStatus::AlreadyFinished);
-                    }
-                }
-                Request::Start(stop_at) => {
-                    if world.is_finished {
-                        res_status!(err; ErrorStatus::AlreadyFinished);
-                    } else {
-                        res_status!(ok);
-                        loop {
-                            if auto_stopped!(stop_at) {
-                                break;
-                            }
-                            if step!(LoopMode::LoopRunning) {
-                                break;
-                            }
-                            if let Ok(msg) = req_rx.try_recv() {
-                                match msg {
-                                    Request::Delete => {
-                                        res_status!(ok);
-                                        break 'outer world.id;
-                                    }
-                                    Request::Stop => {
-                                        stop!();
-                                        res_status!(ok);
-                                        break;
-                                    }
-                                    Request::Reset => {
-                                        reset!();
-                                        res_status!(ok);
-                                        break;
-                                    }
-                                    Request::Debug => res_status!(ok; debug!()),
-                                    _ => res_status!(err; ErrorStatus::AlreadyRunning),
-                                }
-                            }
-                        }
-                    }
-                }
-                Request::Debug => res_status!(ok; debug!()),
-                Request::Export(dir) => match world.export(&dir) {
-                    Ok(_) => res_status!(ok; format!("{} was successfully exported", dir)),
-                    Err(_) => res_status!(err; ErrorStatus::FileExportFailed),
-                },
-                Request::Stop => res_status!(err; ErrorStatus::AlreadyStopped),
-            }
-        })?;
-
-    Ok((handle, status))
-}
-/**/
 
 fn new_world_params() -> WorldParams {
     WorldParams::new(

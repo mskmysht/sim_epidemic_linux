@@ -1,6 +1,6 @@
 use std::{sync::mpsc, thread};
 
-use world::MpscWorldChannel;
+use world::MpscSpawnerChannel;
 use world_if::{Request, Response, WorldStatus};
 
 struct MyHandler {
@@ -62,9 +62,9 @@ fn main() {
     let (req_tx, req_rx) = mpsc::channel();
     let (res_tx, res_rx) = mpsc::channel();
     let (stream_tx, stream_rx) = mpsc::channel();
-    let (handle, status) = world::World::spawn(
+    let (handle, status) = world::WorldSpawner::spawn(
         "test".into(),
-        MpscWorldChannel::new(stream_tx, req_rx, res_tx),
+        MpscSpawnerChannel::new(stream_tx, req_rx, res_tx),
     )
     .unwrap();
     let input = thread::spawn(move || {

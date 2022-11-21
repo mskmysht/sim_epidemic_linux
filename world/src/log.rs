@@ -3,7 +3,7 @@ use crate::{
     util::enum_map::{Enum, EnumMap},
 };
 
-use std::{collections::VecDeque, error, fmt::Display};
+use std::{collections::VecDeque, fmt::Display, io};
 
 use csv::Writer;
 
@@ -103,7 +103,7 @@ impl MyLog {
         self.n_infected() == 0
     }
 
-    pub fn write(&self, name: &str, dir: &str) -> Result<(), Box<dyn error::Error>> {
+    pub fn write(&self, name: &str, dir: &str) -> io::Result<()> {
         use std::path;
         let p = path::Path::new(dir);
         let p = p.join(format!("{}_log.csv", name));
