@@ -1,158 +1,156 @@
-pub mod world {
-    use container_if as cif;
-    use ipc_channel::ipc::IpcOneShotServer;
-    use parking_lot::{Mutex, RwLock};
-    use std::{
-        collections::HashMap,
-        io, process,
-        sync::Arc,
-        thread::{self, JoinHandle},
-    };
-    use world_if as wif;
-    use world_if::WorldInfo;
+use std::{
+    collections::HashMap,
+    io, process,
+    sync::Arc,
+    thread::{self, JoinHandle},
+};
 
-    fn new_unique_string<const LEN: usize>() -> String {
-        use rand::Rng;
-        use rand_distr::Alphanumeric;
-        rand::thread_rng()
-            .sample_iter(Alphanumeric)
-            .take(LEN)
-            .map(char::from)
-            .collect()
-    }
+use world_if::WorldInfo;
 
-    pub struct WorldManager {
-        path: String,
-        info_map: Arc<RwLock<HashMap<String, Mutex<WorldInfo>>>>,
-        handles: Vec<JoinHandle<()>>,
-    }
+use ipc_channel::ipc::IpcOneShotServer;
+use parking_lot::{Mutex, RwLock};
 
-    impl WorldManager {
-        pub fn new(path: String) -> Self {
-            Self {
-                path,
-                info_map: Arc::new(RwLock::new(HashMap::default())),
-                handles: Vec::new(),
-            }
-        }
+type Req = container_if::Request<world_if::Request>;
+type Res = container_if::Result<world_if::Response>;
 
-        pub fn close(&mut self) {
-            for handle in self.handles.drain(..) {
-                handle.join().unwrap();
-            }
-        }
+fn new_unique_string<const LEN: usize>() -> String {
+    use rand::Rng;
+    use rand_distr::Alphanumeric;
+    rand::thread_rng()
+        .sample_iter(Alphanumeric)
+        .take(LEN)
+        .map(char::from)
+        .collect()
+}
 
-        pub fn delete_all(&mut self) -> Vec<(String, wif::Response)> {
-            let all = self
-                .info_map
-                .write()
-                .drain()
-                .map(|(id, info)| {
-                    let res = info.lock().send(wif::Request::Delete);
-                    (id, res)
-                })
-                .collect();
-            all
-        }
+pub struct WorldManager {
+    path: String,
+    info_map: Arc<RwLock<HashMap<String, Mutex<WorldInfo>>>>,
+    handles: Vec<JoinHandle<()>>,
+}
 
-        pub fn entry(&mut self) -> io::Result<String> {
-            use std::collections::hash_map::Entry;
-            let mut map = self.info_map.write();
-            let entry = {
-                loop {
-                    let id = new_unique_string::<3>();
-                    if let Entry::Vacant(e) = map.entry(id) {
-                        break e;
-                    }
-                }
-            };
-            let id = entry.key().clone();
-            let (server, server_name) = IpcOneShotServer::new()?;
-            let mut child = process::Command::new(&self.path)
-                .args(["--world-id", &id, "--server-name", &server_name])
-                .spawn()?;
-            let (_, info): (_, WorldInfo) = server.accept().unwrap();
-            println!("[info] Create World {id}.");
-            let handle = {
-                let id = id.clone();
-                let map = Arc::clone(&self.info_map);
-                thread::spawn(move || {
-                    let s = child.wait().unwrap();
-                    if map.write().remove(&id).is_some() {
-                        println!("[warn] stopped world {id} process with exit status {s}.");
-                    } else {
-                        println!("[info] closed world {id} process with exit status {s}.");
-                    }
-                })
-            };
-            entry.insert(Mutex::new(info));
-            self.handles.push(handle);
-            Ok(id)
-        }
-
-        pub fn send(&self, id: &String, req: wif::Request) -> Option<wif::Response> {
-            let map = self.info_map.read();
-            let info = map.get(id)?.lock();
-            Some(info.send(req))
-        }
-
-        pub fn get_status(&self, id: &String) -> Option<String> {
-            let map = self.info_map.read();
-            let mut info = map.get(id)?.lock();
-            Some((info.seek_status()).into())
-        }
-
-        pub fn get_ids(&self) -> Vec<String> {
-            self.info_map.read().keys().cloned().collect()
-        }
-
-        pub fn delete(&mut self, id: &String) -> Option<wif::Response> {
-            let mut map = self.info_map.write();
-            let info = map.remove(id)?;
-            let info = info.lock();
-            Some(info.send(wif::Request::Delete))
-        }
-
-        pub fn callback(
-            &mut self,
-            req: cif::Request<wif::Request>,
-        ) -> cif::Response<wif::Success, wif::ErrorStatus> {
-            match req {
-                cif::Request::New => match self.entry() {
-                    Ok(id) => Ok(cif::Success::Created(id)),
-                    Err(e) => {
-                        println!("[error] {e:?}");
-                        Err(cif::Error::Failure)
-                    }
-                },
-                cif::Request::List => Ok(cif::Success::IdList(self.get_ids())),
-                cif::Request::Info(ref id) => self
-                    .get_status(id)
-                    .ok_or(cif::Error::NoId)
-                    .map(cif::Success::Msg),
-                cif::Request::Delete(id) => self
-                    .delete(&id)
-                    .ok_or(cif::Error::NoId)?
-                    .map_err(cif::Error::WorldError)
-                    .map(cif::Success::Accepted),
-                cif::Request::Msg(id, req) => self
-                    .send(&id, req)
-                    .ok_or(cif::Error::NoId)?
-                    .map_err(cif::Error::WorldError)
-                    .map(cif::Success::Accepted),
-            }
+impl WorldManager {
+    pub fn new(path: String) -> Self {
+        Self {
+            path,
+            info_map: Arc::new(RwLock::new(HashMap::default())),
+            handles: Vec::new(),
         }
     }
 
-    impl Drop for WorldManager {
-        fn drop(&mut self) {
-            for (id, res) in self.delete_all().into_iter() {
-                match res {
-                    Ok(_) => println!("Deleted {id}."),
-                    Err(err) => eprintln!("{:?}", err),
+    pub fn close(&mut self) {
+        for handle in self.handles.drain(..) {
+            handle.join().unwrap();
+        }
+    }
+
+    fn delete_all(&mut self) -> Vec<(String, world_if::Result)> {
+        let all = self
+            .info_map
+            .write()
+            .drain()
+            .map(|(id, info)| {
+                let res = info.lock().send(world_if::Request::Delete);
+                (id, res)
+            })
+            .collect();
+        all
+    }
+
+    fn entry_world(&mut self) -> io::Result<String> {
+        use std::collections::hash_map::Entry;
+        let mut map = self.info_map.write();
+        let entry = {
+            loop {
+                let id = new_unique_string::<3>();
+                if let Entry::Vacant(e) = map.entry(id) {
+                    break e;
                 }
             }
-            self.close();
+        };
+        let id = entry.key().clone();
+        let (server, server_name) = IpcOneShotServer::new()?;
+        let mut child = process::Command::new(&self.path)
+            .args(["--world-id", &id, "--server-name", &server_name])
+            .spawn()?;
+        let (_, info): (_, WorldInfo) = server.accept().unwrap();
+        println!("[info] Create World {id}.");
+        let handle = {
+            let id = id.clone();
+            let map = Arc::clone(&self.info_map);
+            thread::spawn(move || {
+                let s = child.wait().unwrap();
+                if map.write().remove(&id).is_some() {
+                    println!("[warn] stopped world {id} process with exit status {s}.");
+                } else {
+                    println!("[info] closed world {id} process with exit status {s}.");
+                }
+            })
+        };
+        entry.insert(Mutex::new(info));
+        self.handles.push(handle);
+        Ok(id)
+    }
+
+    fn get_mut_with<F: FnMut(&mut WorldInfo) -> Res>(&self, id: &str, mut f: F) -> Res {
+        let map = self.info_map.read();
+        let Some(info) = map.get(id) else {
+            return Err(container_if::Error::no_id_found());
+        };
+        let mut info = info.lock();
+        f(&mut info)
+    }
+
+    fn get_with<F: FnOnce(&WorldInfo) -> Res>(&self, id: &str, f: F) -> Res {
+        let map = self.info_map.read();
+        let Some(info) = map.get(id) else {
+            return Err(container_if::Error::no_id_found());
+        };
+        let info = info.lock();
+        f(&info)
+    }
+
+    fn remove_with<F: FnOnce(&WorldInfo) -> Res>(&self, id: &str, f: F) -> Res {
+        let mut map = self.info_map.write();
+        let Some(info) = map.remove(id) else {
+            return Err(container_if::Error::no_id_found());
+        };
+        let info = info.lock();
+        f(&info)
+    }
+
+    pub fn callback(&mut self, req: Req) -> Res {
+        match req {
+            Req::SpawnItem => match self.entry_world() {
+                Ok(id) => Ok(container_if::Response::Item(id)),
+                Err(e) => Err(container_if::Error::new(&e.into())),
+            },
+            Req::GetItemList => Ok(container_if::Response::ItemList(
+                self.info_map.read().keys().cloned().collect(),
+            )),
+            Req::GetItemInfo(ref id) => self.get_mut_with(id, |info| {
+                Ok(container_if::Response::ItemInfo(
+                    (info.seek_status()).into(),
+                ))
+            }),
+            Req::Custom(ref id, req) => {
+                self.get_with(id, |info| container_if::from_result(info.send(req)))
+            }
+            Req::DeleteItem(ref id) => {
+                self.remove_with(id, |info| container_if::from_result(info.delete()))
+            }
         }
+    }
+}
+
+impl Drop for WorldManager {
+    fn drop(&mut self) {
+        for (id, res) in self.delete_all().into_iter() {
+            match res {
+                Ok(_) => println!("Deleted {id}."),
+                Err(err) => eprintln!("{:?}", err),
+            }
+        }
+        self.close();
     }
 }

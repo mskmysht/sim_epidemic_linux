@@ -5,7 +5,7 @@ use world_if::{Request, Response, WorldStatus};
 
 struct MyHandler {
     req_tx: mpsc::Sender<Request>,
-    res_rx: mpsc::Receiver<Response>,
+    res_rx: mpsc::Receiver<world_if::Result>,
     stream_rx: mpsc::Receiver<WorldStatus>,
     status: WorldStatus,
 }
@@ -28,7 +28,7 @@ impl repl::Parsable for MyHandler {
 }
 
 impl repl::Logging for MyHandler {
-    type Arg = Response;
+    type Arg = world_if::Result;
 
     fn logging(arg: Self::Arg) {
         match arg {
@@ -40,7 +40,7 @@ impl repl::Logging for MyHandler {
 
 impl repl::Handler for MyHandler {
     type Input = RequestWrapper;
-    type Output = Response;
+    type Output = world_if::Result;
 
     fn callback(&mut self, input: Self::Input) -> Self::Output {
         match input {
@@ -48,7 +48,7 @@ impl repl::Handler for MyHandler {
                 while let Ok(status) = self.stream_rx.try_recv() {
                     self.status = status;
                 }
-                Ok(Some((&self.status).into()))
+                Ok(Response::SuccessWithMessage((&self.status).into()))
             }
             RequestWrapper::Req(req) => {
                 self.req_tx.send(req).unwrap();

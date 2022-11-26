@@ -17,10 +17,7 @@ pub mod quic {
     }
 
     type Req = container_if::Request<world_if::Request>;
-    type Ret = Result<
-        container_if::Response<world_if::Success, world_if::ErrorStatus>,
-        Box<dyn Error + Send + Sync>,
-    >;
+    type Ret = Result<container_if::Result<world_if::Response>, Box<dyn Error + Send + Sync>>;
 
     pub struct MyHandler {
         endpoint: Endpoint,
@@ -80,7 +77,7 @@ pub mod quic {
     impl repl::Parsable for MyHandler {
         type Parsed = Req;
         fn parse(buf: &str) -> repl::ParseResult<Self::Parsed> {
-            container_if::parse::request(buf)?.map_r(|s| world_if::parse::request(&s))
+            container_if::parse::request(buf)?.try_map(|s| world_if::parse::request(&s))
         }
     }
 
@@ -104,7 +101,7 @@ pub mod tcp {
     use std::{io, net::TcpStream};
 
     type Req = container_if::Request<world_if::Request>;
-    type Ret = io::Result<container_if::Response<world_if::Success, world_if::ErrorStatus>>;
+    type Ret = io::Result<container_if::Result<world_if::Response>>;
 
     pub struct MyHandler<'a>(pub TcpStream, pub &'a str);
 
@@ -123,7 +120,7 @@ pub mod tcp {
     impl<'a> repl::Parsable for MyHandler<'a> {
         type Parsed = Req;
         fn parse(buf: &str) -> repl::ParseResult<Self::Parsed> {
-            container_if::parse::request(buf)?.map_r(|s| world_if::parse::request(&s))
+            container_if::parse::request(buf)?.try_map(|s| world_if::parse::request(&s))
         }
     }
 

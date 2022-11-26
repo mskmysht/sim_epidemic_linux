@@ -1,4 +1,4 @@
-use container::world::WorldManager;
+use container::WorldManager;
 use parking_lot::Mutex;
 use quinn::{Endpoint, ServerConfig, TransportConfig, VarInt};
 use std::{

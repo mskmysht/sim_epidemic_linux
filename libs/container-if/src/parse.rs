@@ -24,11 +24,11 @@ peg::parser! {
 
         rule string() -> String = s:$([_]+) { String::from(s) }
         rule expr<M>(x: rule<M>) -> Request<M>
-            = "list" __ eof() { Request::List }
-            / "new"  __ eof() { Request::New }
-            / "info"   id:id() __ eof() { Request::Info(id) }
-            / "delete" id:id() __ eof() { Request::Delete(id) }
-            / "msg"    id:id() m:x() { Request::Msg(id, m) }
+            = "list" __ eof() { Request::GetItemList }
+            / "new"  __ eof() { Request::SpawnItem }
+            / "info"   id:id() __ eof() { Request::GetItemInfo(id) }
+            / "delete" id:id() __ eof() { Request::DeleteItem(id) }
+            / "msg"    id:id() m:x() { Request::Custom(id, m) }
         pub rule request() -> Request<String> = __ c:expr(<string()>) { c }
     }
 }
