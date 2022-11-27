@@ -1,3 +1,5 @@
+pub mod api;
+
 pub mod quic {
     use async_trait::async_trait;
     use quinn::{ClientConfig, Connection, Endpoint, NewConnection};

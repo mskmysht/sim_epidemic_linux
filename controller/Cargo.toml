@@ -18,3 +18,5 @@ rustls = "0.20"
 tokio = { version = "1.21", features = ["full"] }
 poem = "1"
 poem-openapi = { version = "2", features = ["rapidoc"] }
+parking_lot = "0.12"
+ulid = "1"
