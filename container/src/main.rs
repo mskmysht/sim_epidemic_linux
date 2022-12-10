@@ -1,7 +1,6 @@
-use container::world::WorldManager;
-use futures_util::StreamExt;
+use container::WorldManager;
 use parking_lot::Mutex;
-use quinn::{Endpoint, ServerConfig};
+use quinn::{Endpoint, ServerConfig, TransportConfig, VarInt};
 use std::{
     error::Error,
     net::{Ipv4Addr, SocketAddr, SocketAddrV4, TcpListener},
@@ -41,40 +40,53 @@ fn start(
     /// world binary path
     #[opt(long)]
     world_path: String,
-    /// world binary path
+    /// address to listen
     #[opt(long)]
     addr: SocketAddr,
+    /// idle timeout
+    timeout: u32,
 ) -> DynResult<()> {
     let rt = tokio::runtime::Runtime::new()?;
-    rt.block_on(run(world_path, addr))
+    rt.block_on(run(world_path, addr, timeout))
 }
 
-fn config_server() -> DynResult<ServerConfig> {
+fn config_server(timeout: u32) -> DynResult<ServerConfig> {
     let cert = rustls::Certificate(security::load_ca_cert_der()?);
     let key = rustls::PrivateKey(security::load_ca_pkey_der()?);
-    Ok(ServerConfig::with_single_cert(vec![cert], key)?)
+    let mut config = ServerConfig::with_single_cert(vec![cert], key)?;
+    let mut tc = TransportConfig::default();
+    tc.max_idle_timeout(Some(VarInt::from_u32(timeout).into()));
+    config.transport_config(Arc::new(tc));
+    Ok(config)
 }
 
-async fn run(world_path: String, addr: SocketAddr) -> DynResult<()> {
-    let (_, mut incoming) = Endpoint::server(config_server()?, addr)?;
+async fn run(world_path: String, addr: SocketAddr, timeout: u32) -> DynResult<()> {
+    let endpoint = Endpoint::server(config_server(timeout)?, addr)?;
     let manager = Arc::new(Mutex::new(WorldManager::new(world_path)));
 
-    while let Some(conn) = incoming.next().await {
-        let ip = conn.remote_address().to_string();
+    while let Some(connecting) = endpoint.accept().await {
+        let connection = connecting.await?;
+        let ip = connection.remote_address().to_string();
         println!("[info] Acceept {}", ip);
 
-        let mut new_conn = conn.await?;
-        while let Some(Ok((mut send, mut recv))) = new_conn.bi_streams.next().await {
-            let manager = Arc::clone(&manager);
-            tokio::spawn(async move {
-                let req = protocol::quic::read_data(&mut recv).await.unwrap();
-                println!("[request] {req:?}");
-                let res = manager.lock().callback(req);
-                println!("[response] {res:?}");
-                protocol::quic::write_data(&mut send, &res).await.unwrap();
-            });
-        }
-        println!("[info] Disconnect {}", ip);
+        let e = loop {
+            match connection.accept_bi().await {
+                Ok((mut send, mut recv)) => {
+                    let manager = Arc::clone(&manager);
+                    tokio::spawn(async move {
+                        let req = protocol::quic::read_data(&mut recv).await.unwrap();
+                        println!("[request] {req:?}");
+                        let res = manager.lock().callback(req);
+                        println!("[response] {res:?}");
+                        protocol::quic::write_data(&mut send, &res).await.unwrap();
+                    });
+                }
+                Err(e) => {
+                    break e;
+                }
+            }
+        };
+        println!("[info] Disconnect {} ({})", ip, e);
     }
     Ok(())
 }

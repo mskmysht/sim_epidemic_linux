@@ -26,7 +26,7 @@ use std::{
     usize,
 };
 
-use world_if::{ErrorStatus, LoopMode, Request, Response, WorldStatus};
+use world_if::{LoopMode, Request, Response, ResponseError, WorldStatus};
 
 use chrono::Local;
 use ipc_channel::ipc::{self, IpcReceiver, IpcSender};
@@ -217,21 +217,24 @@ pub trait SpawnerChannel {
 
     fn recv(&self) -> Result<Request, Self::RecvError>;
     fn try_recv(&self) -> Result<Request, Self::TryRecvError>;
-    fn send_response(&self, data: Response) -> Result<(), Self::SendError<Response>>;
+    fn send_response(
+        &self,
+        data: world_if::Result,
+    ) -> Result<(), Self::SendError<world_if::Result>>;
     fn send_on_stream(&self, data: WorldStatus) -> Result<(), Self::SendError<WorldStatus>>;
 }
 
 pub struct MpscSpawnerChannel {
     stream_tx: mpsc::Sender<WorldStatus>,
     req_rx: mpsc::Receiver<Request>,
-    res_tx: mpsc::Sender<Response>,
+    res_tx: mpsc::Sender<world_if::Result>,
 }
 
 impl MpscSpawnerChannel {
     pub fn new(
         stream_tx: mpsc::Sender<WorldStatus>,
         req_rx: mpsc::Receiver<Request>,
-        res_tx: mpsc::Sender<Response>,
+        res_tx: mpsc::Sender<world_if::Result>,
     ) -> Self {
         Self {
             stream_tx,
@@ -254,7 +257,10 @@ impl SpawnerChannel for MpscSpawnerChannel {
         self.req_rx.try_recv()
     }
 
-    fn send_response(&self, data: Response) -> Result<(), Self::SendError<Response>> {
+    fn send_response(
+        &self,
+        data: world_if::Result,
+    ) -> Result<(), Self::SendError<world_if::Result>> {
         self.res_tx.send(data)
     }
 
@@ -266,14 +272,14 @@ impl SpawnerChannel for MpscSpawnerChannel {
 pub struct IpcSpawnerChannel {
     stream_tx: IpcSender<WorldStatus>,
     req_rx: IpcReceiver<Request>,
-    res_tx: IpcSender<Response>,
+    res_tx: IpcSender<world_if::Result>,
 }
 
 impl IpcSpawnerChannel {
     pub fn new(
         stream_tx: IpcSender<WorldStatus>,
         req_rx: IpcReceiver<Request>,
-        res_tx: IpcSender<Response>,
+        res_tx: IpcSender<world_if::Result>,
     ) -> Self {
         Self {
             stream_tx,
@@ -296,7 +302,10 @@ impl SpawnerChannel for IpcSpawnerChannel {
         self.req_rx.try_recv()
     }
 
-    fn send_response(&self, data: Response) -> Result<(), Self::SendError<Response>> {
+    fn send_response(
+        &self,
+        data: world_if::Result,
+    ) -> Result<(), Self::SendError<world_if::Result>> {
         self.res_tx.send(data)
     }
 
@@ -321,7 +330,7 @@ impl<C> WorldSpawner<C>
 where
     C: SpawnerChannel + Send + 'static,
     C::RecvError: std::fmt::Debug,
-    C::SendError<Response>: std::fmt::Debug,
+    C::SendError<world_if::Result>: std::fmt::Debug,
     C::SendError<WorldStatus>: std::fmt::Debug,
 {
     pub fn spawn(id: String, channel: C) -> io::Result<(JoinHandle<String>, WorldStatus)> {
@@ -335,13 +344,20 @@ where
     }
 
     #[inline]
-    fn res_status_ok(&self, msg: Option<String>) {
-        self.channel.send_response(Ok(msg)).unwrap();
+    fn res_status_ok(&self) {
+        self.channel.send_response(Ok(Response::Success)).unwrap();
     }
 
     #[inline]
-    fn res_status_err(&self, err: ErrorStatus) {
-        self.channel.send_response(Err(err)).unwrap();
+    fn res_status_ok_with(&self, msg: String) {
+        self.channel
+            .send_response(Ok(Response::SuccessWithMessage(msg)))
+            .unwrap();
+    }
+
+    #[inline]
+    fn res_status_err(&self, err: ResponseError) {
+        self.channel.send_response(Err(err.into())).unwrap();
     }
 
     #[inline]
@@ -413,26 +429,26 @@ where
         'outer: loop {
             match self.channel.recv().unwrap() {
                 Request::Delete => {
-                    self.res_status_ok(None);
+                    self.res_status_ok();
                     break self.world.id;
                 }
                 Request::Reset => {
                     self.reset();
-                    self.res_status_ok(None);
+                    self.res_status_ok();
                 }
                 Request::Step => {
                     if !self.world.is_finished {
                         self.step(LoopMode::LoopEndByUser);
-                        self.res_status_ok(None);
+                        self.res_status_ok();
                     } else {
-                        self.res_status_err(ErrorStatus::AlreadyFinished);
+                        self.res_status_err(ResponseError::AlreadyFinished);
                     }
                 }
                 Request::Start(stop_at) => {
                     if self.world.is_finished {
-                        self.res_status_err(ErrorStatus::AlreadyFinished);
+                        self.res_status_err(ResponseError::AlreadyFinished);
                     } else {
-                        self.res_status_ok(None);
+                        self.res_status_ok();
                         loop {
                             if self.auto_stopped(stop_at) {
                                 break;
@@ -443,32 +459,32 @@ where
                             if let Ok(msg) = self.channel.try_recv() {
                                 match msg {
                                     Request::Delete => {
-                                        self.res_status_ok(None);
+                                        self.res_status_ok();
                                         break 'outer self.world.id;
                                     }
                                     Request::Stop => {
                                         self.stop();
-                                        self.res_status_ok(None);
+                                        self.res_status_ok();
                                         break;
                                     }
                                     Request::Reset => {
                                         self.reset();
-                                        self.res_status_ok(None);
+                                        self.res_status_ok();
                                         break;
                                     }
-                                    Request::Debug => self.res_status_ok(Some(self.debug())),
-                                    _ => self.res_status_err(ErrorStatus::AlreadyRunning),
+                                    Request::Debug => self.res_status_ok_with(self.debug()),
+                                    _ => self.res_status_err(ResponseError::AlreadyRunning),
                                 }
                             }
                         }
                     }
                 }
-                Request::Debug => self.res_status_ok(Some(self.debug())),
+                Request::Debug => self.res_status_ok_with(self.debug()),
                 Request::Export(dir) => match self.world.export(&dir) {
-                    Ok(_) => self.res_status_ok(Some(format!("{} was successfully exported", dir))),
-                    Err(_) => self.res_status_err(ErrorStatus::FileExportFailed),
+                    Ok(_) => self.res_status_ok_with(format!("{} was successfully exported", dir)),
+                    Err(_) => self.res_status_err(ResponseError::FileExportFailed),
                 },
-                Request::Stop => self.res_status_err(ErrorStatus::AlreadyStopped),
+                Request::Stop => self.res_status_err(ResponseError::AlreadyStopped),
             }
         }
     }

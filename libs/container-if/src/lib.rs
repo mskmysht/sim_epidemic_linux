@@ -1,68 +1,85 @@
-use std::io;
+use std::result;
+
+pub mod parse;
 
 #[derive(Debug, serde::Serialize, serde::Deserialize)]
-pub enum Request<M> {
-    New,
-    List,
-    Info(String),
-    Delete(String),
-    Msg(String, M),
+pub enum Request<T> {
+    SpawnItem,
+    GetItemList,
+    GetItemInfo(String),
+    DeleteItem(String),
+    Custom(String, T),
 }
 
-#[derive(Debug, serde::Serialize, serde::Deserialize)]
-pub enum Success<S> {
-    Created(String),
-    Accepted(S),
-    Msg(String),
-    IdList(Vec<String>),
-}
+impl<T> Request<T> {
+    pub fn map<U, F: Fn(T) -> U>(self, f: F) -> Request<U> {
+        match self {
+            Request::SpawnItem => Request::SpawnItem,
+            Request::GetItemList => Request::GetItemList,
+            Request::GetItemInfo(id) => Request::GetItemInfo(id),
+            Request::DeleteItem(id) => Request::DeleteItem(id),
+            Request::Custom(id, t) => Request::Custom(id, f(t)),
+        }
+    }
 
-#[derive(Debug, serde::Serialize, serde::Deserialize)]
-pub enum Error<E> {
-    NoId,
-    Failure,
-    ParseError,
-    WorldError(E),
-}
-
-pub type Response<S, E> = Result<Success<S>, Error<E>>;
-
-impl<S, E> From<Error<E>> for Response<S, E> {
-    fn from(e: Error<E>) -> Self {
-        Err(e)
+    pub fn try_map<U, E, F: Fn(T) -> result::Result<U, E>>(
+        self,
+        f: F,
+    ) -> result::Result<Request<U>, E> {
+        match self {
+            Request::SpawnItem => Ok(Request::SpawnItem),
+            Request::GetItemList => Ok(Request::GetItemList),
+            Request::GetItemInfo(id) => Ok(Request::GetItemInfo(id)),
+            Request::DeleteItem(id) => Ok(Request::DeleteItem(id)),
+            Request::Custom(id, t) => f(t).map(|u| Request::Custom(id, u)),
+        }
     }
 }
 
-pub trait Manager<Q, S, E> {
-    fn new(&mut self) -> io::Result<String>;
-    fn get_ids(&self) -> Vec<String>;
-    fn get_status(&self, id: &String) -> Option<String>;
-    fn delete(&mut self, id: &String) -> Option<Result<S, E>>;
-    fn send(&self, id: &String, req: Q) -> Option<Result<S, E>>;
+#[derive(Debug, serde::Serialize, serde::Deserialize)]
+pub enum Response<T> {
+    Item(String),
+    ItemList(Vec<String>),
+    ItemInfo(String),
+    Custom(T),
 }
 
-impl<Q> Request<Q> {
-    pub fn eval<S, E, M: Manager<Q, S, E>>(self, manager: &mut M) -> Response<S, E> {
-        match self {
-            Request::New => match manager.new() {
-                Ok(id) => Ok(Success::Created(id)),
-                Err(e) => {
-                    println!("[error] {e:?}");
-                    Err(Error::Failure)
-                }
-            },
-            Request::List => Ok(Success::IdList(manager.get_ids())),
-            Request::Info(ref id) => manager.get_status(id).ok_or(Error::NoId).map(Success::Msg),
-            Request::Delete(id) => manager
-                .delete(&id)
-                .ok_or(Error::NoId)?
-                .map_err(Error::WorldError)
-                .map(Success::Accepted),
-            Request::Msg(id, req) => manager
-                .send(&id, req)
-                .ok_or(Error::NoId)?
-                .map_err(Error::WorldError)
-                .map(Success::Accepted),
-        }
+#[derive(Debug, thiserror::Error)]
+pub enum ResponseError {
+    #[error("failed to spawn item")]
+    FailedToSpawn(#[from] std::io::Error),
+    #[error("no id found")]
+    NoIdFound,
+    #[error("custom error")]
+    Custom(#[from] anyhow::Error),
+}
+
+#[derive(Debug, serde::Serialize, serde::Deserialize)]
+pub struct Error(serde_error::Error);
+
+impl Error {
+    pub fn new(e: &ResponseError) -> Self {
+        Self(serde_error::Error::new(e))
+    }
+
+    pub fn no_id_found() -> Self {
+        Self::new(&ResponseError::NoIdFound)
+    }
+
+    pub fn custom<E: std::error::Error + Send + Sync + 'static>(error: E) -> Self {
+        Self::new(&ResponseError::Custom(anyhow::Error::new(error)))
+    }
+}
+
+pub type Result<T> = result::Result<Response<T>, Error>;
+
+pub fn from_result<T, E, R>(from: R) -> Result<T>
+where
+    E: std::error::Error + Send + Sync + 'static,
+    R: Into<result::Result<T, E>>,
+{
+    match from.into() {
+        Ok(s) => Ok(Response::Custom(s)),
+        Err(e) => Err(Error::custom(e)),
     }
 }

@@ -1,3 +1,5 @@
+pub mod parse;
+
 use chrono::serde::ts_seconds;
 use ipc_channel::ipc::{IpcReceiver, IpcSender};
 use serde::{Deserialize, Serialize};
@@ -65,22 +67,36 @@ pub enum Request {
     Export(String),
 }
 
-pub type Success = Option<String>;
-
 #[derive(Debug, serde::Deserialize, serde::Serialize)]
-pub enum ErrorStatus {
+pub enum Response {
+    Success,
+    SuccessWithMessage(String),
+}
+
+#[derive(Debug, thiserror::Error)]
+pub enum ResponseError {
+    #[error("world is already finished")]
     AlreadyFinished,
+    #[error("world is already stopped")]
     AlreadyStopped,
+    #[error("world is already running")]
     AlreadyRunning,
+    #[error("failed to export file")]
     FileExportFailed,
 }
 
-pub type Response = Result<Success, ErrorStatus>;
+impl From<ResponseError> for serde_error::Error {
+    fn from(e: ResponseError) -> Self {
+        serde_error::Error::new(&e)
+    }
+}
+
+pub type Result = std::result::Result<Response, serde_error::Error>;
 
 #[derive(Debug, serde::Deserialize, serde::Serialize)]
 pub struct WorldInfo {
     req: IpcSender<Request>,
-    res: IpcReceiver<Response>,
+    res: IpcReceiver<Result>,
     stream: IpcReceiver<WorldStatus>,
     status: WorldStatus,
 }
@@ -88,7 +104,7 @@ pub struct WorldInfo {
 impl WorldInfo {
     pub fn new(
         req: IpcSender<Request>,
-        res: IpcReceiver<Response>,
+        res: IpcReceiver<Result>,
         stream: IpcReceiver<WorldStatus>,
         status: WorldStatus,
     ) -> Self {
@@ -111,8 +127,13 @@ impl WorldInfo {
         &self.status
     }
 
-    pub fn send(&self, req: Request) -> Response {
+    pub fn send(&self, req: Request) -> Result {
         self.req.send(req).unwrap();
+        self.res.recv().unwrap()
+    }
+
+    pub fn delete(&self) -> Result {
+        self.req.send(Request::Delete).unwrap();
         self.res.recv().unwrap()
     }
 }

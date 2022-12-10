@@ -13,7 +13,7 @@ security = { path = "../libs/security" }
 repl = { path = "../libs/repl" }
 async-trait = "0.1"
 argopt = "0.3"
-quinn = "0.8"
+quinn = "0.9"
 rustls = "0.20"
 tokio = { version = "1.21", features = ["full"] }
 poem = "1"

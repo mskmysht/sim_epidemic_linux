@@ -2,7 +2,7 @@ pub mod api;
 
 pub mod quic {
     use async_trait::async_trait;
-    use quinn::{ClientConfig, Connection, Endpoint, NewConnection};
+    use quinn::{ClientConfig, Connection, Endpoint};
     use rustls::Certificate;
     use std::{error::Error, net::SocketAddr};
 
@@ -12,31 +12,50 @@ pub mod quic {
         Ok(ClientConfig::with_root_certificates(certs))
     }
 
-    pub async fn get_connection(
-        addr: SocketAddr,
-        con_addr: SocketAddr,
-        con_cert: String,
-    ) -> Result<Connection, Box<dyn Error>> {
+    fn get_endpoint(addr: SocketAddr, cert_path: &String) -> Result<Endpoint, Box<dyn Error>> {
         let mut endpoint = Endpoint::client(addr)?;
-        endpoint.set_default_client_config(config_client(&con_cert)?);
-        let NewConnection { connection, .. } = endpoint.connect(con_addr, "localhost")?.await?;
-        Ok(connection)
+        endpoint.set_default_client_config(config_client(&cert_path)?);
+        Ok(endpoint)
     }
 
     type Req = container_if::Request<world_if::Request>;
-    type Ret = Result<
-        container_if::Response<world_if::Success, world_if::ErrorStatus>,
-        Box<dyn Error + Send + Sync>,
-    >;
+    type Ret = Result<container_if::Result<world_if::Response>, Box<dyn Error + Send + Sync>>;
 
     pub struct MyHandler {
-        conn: Connection,
+        endpoint: Endpoint,
+        // server_addr: SocketAddr,
+        server_name: String,
+        connection: Connection,
         _name: String,
     }
 
     impl MyHandler {
-        pub fn new(conn: Connection, name: String) -> Self {
-            Self { conn, _name: name }
+        pub async fn new(
+            addr: SocketAddr,
+            cert_path: String,
+            server_addr: SocketAddr,
+            server_name: String,
+            name: String,
+        ) -> Result<Self, Box<dyn Error>> {
+            let endpoint = get_endpoint(addr, &cert_path)?;
+            let connection = endpoint.connect(server_addr, &server_name)?.await?;
+            Ok(Self {
+                endpoint,
+                // server_addr: connection.remote_address(),
+                server_name,
+                connection,
+                _name: name,
+            })
+        }
+    }
+
+    impl MyHandler {
+        async fn connect(&mut self) -> Result<(), Box<dyn Error + Send + Sync>> {
+            self.connection = self
+                .endpoint
+                .connect(self.connection.remote_address(), &self.server_name)?
+                .await?;
+            Ok(())
         }
     }
 
@@ -46,7 +65,10 @@ pub mod quic {
         type Output = Ret;
 
         async fn callback(&mut self, req: Self::Input) -> Self::Output {
-            let (mut send, mut recv) = self.conn.open_bi().await?;
+            if self.connection.close_reason().is_some() {
+                self.connect().await?;
+            }
+            let (mut send, mut recv) = self.connection.open_bi().await?;
             let n = protocol::quic::write_data(&mut send, &req).await?;
             eprintln!("[info] sent {n} bytes data");
             let res = protocol::quic::read_data(&mut recv).await?;
@@ -57,7 +79,7 @@ pub mod quic {
     impl repl::Parsable for MyHandler {
         type Parsed = Req;
         fn parse(buf: &str) -> repl::ParseResult<Self::Parsed> {
-            protocol::parse::request(buf)
+            container_if::parse::request(buf)?.try_map(|s| world_if::parse::request(&s))
         }
     }
 
@@ -81,7 +103,7 @@ pub mod tcp {
     use std::{io, net::TcpStream};
 
     type Req = container_if::Request<world_if::Request>;
-    type Ret = io::Result<container_if::Response<world_if::Success, world_if::ErrorStatus>>;
+    type Ret = io::Result<container_if::Result<world_if::Response>>;
 
     pub struct MyHandler<'a>(pub TcpStream, pub &'a str);
 
@@ -99,8 +121,8 @@ pub mod tcp {
 
     impl<'a> repl::Parsable for MyHandler<'a> {
         type Parsed = Req;
-        fn parse(input: &str) -> repl::ParseResult<Self::Parsed> {
-            protocol::parse::request(input)
+        fn parse(buf: &str) -> repl::ParseResult<Self::Parsed> {
+            container_if::parse::request(buf)?.try_map(|s| world_if::parse::request(&s))
         }
     }
 

@@ -5,21 +5,30 @@ use world_if::{Request, Response, WorldStatus};
 
 struct MyHandler {
     req_tx: mpsc::Sender<Request>,
-    res_rx: mpsc::Receiver<Response>,
+    res_rx: mpsc::Receiver<world_if::Result>,
     stream_rx: mpsc::Receiver<WorldStatus>,
     status: WorldStatus,
 }
 
+enum RequestWrapper {
+    Info,
+    Req(Request),
+}
+
 impl repl::Parsable for MyHandler {
-    type Parsed = container_if::Request<Request>;
+    type Parsed = RequestWrapper;
 
     fn parse(buf: &str) -> repl::ParseResult<Self::Parsed> {
-        protocol::parse::request(buf)
+        if buf.starts_with("info") {
+            return Ok(RequestWrapper::Info);
+        }
+        let req = world_if::parse::request(buf)?;
+        Ok(RequestWrapper::Req(req))
     }
 }
 
 impl repl::Logging for MyHandler {
-    type Arg = Response;
+    type Arg = world_if::Result;
 
     fn logging(arg: Self::Arg) {
         match arg {
@@ -30,22 +39,21 @@ impl repl::Logging for MyHandler {
 }
 
 impl repl::Handler for MyHandler {
-    type Input = container_if::Request<Request>;
-    type Output = Response;
+    type Input = RequestWrapper;
+    type Output = world_if::Result;
 
     fn callback(&mut self, input: Self::Input) -> Self::Output {
         match input {
-            container_if::Request::Info(_) => {
-                if let Ok(status) = self.stream_rx.try_recv() {
+            RequestWrapper::Info => {
+                while let Ok(status) = self.stream_rx.try_recv() {
                     self.status = status;
                 }
-                Ok(Some((&self.status).into()))
+                Ok(Response::SuccessWithMessage((&self.status).into()))
             }
-            container_if::Request::Msg(_, req) => {
+            RequestWrapper::Req(req) => {
                 self.req_tx.send(req).unwrap();
                 self.res_rx.recv().unwrap()
             }
-            _ => Ok(None),
         }
     }
 }
