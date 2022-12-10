@@ -1,3 +1,5 @@
+mod task;
+
 use super::ApiTags;
 
 use std::{collections::HashMap, sync::Arc};
@@ -33,8 +35,7 @@ struct JobConfig {
 
 #[derive(Enum, Clone)]
 enum Status {
-    Pending,
-    Assigned,
+    Scheduled,
     Running,
     Failed,
     Succeeded,
@@ -79,7 +80,7 @@ impl Api {
             Job {
                 id: id.clone(),
                 config: config.0,
-                status: Status::Pending,
+                status: Status::Scheduled,
             },
         );
         Ok(Json(id))
