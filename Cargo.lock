@@ -279,25 +279,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "controller"
-version = "0.1.0"
-dependencies = [
- "argopt",
- "async-trait",
- "batch",
- "parking_lot",
- "protocol",
- "quic-config",
- "quinn",
- "repl",
- "rustls",
- "tokio",
- "ulid",
- "worker-if",
- "world-if",
-]
-
-[[package]]
 name = "convert_case"
 version = "0.4.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1664,6 +1645,25 @@ dependencies = [
  "async-trait",
  "peg",
  "tokio",
+]
+
+[[package]]
+name = "resource-manager"
+version = "0.1.0"
+dependencies = [
+ "argopt",
+ "async-trait",
+ "batch",
+ "parking_lot",
+ "protocol",
+ "quic-config",
+ "quinn",
+ "repl",
+ "rustls",
+ "tokio",
+ "ulid",
+ "worker-if",
+ "world-if",
 ]
 
 [[package]]

@@ -3,7 +3,7 @@
 members = [
   "world",
   "worker",
-  "controller",
+  "resource-manager",
   "api-server",
   "cert-gen",
   "custom_macro",

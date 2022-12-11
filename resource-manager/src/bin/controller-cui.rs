@@ -1,4 +1,4 @@
-use controller::{quic, tcp};
+use resource_manager::{quic, tcp};
 use std::{
     error::Error,
     net::{SocketAddr, TcpStream},
