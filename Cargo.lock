@@ -279,47 +279,12 @@ dependencies = [
 ]
 
 [[package]]
-name = "container"
-version = "0.1.0"
-dependencies = [
- "argopt",
- "async-trait",
- "container-if",
- "futures-util",
- "ipc-channel",
- "parking_lot",
- "protocol",
- "quic-config",
- "quinn",
- "rand 0.8.5",
- "rand_distr",
- "rcgen",
- "repl",
- "rustls",
- "serde",
- "tokio",
- "world-if",
-]
-
-[[package]]
-name = "container-if"
-version = "0.1.0"
-dependencies = [
- "anyhow",
- "peg",
- "serde",
- "serde-error",
- "thiserror",
-]
-
-[[package]]
 name = "controller"
 version = "0.1.0"
 dependencies = [
  "argopt",
  "async-trait",
  "batch",
- "container-if",
  "parking_lot",
  "protocol",
  "quic-config",
@@ -328,6 +293,7 @@ dependencies = [
  "rustls",
  "tokio",
  "ulid",
+ "worker-if",
  "world-if",
 ]
 
@@ -2511,11 +2477,44 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "f40009d85759725a34da6d89a94e63d7bdc50a862acf0dbc7c8e488f1edcb6f5"
 
 [[package]]
+name = "worker"
+version = "0.1.0"
+dependencies = [
+ "argopt",
+ "async-trait",
+ "futures-util",
+ "ipc-channel",
+ "parking_lot",
+ "protocol",
+ "quic-config",
+ "quinn",
+ "rand 0.8.5",
+ "rand_distr",
+ "rcgen",
+ "repl",
+ "rustls",
+ "serde",
+ "tokio",
+ "worker-if",
+ "world-if",
+]
+
+[[package]]
+name = "worker-if"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "peg",
+ "serde",
+ "serde-error",
+ "thiserror",
+]
+
+[[package]]
 name = "world"
 version = "0.1.0"
 dependencies = [
  "chrono",
- "container-if",
  "csv",
  "custom_macro",
  "ipc-channel",
@@ -2528,6 +2527,7 @@ dependencies = [
  "repl",
  "serde",
  "table",
+ "worker-if",
  "world-if",
 ]
 

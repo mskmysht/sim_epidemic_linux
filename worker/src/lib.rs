@@ -10,8 +10,8 @@ use world_if::WorldInfo;
 use ipc_channel::ipc::IpcOneShotServer;
 use parking_lot::{Mutex, RwLock};
 
-type Req = container_if::Request<world_if::Request>;
-type Res = container_if::Result<world_if::Response>;
+type Req = worker_if::Request<world_if::Request>;
+type Res = worker_if::Result<world_if::Response>;
 
 fn new_unique_string<const LEN: usize>() -> String {
     use rand::Rng;
@@ -95,7 +95,7 @@ impl WorldManager {
     fn get_mut_with<F: FnMut(&mut WorldInfo) -> Res>(&self, id: &str, mut f: F) -> Res {
         let map = self.info_map.read();
         let Some(info) = map.get(id) else {
-            return Err(container_if::Error::no_id_found());
+            return Err(worker_if::Error::no_id_found());
         };
         let mut info = info.lock();
         f(&mut info)
@@ -104,7 +104,7 @@ impl WorldManager {
     fn get_with<F: FnOnce(&WorldInfo) -> Res>(&self, id: &str, f: F) -> Res {
         let map = self.info_map.read();
         let Some(info) = map.get(id) else {
-            return Err(container_if::Error::no_id_found());
+            return Err(worker_if::Error::no_id_found());
         };
         let info = info.lock();
         f(&info)
@@ -113,7 +113,7 @@ impl WorldManager {
     fn remove_with<F: FnOnce(&WorldInfo) -> Res>(&self, id: &str, f: F) -> Res {
         let mut map = self.info_map.write();
         let Some(info) = map.remove(id) else {
-            return Err(container_if::Error::no_id_found());
+            return Err(worker_if::Error::no_id_found());
         };
         let info = info.lock();
         f(&info)
@@ -122,22 +122,20 @@ impl WorldManager {
     pub fn callback(&mut self, req: Req) -> Res {
         match req {
             Req::SpawnItem => match self.entry_world() {
-                Ok(id) => Ok(container_if::Response::Item(id)),
-                Err(e) => Err(container_if::Error::new(&e.into())),
+                Ok(id) => Ok(worker_if::Response::Item(id)),
+                Err(e) => Err(worker_if::Error::new(&e.into())),
             },
-            Req::GetItemList => Ok(container_if::Response::ItemList(
+            Req::GetItemList => Ok(worker_if::Response::ItemList(
                 self.info_map.read().keys().cloned().collect(),
             )),
             Req::GetItemInfo(ref id) => self.get_mut_with(id, |info| {
-                Ok(container_if::Response::ItemInfo(
-                    (info.seek_status()).into(),
-                ))
+                Ok(worker_if::Response::ItemInfo((info.seek_status()).into()))
             }),
             Req::Custom(ref id, req) => {
-                self.get_with(id, |info| container_if::from_result(info.send(req)))
+                self.get_with(id, |info| worker_if::from_result(info.send(req)))
             }
             Req::DeleteItem(ref id) => {
-                self.remove_with(id, |info| container_if::from_result(info.delete()))
+                self.remove_with(id, |info| worker_if::from_result(info.delete()))
             }
         }
     }

@@ -2,13 +2,13 @@
 
 members = [
   "world",
-  "container",
+  "worker",
   "controller",
   "api-server",
   "cert-gen",
   "custom_macro",
   "libs/world-if",
-  "libs/container-if",
+  "libs/worker-if",
   "libs/protocol",
   "libs/batch",
   "libs/file-io",

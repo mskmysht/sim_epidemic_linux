@@ -1,5 +1,5 @@
 [package]
-name = "container"
+name = "worker"
 version = "0.1.0"
 authors = ["mskmysht <m.mysht118@gmail.com>"]
 edition = "2018"
@@ -7,7 +7,7 @@ edition = "2018"
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 
 [dependencies]
-container-if = { path = "../libs/container-if" }
+worker-if = { path = "../libs/worker-if" }
 world-if = { path = "../libs/world-if" }
 protocol = { path = "../libs/protocol" }
 quic-config = { path = "../libs/quic-config" }

@@ -1,4 +1,3 @@
-use container::WorldManager;
 use parking_lot::Mutex;
 use quinn::Endpoint;
 use std::{
@@ -6,6 +5,7 @@ use std::{
     net::{Ipv4Addr, SocketAddr, SocketAddrV4, TcpListener},
     sync::Arc,
 };
+use worker::WorldManager;
 
 type DynResult<T> = Result<T, Box<dyn Error>>;
 
