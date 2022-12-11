@@ -10,7 +10,8 @@ edition = "2018"
 container-if = { path = "../libs/container-if" }
 world-if = { path = "../libs/world-if" }
 protocol = { path = "../libs/protocol" }
-security = { path = "../libs/security" }
+quic-config = { path = "../libs/quic-config" }
+repl = { path = "../libs/repl" }
 ipc-channel = "0.16"
 argopt = "0.3"
 rand = { version = "0.8", features = ["alloc"] }
@@ -23,4 +24,3 @@ quinn = "0.9"
 rustls = "0.20"
 rcgen = "0.10"
 futures-util = "0.3"
-repl = { path = "../libs/repl" }

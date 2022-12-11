@@ -27,7 +27,14 @@ async fn run(
     name: String,
 ) -> Result<(), Box<dyn Error>> {
     repl::AsyncRepl::new(
-        quic::MyHandler::new(addr, cert_path, server_addr, server_name, name).await?,
+        quic::MyHandler::new(
+            addr,
+            quic_config::get_client_config(&cert_path)?,
+            server_addr,
+            server_name,
+            name,
+        )
+        .await?,
     )
     .run()
     .await;

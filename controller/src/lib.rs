@@ -1,20 +1,11 @@
-pub mod api;
-
 pub mod quic {
     use async_trait::async_trait;
     use quinn::{ClientConfig, Connection, Endpoint};
-    use rustls::Certificate;
     use std::{error::Error, net::SocketAddr};
 
-    fn config_client(cert_path: &str) -> Result<ClientConfig, Box<dyn Error>> {
-        let mut certs = rustls::RootCertStore::empty();
-        certs.add(&Certificate(security::load_buf(cert_path)?))?;
-        Ok(ClientConfig::with_root_certificates(certs))
-    }
-
-    fn get_endpoint(addr: SocketAddr, cert_path: &String) -> Result<Endpoint, Box<dyn Error>> {
+    fn get_endpoint(addr: SocketAddr, config: ClientConfig) -> Result<Endpoint, Box<dyn Error>> {
         let mut endpoint = Endpoint::client(addr)?;
-        endpoint.set_default_client_config(config_client(&cert_path)?);
+        endpoint.set_default_client_config(config);
         Ok(endpoint)
     }
 
@@ -32,12 +23,12 @@ pub mod quic {
     impl MyHandler {
         pub async fn new(
             addr: SocketAddr,
-            cert_path: String,
+            config: ClientConfig,
             server_addr: SocketAddr,
             server_name: String,
             name: String,
         ) -> Result<Self, Box<dyn Error>> {
-            let endpoint = get_endpoint(addr, &cert_path)?;
+            let endpoint = get_endpoint(addr, config)?;
             let connection = endpoint.connect(server_addr, &server_name)?.await?;
             Ok(Self {
                 endpoint,

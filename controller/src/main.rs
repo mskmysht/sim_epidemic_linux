@@ -1,10 +1,22 @@
-use controller::api;
+use std::{collections::HashMap, sync::Arc};
 
-use poem::{listener::TcpListener, Result};
+use parking_lot::RwLock;
+use ulid::Ulid;
 
-#[tokio::main]
-async fn main() -> Result<(), std::io::Error> {
-    poem::Server::new(TcpListener::bind("0.0.0.0:3000"))
-        .run(api::create_app().await)
-        .await
+use batch::types::job::{Job, Status};
+
+pub type JobTable = Arc<RwLock<HashMap<String, Job>>>;
+
+fn main() {
+    let db = JobTable::default();
+    let mut db = db.write();
+    let id = Ulid::new().to_string();
+    db.insert(
+        id.clone(),
+        Job {
+            id: id.clone(),
+            config: todo!(),
+            status: Status::Scheduled,
+        },
+    );
 }
