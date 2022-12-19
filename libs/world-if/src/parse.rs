@@ -6,16 +6,16 @@ peg::parser! {
         rule __() = quiet!{ [' ' | '\t']* }
         rule eof() = quiet!{ ['\n'] }
 
-        rule u64() -> u64 = n:$(['0'..='9']+) { n.parse().unwrap() }
+        rule u64() -> u64 = n:$(['0'..='9']+) {? n.parse().or(Err("number")) }
         rule num() -> u64
             = _ n:u64() { n }
             / expected!("number")
 
-        rule quoted() -> String = "\"" s:$([' ' | '!' | '$'..='~']*) "\"" { String::from(s) }
-        rule non_space() -> String = s:$(['!'..='~']+) { String::from(s) }
-        rule path() -> String
-            = _ s:quoted() { String::from(s) }
-            / _ s:non_space() { String::from(s) }
+        rule quoted() -> &'input str = "\"" s:$([' ' | '!' | '$'..='~']*) "\"" { s }
+        rule non_space() -> &'input str = s:$(['!'..='~']+) { s }
+        rule path() -> &'input str
+            = _ s:quoted() { s }
+            / _ s:non_space() { s }
 
         pub rule request() -> Request = __ c:expr() __ eof() { c }
         rule expr() -> Request
@@ -24,7 +24,7 @@ peg::parser! {
             / "reset"  { Request::Reset }
             / "debug"  { Request::Debug }
             / "start"  n:num()  { Request::Start(n) }
-            / "export" p:path() { Request::Export(p) }
+            / "export" p:path() { Request::Export(p.into()) }
     }
 }
 

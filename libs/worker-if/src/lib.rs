@@ -1,47 +1,22 @@
-use std::{fmt::Debug, result};
-
+use std::fmt::Debug;
 pub mod parse;
+pub use world_if;
 
 #[derive(Debug, serde::Serialize, serde::Deserialize)]
-pub enum Request<T> {
+pub enum Request {
     SpawnItem,
     GetItemList,
     GetItemInfo(String),
     DeleteItem(String),
-    Custom(String, T),
-}
-
-impl<T> Request<T> {
-    pub fn map<U, F: Fn(T) -> U>(self, f: F) -> Request<U> {
-        match self {
-            Request::SpawnItem => Request::SpawnItem,
-            Request::GetItemList => Request::GetItemList,
-            Request::GetItemInfo(id) => Request::GetItemInfo(id),
-            Request::DeleteItem(id) => Request::DeleteItem(id),
-            Request::Custom(id, t) => Request::Custom(id, f(t)),
-        }
-    }
-
-    pub fn try_map<U, E, F: Fn(T) -> result::Result<U, E>>(
-        self,
-        f: F,
-    ) -> result::Result<Request<U>, E> {
-        match self {
-            Request::SpawnItem => Ok(Request::SpawnItem),
-            Request::GetItemList => Ok(Request::GetItemList),
-            Request::GetItemInfo(id) => Ok(Request::GetItemInfo(id)),
-            Request::DeleteItem(id) => Ok(Request::DeleteItem(id)),
-            Request::Custom(id, t) => f(t).map(|u| Request::Custom(id, u)),
-        }
-    }
+    Custom(String, world_if::Request),
 }
 
 #[derive(Debug, serde::Serialize, serde::Deserialize)]
-pub enum ResponseOk<T> {
+pub enum ResponseOk {
     Item(String),
     ItemList(Vec<String>),
     ItemInfo(String),
-    Custom(T),
+    Custom(world_if::ResponseOk),
 }
 
 #[derive(Debug, thiserror::Error)]
@@ -69,26 +44,26 @@ impl ResponseError {
 }
 
 #[derive(Debug, serde::Serialize, serde::Deserialize)]
-pub enum Response<T> {
-    Ok(ResponseOk<T>),
+pub enum Response {
+    Ok(ResponseOk),
     Err(serde_error::Error),
 }
 
-impl<T> From<ResponseOk<T>> for Response<T> {
-    fn from(r: ResponseOk<T>) -> Self {
+impl From<ResponseOk> for Response {
+    fn from(r: ResponseOk) -> Self {
         Response::Ok(r)
     }
 }
 
-impl<T> From<ResponseError> for Response<T> {
+impl From<ResponseError> for Response {
     fn from(e: ResponseError) -> Self {
         Response::Err(e.into())
     }
 }
 
-impl<T> From<Result<T, serde_error::Error>> for Response<T> {
+impl From<Result<world_if::ResponseOk, serde_error::Error>> for Response {
     #[inline]
-    fn from(r: Result<T, serde_error::Error>) -> Self {
+    fn from(r: Result<world_if::ResponseOk, serde_error::Error>) -> Self {
         match r {
             Ok(t) => ResponseOk::Custom(t).into(),
             Err(e) => ResponseError::from(e).into(),

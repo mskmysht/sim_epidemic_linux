@@ -2480,7 +2480,6 @@ dependencies = [
  "tokio",
  "worker-if",
  "world",
- "world-if",
 ]
 
 [[package]]
@@ -2492,6 +2491,7 @@ dependencies = [
  "serde",
  "serde-error",
  "thiserror",
+ "world-if",
 ]
 
 [[package]]

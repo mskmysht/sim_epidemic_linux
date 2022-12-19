@@ -11,3 +11,4 @@ peg = "0.8"
 serde-error = "0.1"
 thiserror = "1.0"
 anyhow = "1.0"
+world-if = { path = "../world-if" }

@@ -4,8 +4,8 @@ pub mod quic {
 
     use crate::management::server::{MyConnection, ServerInfo};
 
-    type Req = worker_if::Request<world_if::Request>;
-    type Ret = Result<worker_if::Response<world_if::ResponseOk>, Box<dyn Error + Send + Sync>>;
+    type Req = worker_if::Request;
+    type Ret = Result<worker_if::Response, Box<dyn Error + Send + Sync>>;
 
     pub struct MyHandler(MyConnection);
 
@@ -48,7 +48,7 @@ pub mod quic {
     impl repl::Parsable for MyHandler {
         type Parsed = Req;
         fn parse(buf: &str) -> repl::ParseResult<Self::Parsed> {
-            worker_if::parse::request(buf)?.try_map(|s| world_if::parse::request(&s))
+            worker_if::parse::request(buf)
         }
     }
 
@@ -71,8 +71,8 @@ pub mod quic {
 pub mod tcp {
     use std::{io, net::TcpStream};
 
-    type Req = worker_if::Request<world_if::Request>;
-    type Ret = io::Result<worker_if::Response<world_if::Response>>;
+    type Req = worker_if::Request;
+    type Ret = io::Result<worker_if::Response>;
 
     pub struct MyHandler<'a>(pub TcpStream, pub &'a str);
 
@@ -91,7 +91,7 @@ pub mod tcp {
     impl<'a> repl::Parsable for MyHandler<'a> {
         type Parsed = Req;
         fn parse(buf: &str) -> repl::ParseResult<Self::Parsed> {
-            worker_if::parse::request(buf)?.try_map(|s| world_if::parse::request(&s))
+            worker_if::parse::request(buf)
         }
     }
 

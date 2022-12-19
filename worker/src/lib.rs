@@ -9,9 +9,10 @@ use world::{IpcSubscriber, Subscriber, WorldStatus};
 
 use ipc_channel::ipc::IpcOneShotServer;
 use parking_lot::{Mutex, RwLock};
+use worker_if::world_if;
 
-type Request = worker_if::Request<world_if::Request>;
-type Response = worker_if::Response<world_if::ResponseOk>;
+type Request = worker_if::Request;
+type Response = worker_if::Response;
 
 fn new_unique_string<const LEN: usize>() -> String {
     use rand::Rng;

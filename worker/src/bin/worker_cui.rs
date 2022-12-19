@@ -3,8 +3,8 @@ use std::error;
 use async_trait::async_trait;
 use worker::WorldManager;
 
-type Req = worker_if::Request<world_if::Request>;
-type Res = worker_if::Response<world_if::ResponseOk>;
+type Req = worker_if::Request;
+type Res = worker_if::Response;
 
 pub struct StdHandler {
     manager: WorldManager,
@@ -22,7 +22,7 @@ impl repl::Parsable for StdHandler {
     type Parsed = Req;
 
     fn parse(buf: &str) -> repl::ParseResult<Self::Parsed> {
-        worker_if::parse::request(buf)?.try_map(|s| world_if::parse::request(&s))
+        worker_if::parse::request(buf)
     }
 }
 
