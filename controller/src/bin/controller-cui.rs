@@ -1,4 +1,7 @@
-use resource_manager::{quic, tcp};
+use controller::{
+    management::server::ServerInfo,
+    repl_handler::{quic, tcp},
+};
 use std::{
     error::Error,
     net::{SocketAddr, TcpStream},
@@ -11,33 +14,22 @@ fn main() -> Result<(), Box<dyn Error>> {}
 fn start(
     addr: SocketAddr,
     cert_path: String,
-    server_addr: SocketAddr,
-    server_name: String,
+    server_info: ServerInfo,
     name: String,
 ) -> Result<(), Box<dyn Error>> {
     let rt = tokio::runtime::Runtime::new()?;
-    rt.block_on(run(addr, cert_path, server_addr, server_name, name))
+    rt.block_on(run(addr, cert_path, server_info, name))
 }
 
 async fn run(
     addr: SocketAddr,
     cert_path: String,
-    server_addr: SocketAddr,
-    server_name: String,
+    server_info: ServerInfo,
     name: String,
 ) -> Result<(), Box<dyn Error>> {
-    repl::AsyncRepl::new(
-        quic::MyHandler::new(
-            addr,
-            quic_config::get_client_config(&cert_path)?,
-            server_addr,
-            server_name,
-            name,
-        )
-        .await?,
-    )
-    .run()
-    .await;
+    repl::AsyncRepl::new(quic::MyHandler::new(addr, cert_path, server_info, name).await?)
+        .run()
+        .await;
     Ok(())
 }
 

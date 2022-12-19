@@ -62,18 +62,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "216261ddc8289130e551ddcd5ce8a064710c0d064a4d2895c67151c92b5443f6"
 
 [[package]]
-name = "api-server"
-version = "0.1.0"
-dependencies = [
- "batch",
- "parking_lot",
- "poem",
- "poem-openapi",
- "tokio",
- "ulid",
-]
-
-[[package]]
 name = "argopt"
 version = "0.3.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -129,14 +117,6 @@ name = "base64"
 version = "0.13.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "904dfeac50f3cdaba28fc6f57fdcddb75f49ed61346676a78c4ffe55877802fd"
-
-[[package]]
-name = "batch"
-version = "0.1.0"
-dependencies = [
- "parking_lot",
- "poem-openapi",
-]
 
 [[package]]
 name = "bincode"
@@ -276,6 +256,27 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "2850f2f5a82cbf437dd5af4d49848fbdfc27c157c3d010345776f952765261c5"
 dependencies = [
  "os_str_bytes",
+]
+
+[[package]]
+name = "controller"
+version = "0.1.0"
+dependencies = [
+ "argopt",
+ "async-trait",
+ "parking_lot",
+ "poem",
+ "poem-openapi",
+ "protocol",
+ "quic-config",
+ "quinn",
+ "repl",
+ "rustls",
+ "thiserror",
+ "tokio",
+ "ulid",
+ "worker-if",
+ "world-if",
 ]
 
 [[package]]
@@ -1645,25 +1646,6 @@ dependencies = [
  "async-trait",
  "peg",
  "tokio",
-]
-
-[[package]]
-name = "resource-manager"
-version = "0.1.0"
-dependencies = [
- "argopt",
- "async-trait",
- "batch",
- "parking_lot",
- "protocol",
- "quic-config",
- "quinn",
- "repl",
- "rustls",
- "tokio",
- "ulid",
- "worker-if",
- "world-if",
 ]
 
 [[package]]

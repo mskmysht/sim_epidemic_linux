@@ -1,52 +1,30 @@
 pub mod quic {
     use async_trait::async_trait;
-    use quinn::{ClientConfig, Connection, Endpoint};
     use std::{error::Error, net::SocketAddr};
 
-    fn get_endpoint(addr: SocketAddr, config: ClientConfig) -> Result<Endpoint, Box<dyn Error>> {
-        let mut endpoint = Endpoint::client(addr)?;
-        endpoint.set_default_client_config(config);
-        Ok(endpoint)
-    }
+    use crate::management::server::{MyConnection, ServerInfo};
 
     type Req = worker_if::Request<world_if::Request>;
     type Ret = Result<worker_if::Result<world_if::Response>, Box<dyn Error + Send + Sync>>;
 
-    pub struct MyHandler {
-        endpoint: Endpoint,
-        // server_addr: SocketAddr,
-        server_name: String,
-        connection: Connection,
-        _name: String,
-    }
+    pub struct MyHandler(MyConnection);
 
     impl MyHandler {
         pub async fn new(
             addr: SocketAddr,
-            config: ClientConfig,
-            server_addr: SocketAddr,
-            server_name: String,
+            cert_path: String,
+            server_info: ServerInfo,
             name: String,
         ) -> Result<Self, Box<dyn Error>> {
-            let endpoint = get_endpoint(addr, config)?;
-            let connection = endpoint.connect(server_addr, &server_name)?.await?;
-            Ok(Self {
-                endpoint,
-                // server_addr: connection.remote_address(),
-                server_name,
-                connection,
-                _name: name,
-            })
-        }
-    }
-
-    impl MyHandler {
-        async fn connect(&mut self) -> Result<(), Box<dyn Error + Send + Sync>> {
-            self.connection = self
-                .endpoint
-                .connect(self.connection.remote_address(), &self.server_name)?
-                .await?;
-            Ok(())
+            Ok(Self(
+                MyConnection::new(
+                    addr,
+                    quic_config::get_client_config(cert_path)?,
+                    server_info,
+                    name,
+                )
+                .await?,
+            ))
         }
     }
 
@@ -56,10 +34,10 @@ pub mod quic {
         type Output = Ret;
 
         async fn callback(&mut self, req: Self::Input) -> Self::Output {
-            if self.connection.close_reason().is_some() {
-                self.connect().await?;
+            if self.0.connection.close_reason().is_some() {
+                self.0.connect().await?;
             }
-            let (mut send, mut recv) = self.connection.open_bi().await?;
+            let (mut send, mut recv) = self.0.connection.open_bi().await?;
             let n = protocol::quic::write_data(&mut send, &req).await?;
             eprintln!("[info] sent {n} bytes data");
             let res = protocol::quic::read_data(&mut recv).await?;

@@ -1,5 +1,5 @@
 [package]
-name = "resource-manager"
+name = "controller"
 version = "0.1.0"
 edition = "2021"
 
@@ -17,5 +17,7 @@ quinn = "0.9"
 rustls = "0.20"
 tokio = { version = "1.21", features = ["full"] }
 parking_lot = "0.12"
+poem = "1"
+poem-openapi = { version = "2", features = ["rapidoc"] }
 ulid = "1"
-batch = { path = "../libs/batch" }
+thiserror = "1.0"
