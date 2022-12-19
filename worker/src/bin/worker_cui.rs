@@ -4,7 +4,7 @@ use async_trait::async_trait;
 use worker::WorldManager;
 
 type Req = worker_if::Request<world_if::Request>;
-type Ret = worker_if::Result<world_if::Response>;
+type Res = worker_if::Response<world_if::ResponseOk>;
 
 pub struct StdHandler {
     manager: WorldManager,
@@ -27,19 +27,19 @@ impl repl::Parsable for StdHandler {
 }
 
 impl repl::Logging for StdHandler {
-    type Arg = Ret;
+    type Arg = Res;
 
     fn logging(arg: Self::Arg) {
         match arg {
-            Ok(s) => println!("[info] {s:?}"),
-            Err(e) => eprintln!("[error] {e:?}"),
+            worker_if::Response::Ok(s) => println!("[info] {s:?}"),
+            worker_if::Response::Err(e) => eprintln!("[error] {e:?}"),
         }
     }
 }
 
 impl repl::Handler for StdHandler {
     type Input = Req;
-    type Output = Ret;
+    type Output = Res;
 
     fn callback(&mut self, input: Self::Input) -> Self::Output {
         self.manager.callback(input)
@@ -49,7 +49,7 @@ impl repl::Handler for StdHandler {
 #[async_trait]
 impl repl::AsyncHandler for StdHandler {
     type Input = Req;
-    type Output = Ret;
+    type Output = Res;
 
     async fn callback(&mut self, input: Self::Input) -> Self::Output {
         self.manager.callback(input)

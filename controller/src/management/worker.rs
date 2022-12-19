@@ -3,7 +3,9 @@ use std::{error::Error, net::SocketAddr};
 
 use super::server::{MyConnection, ServerInfo};
 
-pub struct WorkerClient(MyConnection);
+pub struct WorkerClient {
+    connection: MyConnection,
+}
 
 impl WorkerClient {
     pub async fn new(
@@ -12,14 +14,14 @@ impl WorkerClient {
         server_info: ServerInfo,
         index: usize,
     ) -> Result<Self, Box<dyn Error>> {
-        Ok(Self(
-            MyConnection::new(
+        Ok(Self {
+            connection: MyConnection::new(
                 addr,
                 config,
                 server_info,
                 format!("worker-{index}").to_string(),
             )
             .await?,
-        ))
+        })
     }
 }

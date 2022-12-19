@@ -15,18 +15,18 @@ use self::{
 };
 use crate::{
     log::MyLog,
+    pubsub::{Publisher, Subscriber, SubscriberError},
     util::{enum_map::EnumMap, math::Point, random::DistInfo},
 };
 
 use std::{
     f64, io,
-    sync::mpsc,
     thread::{self, JoinHandle},
     time::{SystemTime, UNIX_EPOCH},
     usize,
 };
 
-use world_if::{LoopMode, Request, Response, ResponseError, WorldStatus};
+use world_if::{Request, Response, ResponseError, ResponseOk};
 
 use chrono::Local;
 use ipc_channel::ipc::{self, IpcReceiver, IpcSender};
@@ -210,107 +210,47 @@ fn get_uptime() -> f64 {
         .as_secs_f64()
 }
 
-pub trait SpawnerChannel {
-    type SendError<T>;
-    type RecvError;
-    type TryRecvError;
+use chrono::serde::ts_seconds;
+use serde::{Deserialize, Serialize};
+use std::fmt;
 
-    fn recv(&self) -> Result<Request, Self::RecvError>;
-    fn try_recv(&self) -> Result<Request, Self::TryRecvError>;
-    fn send_response(
-        &self,
-        data: world_if::Result,
-    ) -> Result<(), Self::SendError<world_if::Result>>;
-    fn send_on_stream(&self, data: WorldStatus) -> Result<(), Self::SendError<WorldStatus>>;
+#[derive(Clone, Copy, PartialEq, Debug, Serialize, Deserialize, Default)]
+pub enum LoopMode {
+    #[default]
+    LoopNone,
+    LoopRunning,
+    LoopFinished,
+    LoopEndByUser,
+    LoopEndAsDaysPassed,
+    //[todo] LoopEndByCondition,
+    //[todo] LoopEndByTimeLimit,
 }
 
-pub struct MpscSpawnerChannel {
-    stream_tx: mpsc::Sender<WorldStatus>,
-    req_rx: mpsc::Receiver<Request>,
-    res_tx: mpsc::Sender<world_if::Result>,
+#[derive(Debug, serde::Deserialize, serde::Serialize)]
+pub struct WorldStatus {
+    step: u64,
+    mode: LoopMode,
+    #[serde(with = "ts_seconds")]
+    time_stamp: chrono::DateTime<chrono::Utc>,
 }
 
-impl MpscSpawnerChannel {
-    pub fn new(
-        stream_tx: mpsc::Sender<WorldStatus>,
-        req_rx: mpsc::Receiver<Request>,
-        res_tx: mpsc::Sender<world_if::Result>,
-    ) -> Self {
+impl WorldStatus {
+    pub fn new(step: u64, mode: LoopMode) -> Self {
         Self {
-            stream_tx,
-            req_rx,
-            res_tx,
+            step,
+            mode,
+            time_stamp: chrono::Utc::now(),
         }
     }
 }
 
-impl SpawnerChannel for MpscSpawnerChannel {
-    type SendError<T> = mpsc::SendError<T>;
-    type RecvError = mpsc::RecvError;
-    type TryRecvError = mpsc::TryRecvError;
-
-    fn recv(&self) -> Result<Request, Self::RecvError> {
-        self.req_rx.recv()
-    }
-
-    fn try_recv(&self) -> Result<Request, Self::TryRecvError> {
-        self.req_rx.try_recv()
-    }
-
-    fn send_response(
-        &self,
-        data: world_if::Result,
-    ) -> Result<(), Self::SendError<world_if::Result>> {
-        self.res_tx.send(data)
-    }
-
-    fn send_on_stream(&self, data: WorldStatus) -> Result<(), Self::SendError<WorldStatus>> {
-        self.stream_tx.send(data)
-    }
-}
-
-pub struct IpcSpawnerChannel {
-    stream_tx: IpcSender<WorldStatus>,
-    req_rx: IpcReceiver<Request>,
-    res_tx: IpcSender<world_if::Result>,
-}
-
-impl IpcSpawnerChannel {
-    pub fn new(
-        stream_tx: IpcSender<WorldStatus>,
-        req_rx: IpcReceiver<Request>,
-        res_tx: IpcSender<world_if::Result>,
-    ) -> Self {
-        Self {
-            stream_tx,
-            req_rx,
-            res_tx,
-        }
-    }
-}
-
-impl SpawnerChannel for IpcSpawnerChannel {
-    type SendError<T> = ipc_channel::Error;
-    type RecvError = ipc::IpcError;
-    type TryRecvError = ipc::TryRecvError;
-
-    fn recv(&self) -> Result<Request, Self::RecvError> {
-        self.req_rx.recv()
-    }
-
-    fn try_recv(&self) -> Result<Request, Self::TryRecvError> {
-        self.req_rx.try_recv()
-    }
-
-    fn send_response(
-        &self,
-        data: world_if::Result,
-    ) -> Result<(), Self::SendError<world_if::Result>> {
-        self.res_tx.send(data)
-    }
-
-    fn send_on_stream(&self, data: WorldStatus) -> Result<(), Self::SendError<WorldStatus>> {
-        self.stream_tx.send(data)
+impl fmt::Display for WorldStatus {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(
+            f,
+            "[{}]step:{},mode:{:?}",
+            self.time_stamp, self.step, self.mode
+        )
     }
 }
 
@@ -320,7 +260,7 @@ struct WorldStepInfo {
     steps_per_sec: f64,
 }
 
-pub struct WorldSpawner<C: SpawnerChannel> {
+pub struct WorldSpawner<C: Publisher> {
     world: World,
     info: WorldStepInfo,
     channel: C,
@@ -328,36 +268,44 @@ pub struct WorldSpawner<C: SpawnerChannel> {
 
 impl<C> WorldSpawner<C>
 where
-    C: SpawnerChannel + Send + 'static,
+    C: Publisher + Send + 'static,
     C::RecvError: std::fmt::Debug,
-    C::SendError<world_if::Result>: std::fmt::Debug,
+    C::SendError<Response>: std::fmt::Debug,
     C::SendError<WorldStatus>: std::fmt::Debug,
 {
-    pub fn spawn(id: String, channel: C) -> io::Result<(JoinHandle<String>, WorldStatus)> {
-        let world = Self {
+    pub fn new(id: String, channel: C) -> Self {
+        let spawner = Self {
             world: World::new(id, new_runtime_params(), new_world_params()),
             info: WorldStepInfo::default(),
             channel,
         };
-        let status = WorldStatus::new(world.world.runtime_params.step, LoopMode::LoopNone);
-        Ok((world.get_handle()?, status))
+        spawner.send_status(LoopMode::LoopNone);
+        spawner
+    }
+
+    pub fn spawn(self) -> io::Result<JoinHandle<()>> {
+        thread::Builder::new()
+            .name(format!("world_{}", self.world.id.clone()))
+            .spawn(move || self.run_loop())
     }
 
     #[inline]
     fn res_status_ok(&self) {
-        self.channel.send_response(Ok(Response::Success)).unwrap();
+        self.channel
+            .send_response(ResponseOk::Success.into())
+            .unwrap();
     }
 
     #[inline]
     fn res_status_ok_with(&self, msg: String) {
         self.channel
-            .send_response(Ok(Response::SuccessWithMessage(msg)))
+            .send_response(ResponseOk::SuccessWithMessage(msg).into())
             .unwrap();
     }
 
     #[inline]
     fn res_status_err(&self, err: ResponseError) {
-        self.channel.send_response(Err(err.into())).unwrap();
+        self.channel.send_response(err.into()).unwrap();
     }
 
     #[inline]
@@ -419,18 +367,12 @@ where
         format!("{}\n{:?}", self.world.log, self.info)
     }
 
-    fn get_handle(self) -> io::Result<JoinHandle<String>> {
-        thread::Builder::new()
-            .name(format!("world_{}", self.world.id.clone()))
-            .spawn(move || self.run_loop())
-    }
-
-    fn run_loop(mut self) -> String {
+    fn run_loop(mut self) {
         'outer: loop {
             match self.channel.recv().unwrap() {
                 Request::Delete => {
                     self.res_status_ok();
-                    break self.world.id;
+                    break;
                 }
                 Request::Reset => {
                     self.reset();
@@ -460,7 +402,7 @@ where
                                 match msg {
                                     Request::Delete => {
                                         self.res_status_ok();
-                                        break 'outer self.world.id;
+                                        break 'outer;
                                     }
                                     Request::Stop => {
                                         self.stop();

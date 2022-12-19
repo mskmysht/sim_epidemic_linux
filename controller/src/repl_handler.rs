@@ -5,7 +5,7 @@ pub mod quic {
     use crate::management::server::{MyConnection, ServerInfo};
 
     type Req = worker_if::Request<world_if::Request>;
-    type Ret = Result<worker_if::Result<world_if::Response>, Box<dyn Error + Send + Sync>>;
+    type Ret = Result<worker_if::Response<world_if::ResponseOk>, Box<dyn Error + Send + Sync>>;
 
     pub struct MyHandler(MyConnection);
 
@@ -72,7 +72,7 @@ pub mod tcp {
     use std::{io, net::TcpStream};
 
     type Req = worker_if::Request<world_if::Request>;
-    type Ret = io::Result<worker_if::Result<world_if::Response>>;
+    type Ret = io::Result<worker_if::Response<world_if::Response>>;
 
     pub struct MyHandler<'a>(pub TcpStream, pub &'a str);
 

@@ -1,4 +1,4 @@
-use std::result;
+use std::{fmt::Debug, result};
 
 pub mod parse;
 
@@ -37,7 +37,7 @@ impl<T> Request<T> {
 }
 
 #[derive(Debug, serde::Serialize, serde::Deserialize)]
-pub enum Response<T> {
+pub enum ResponseOk<T> {
     Item(String),
     ItemList(Vec<String>),
     ItemInfo(String),
@@ -47,39 +47,51 @@ pub enum Response<T> {
 #[derive(Debug, thiserror::Error)]
 pub enum ResponseError {
     #[error("failed to spawn item")]
-    FailedToSpawn(#[from] std::io::Error),
+    FailedToSpawn(anyhow::Error),
+    #[error("error has occured in the child process")]
+    ProcessIOError(anyhow::Error),
     #[error("no id found")]
     NoIdFound,
     #[error("custom error")]
-    Custom(#[from] anyhow::Error),
+    Custom(#[from] serde_error::Error),
+}
+
+impl From<ResponseError> for serde_error::Error {
+    fn from(e: ResponseError) -> Self {
+        serde_error::Error::new(&e)
+    }
+}
+
+impl ResponseError {
+    pub fn process_io_error<E: std::error::Error + Send + Sync + 'static>(error: E) -> Self {
+        Self::ProcessIOError(anyhow::Error::new(error))
+    }
 }
 
 #[derive(Debug, serde::Serialize, serde::Deserialize)]
-pub struct Error(serde_error::Error);
+pub enum Response<T> {
+    Ok(ResponseOk<T>),
+    Err(serde_error::Error),
+}
 
-impl Error {
-    pub fn new(e: &ResponseError) -> Self {
-        Self(serde_error::Error::new(e))
-    }
-
-    pub fn no_id_found() -> Self {
-        Self::new(&ResponseError::NoIdFound)
-    }
-
-    pub fn custom<E: std::error::Error + Send + Sync + 'static>(error: E) -> Self {
-        Self::new(&ResponseError::Custom(anyhow::Error::new(error)))
+impl<T> From<ResponseOk<T>> for Response<T> {
+    fn from(r: ResponseOk<T>) -> Self {
+        Response::Ok(r)
     }
 }
 
-pub type Result<T> = result::Result<Response<T>, Error>;
+impl<T> From<ResponseError> for Response<T> {
+    fn from(e: ResponseError) -> Self {
+        Response::Err(e.into())
+    }
+}
 
-pub fn from_result<T, E, R>(from: R) -> Result<T>
-where
-    E: std::error::Error + Send + Sync + 'static,
-    R: Into<result::Result<T, E>>,
-{
-    match from.into() {
-        Ok(s) => Ok(Response::Custom(s)),
-        Err(e) => Err(Error::custom(e)),
+impl<T> From<Result<T, serde_error::Error>> for Response<T> {
+    #[inline]
+    fn from(r: Result<T, serde_error::Error>) -> Self {
+        match r {
+            Ok(t) => ResponseOk::Custom(t).into(),
+            Err(e) => ResponseError::from(e).into(),
+        }
     }
 }
