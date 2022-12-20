@@ -1,7 +1,5 @@
+use super::{Request, Response, WorldStatus};
 use ipc_channel::ipc::{self, IpcReceiver, IpcSender};
-use world_if::{Request, Response};
-
-use crate::world::WorldStatus;
 
 pub trait Publisher {
     type SendError<T>;
@@ -10,10 +8,7 @@ pub trait Publisher {
 
     fn recv(&self) -> Result<Request, Self::RecvError>;
     fn try_recv(&self) -> Result<Request, Self::TryRecvError>;
-    fn send_response(
-        &self,
-        data: world_if::Response,
-    ) -> Result<(), Self::SendError<world_if::Response>>;
+    fn send_response(&self, data: Response) -> Result<(), Self::SendError<Response>>;
     fn send_on_stream(&self, data: WorldStatus) -> Result<(), Self::SendError<WorldStatus>>;
 }
 
@@ -58,14 +53,14 @@ pub trait Subscriber {
 #[derive(Debug, serde::Deserialize, serde::Serialize)]
 pub struct IpcSubscriber {
     req_tx: IpcSender<Request>,
-    res_rx: IpcReceiver<world_if::Response>,
+    res_rx: IpcReceiver<Response>,
     stream: IpcReceiver<WorldStatus>,
 }
 
 impl IpcSubscriber {
     pub fn new(
         req_tx: IpcSender<Request>,
-        res_rx: IpcReceiver<world_if::Response>,
+        res_rx: IpcReceiver<Response>,
         stream: IpcReceiver<WorldStatus>,
     ) -> Self {
         Self {
@@ -101,14 +96,14 @@ impl Subscriber for IpcSubscriber {
 pub struct IpcPublisher {
     stream_tx: IpcSender<WorldStatus>,
     req_rx: IpcReceiver<Request>,
-    res_tx: IpcSender<world_if::Response>,
+    res_tx: IpcSender<Response>,
 }
 
 impl IpcPublisher {
     pub fn new(
         stream_tx: IpcSender<WorldStatus>,
         req_rx: IpcReceiver<Request>,
-        res_tx: IpcSender<world_if::Response>,
+        res_tx: IpcSender<Response>,
     ) -> Self {
         Self {
             stream_tx,
@@ -131,10 +126,7 @@ impl Publisher for IpcPublisher {
         self.req_rx.try_recv()
     }
 
-    fn send_response(
-        &self,
-        data: world_if::Response,
-    ) -> Result<(), Self::SendError<world_if::Response>> {
+    fn send_response(&self, data: Response) -> Result<(), Self::SendError<Response>> {
         self.res_tx.send(data)
     }
 

@@ -5,11 +5,12 @@ use std::{
     thread::{self, JoinHandle},
 };
 
-use world::{IpcSubscriber, Subscriber, WorldStatus};
-
 use ipc_channel::ipc::IpcOneShotServer;
 use parking_lot::{Mutex, RwLock};
-use worker_if::world_if;
+use worker_if::world_if::{
+    self,
+    pubsub::{IpcSubscriber, Subscriber},
+};
 
 type Request = worker_if::Request;
 type Response = worker_if::Response;
@@ -26,7 +27,7 @@ fn new_unique_string<const LEN: usize>() -> String {
 
 struct WorldInfo {
     subscriber: IpcSubscriber,
-    current_status: WorldStatus,
+    current_status: world_if::WorldStatus,
 }
 
 impl WorldInfo {

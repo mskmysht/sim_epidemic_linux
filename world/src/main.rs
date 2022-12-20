@@ -1,4 +1,5 @@
 use ipc_channel::ipc;
+use world_if::pubsub;
 
 struct MyArgs {
     id: String,
@@ -28,10 +29,10 @@ fn main() {
     let id = args.id;
     let spawner = world::WorldSpawner::new(
         id.clone(),
-        world::IpcPublisher::new(stream_tx, req_rx, res_tx),
+        pubsub::IpcPublisher::new(stream_tx, req_rx, res_tx),
     );
     let handle = spawner.spawn().unwrap();
-    tx.send(world::IpcSubscriber::new(req_tx, res_rx, stream_rx))
+    tx.send(pubsub::IpcSubscriber::new(req_tx, res_rx, stream_rx))
         .unwrap();
     match handle.join() {
         Ok(_) => println!("<{id}> stopped"),

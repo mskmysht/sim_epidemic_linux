@@ -6,9 +6,9 @@ peg::parser! {
         rule __() = quiet!{ [' ' | '\t']* }
         rule eof() = quiet!{ ['\n'] }
 
-        rule u64() -> u64 = n:$(['0'..='9']+) {? n.parse().or(Err("number")) }
-        rule num() -> u64
-            = _ n:u64() { n }
+        rule u32() -> u32 = n:$(['0'..='9']+) {? n.parse().or(Err("number")) }
+        rule num() -> u32
+            = _ n:u32() { n }
             / expected!("number")
 
         rule quoted() -> &'input str = "\"" s:$([' ' | '!' | '$'..='~']*) "\"" { s }

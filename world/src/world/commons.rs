@@ -81,7 +81,7 @@ pub struct RuntimeParams {
     pub tst_dly_lim: f64,
     //[todo] pub trc_ope: TracingOperation, // How to treat the contacts, tests or vaccination, or both
     //[todo] pub trc_vcn_type: u32, // vaccine type for tracing vaccination
-    pub step: u64,
+    pub step: u32,
     //[todo] pub recov: DistInfo<f64>,
     //[todo] pub immun: DistInfo<f64>,
     //[todo] pub vcn_p_rate: f64,
@@ -99,10 +99,10 @@ pub enum HealthType {
 
 #[derive(Clone, Copy, Debug)]
 pub struct WorldParams {
-    pub init_n_pop: usize,
+    pub init_n_pop: u32,
     pub field_size: usize,
     pub mesh: usize,
-    pub steps_per_day: u64,
+    pub steps_per_day: u32,
     pub infected: Percentage,
     pub recovered: Percentage,
     pub q_asymptomatic: Percentage,
@@ -133,10 +133,10 @@ pub struct WorldParams {
 
 impl WorldParams {
     pub fn new(
-        init_n_pop: usize,
+        init_n_pop: u32,
         field_size: usize,
         mesh: usize,
-        steps_per_day: u64,
+        steps_per_day: u32,
         infected: Percentage,
         recovered: Percentage,
         q_asymptomatic: Percentage,

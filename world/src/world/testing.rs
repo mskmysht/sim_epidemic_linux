@@ -31,11 +31,11 @@ impl From<bool> for TestResult {
 pub struct Testee {
     agent: Agent,
     reason: TestReason,
-    time_stamp: u64,
+    time_stamp: u32,
 }
 
 impl Testee {
-    pub fn new(agent: Agent, reason: TestReason, time_stamp: u64) -> Self {
+    pub fn new(agent: Agent, reason: TestReason, time_stamp: u32) -> Self {
         Self {
             agent,
             reason,
@@ -75,13 +75,13 @@ impl TestQueue {
     pub fn accept(
         &mut self,
         pfs: &ParamsForStep,
-        count_reason: &mut EnumMap<TestReason, u64>,
-        count_result: &mut EnumMap<TestResult, u64>,
+        count_reason: &mut EnumMap<TestReason, u32>,
+        count_result: &mut EnumMap<TestResult, u32>,
     ) {
         let (latest, oldest) = {
             let l = pfs.rp.step as f64 - (pfs.rp.tst_proc * pfs.wp.steps_per_day());
             let o = l - pfs.rp.tst_dly_lim * pfs.wp.steps_per_day();
-            (l as u64, o as u64)
+            (l as u32, o as u32)
         };
         let mut max_tests = {
             let rng = &mut rand::thread_rng();

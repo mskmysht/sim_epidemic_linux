@@ -11,9 +11,9 @@ use std::collections::VecDeque;
 pub struct Contacts(VecDeque<ContactInfo>);
 
 impl Contacts {
-    const RETENTION_PERIOD: u64 = 14; // two weeks
+    const RETENTION_PERIOD: u32 = 14; // two weeks
 
-    pub fn append(&mut self, agents: Vec<Agent>, step: u64) {
+    pub fn append(&mut self, agents: Vec<Agent>, step: u32) {
         for agent in agents.into_iter() {
             self.0.push_back(ContactInfo::new(agent, step))
         }
@@ -40,11 +40,11 @@ impl Contacts {
 
 struct ContactInfo {
     pub agent: Agent,
-    pub time_stamp: u64,
+    pub time_stamp: u32,
 }
 
 impl ContactInfo {
-    fn new(agent: Agent, time_stamp: u64) -> Self {
+    fn new(agent: Agent, time_stamp: u32) -> Self {
         Self { agent, time_stamp }
     }
 }

@@ -2479,7 +2479,6 @@ dependencies = [
  "serde",
  "tokio",
  "worker-if",
- "world",
 ]
 
 [[package]]

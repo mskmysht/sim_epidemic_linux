@@ -522,7 +522,7 @@ impl Body {
 
 #[derive(Default)]
 struct AgentLog {
-    n_infects: u64,
+    n_infects: u32,
 }
 
 impl AgentLog {
@@ -530,7 +530,7 @@ impl AgentLog {
         *self = AgentLog::default();
     }
 
-    fn update_n_infects(&mut self, new_n_infects: u64, log: &mut LocalStepLog) {
+    fn update_n_infects(&mut self, new_n_infects: u32, log: &mut LocalStepLog) {
         if new_n_infects > 0 {
             let prev_n_infects = self.n_infects;
             self.n_infects += new_n_infects;
@@ -616,7 +616,7 @@ impl InnerAgent {
         None
     }
 
-    pub fn get_test(&mut self, time_stamp: u64, pfs: &ParamsForStep) -> TestResult {
+    pub fn get_test(&mut self, time_stamp: u32, pfs: &ParamsForStep) -> TestResult {
         let rng = &mut rand::thread_rng();
         let b = if let Some(ip) = self.health.get_infected() {
             // P(U < 1 - (1-p)^x) = 1 - (1-p)^x = P(U > (1-p)^x)
@@ -859,7 +859,7 @@ impl Agent {
         n_dist: usize,
         wp: &WorldParams,
         rp: &RuntimeParams,
-    ) -> (Vec<HealthType>, usize) {
+    ) -> (Vec<HealthType>, u32) {
         let mut cats = 'block: {
             use crate::util::math;
             let r = n_pop - n_infected;
@@ -928,7 +928,7 @@ impl Agent {
 #[derive(Default)]
 struct TestState {
     reserved: bool,
-    last_tested: Option<u64>,
+    last_tested: Option<u32>,
     unread_result: Option<TestResult>,
 }
 
@@ -954,7 +954,7 @@ impl TestState {
         self.reserved = true;
     }
 
-    fn notify_result(&mut self, time_stamp: u64, result: TestResult) {
+    fn notify_result(&mut self, time_stamp: u32, result: TestResult) {
         self.reserved = false;
         self.last_tested = Some(time_stamp);
         self.unread_result = Some(result);

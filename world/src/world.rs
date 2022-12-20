@@ -15,7 +15,6 @@ use self::{
 };
 use crate::{
     log::MyLog,
-    pubsub::{Publisher, Subscriber, SubscriberError},
     util::{enum_map::EnumMap, math::Point, random::DistInfo},
 };
 
@@ -26,10 +25,11 @@ use std::{
     usize,
 };
 
-use world_if::{Request, Response, ResponseError, ResponseOk};
+use world_if::{
+    pubsub::Publisher, Request, Response, ResponseError, ResponseOk, WorldState, WorldStatus,
+};
 
 use chrono::Local;
-use ipc_channel::ipc::{self, IpcReceiver, IpcSender};
 
 struct World {
     id: String,
@@ -41,7 +41,7 @@ struct World {
     hospital: Hospital,
     cemetery: Cemetery,
     test_queue: TestQueue,
-    is_finished: bool,
+    // is_finished: bool,
     //[todo] predicate_to_stop: bool,
     log: MyLog,
     scenario_index: i32,
@@ -60,8 +60,8 @@ impl World {
             id,
             runtime_params,
             world_params,
-            agents: Vec::with_capacity(world_params.init_n_pop),
-            is_finished: false,
+            agents: Vec::with_capacity(world_params.init_n_pop as usize),
+            // is_finished: false,
             log: MyLog::default(),
             scenario_index: 0,
             gatherings: Gatherings::new(),
@@ -86,9 +86,9 @@ impl World {
         //[todo] set runtime params of scenario != None
         let n_pop = self.world_params.init_n_pop;
         let n_dist = (self.runtime_params.dst_ob.r() * self.world_params.init_n_pop()) as usize;
-        let n_infected = (self.world_params.init_n_pop() * self.world_params.infected.r()) as usize;
+        let n_infected = (self.world_params.init_n_pop() * self.world_params.infected.r()) as u32;
         let n_recovered = {
-            let k = (self.world_params.init_n_pop() * self.world_params.recovered.r()) as usize;
+            let k = (self.world_params.init_n_pop() * self.world_params.recovered.r()) as u32;
             if n_infected + k > n_pop {
                 n_pop - n_infected
             } else {
@@ -104,18 +104,18 @@ impl World {
 
         let (cats, n_symptomatic) = Agent::reset_all(
             &self.agents,
-            n_pop,
-            n_infected,
-            n_recovered,
+            n_pop as usize,
+            n_infected as usize,
+            n_recovered as usize,
             n_dist,
             &self.world_params,
             &self.runtime_params,
         );
 
         let mut n_q_symptomatic =
-            (n_symptomatic as f64 * self.world_params.q_symptomatic.r()) as u64;
+            (n_symptomatic as f64 * self.world_params.q_symptomatic.r()) as u32;
         let mut n_q_asymptomatic =
-            ((n_infected - n_symptomatic) as f64 * self.world_params.q_asymptomatic.r()) as u64;
+            ((n_infected - n_symptomatic) as f64 * self.world_params.q_asymptomatic.r()) as u32;
         for (i, t) in cats.into_iter().enumerate() {
             let agent = self.agents[i].clone();
             match t {
@@ -146,7 +146,7 @@ impl World {
         self.scenario_index = 0;
         //[todo] self.exec_scenario();
 
-        self.is_finished = false;
+        // self.is_finished = false;
     }
 
     fn step(&mut self) {
@@ -183,9 +183,13 @@ impl World {
             &pfs,
         );
 
-        self.is_finished = self.log.push();
+        self.log.push();
         self.runtime_params.step += 1;
         // [todo] self.predicate_to_stop
+    }
+
+    pub fn get_n_infected(&self) -> u32 {
+        self.log.n_infected()
     }
 
     fn export(&self, dir: &str) -> io::Result<()> {
@@ -210,49 +214,27 @@ fn get_uptime() -> f64 {
         .as_secs_f64()
 }
 
-use chrono::serde::ts_seconds;
-use serde::{Deserialize, Serialize};
-use std::fmt;
+// #[derive(Clone, Copy, PartialEq, Debug, Serialize, Deserialize, Default)]
+// pub enum RunningMode {
+//     #[default]
+//     Stopped,
+//     Over,
+//     Started,
+//     // LoopFinished,
+//     // LoopEndByUser,
+//     // LoopEndAsDaysPassed,
+//     //[todo] LoopEndByCondition,
+//     //[todo] LoopEndByTimeLimit,
+// }
 
-#[derive(Clone, Copy, PartialEq, Debug, Serialize, Deserialize, Default)]
-pub enum LoopMode {
-    #[default]
-    LoopNone,
-    LoopRunning,
-    LoopFinished,
-    LoopEndByUser,
-    LoopEndAsDaysPassed,
-    //[todo] LoopEndByCondition,
-    //[todo] LoopEndByTimeLimit,
-}
-
-#[derive(Debug, serde::Deserialize, serde::Serialize)]
-pub struct WorldStatus {
-    step: u64,
-    mode: LoopMode,
-    #[serde(with = "ts_seconds")]
-    time_stamp: chrono::DateTime<chrono::Utc>,
-}
-
-impl WorldStatus {
-    pub fn new(step: u64, mode: LoopMode) -> Self {
-        Self {
-            step,
-            mode,
-            time_stamp: chrono::Utc::now(),
-        }
-    }
-}
-
-impl fmt::Display for WorldStatus {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(
-            f,
-            "[{}]step:{},mode:{:?}",
-            self.time_stamp, self.step, self.mode
-        )
-    }
-}
+// impl From<RunningMode> for WorldState {
+//     fn from(mode: RunningMode) -> Self {
+//         match mode {
+//             RunningMode::Started => WorldState::Started,
+//             _ => WorldState::Stopped,
+//         }
+//     }
+// }
 
 #[derive(Default, Debug)]
 struct WorldStepInfo {
@@ -263,6 +245,7 @@ struct WorldStepInfo {
 pub struct WorldSpawner<C: Publisher> {
     world: World,
     info: WorldStepInfo,
+    // running_mode: RunningMode,
     channel: C,
 }
 
@@ -274,19 +257,20 @@ where
     C::SendError<WorldStatus>: std::fmt::Debug,
 {
     pub fn new(id: String, channel: C) -> Self {
+        let world = World::new(id, new_runtime_params(), new_world_params());
         let spawner = Self {
-            world: World::new(id, new_runtime_params(), new_world_params()),
+            world,
             info: WorldStepInfo::default(),
             channel,
         };
-        spawner.send_status(LoopMode::LoopNone);
+        spawner.send_status(WorldState::Stopped);
         spawner
     }
 
     pub fn spawn(self) -> io::Result<JoinHandle<()>> {
         thread::Builder::new()
             .name(format!("world_{}", self.world.id.clone()))
-            .spawn(move || self.run_loop())
+            .spawn(move || self.listen())
     }
 
     #[inline]
@@ -309,9 +293,9 @@ where
     }
 
     #[inline]
-    fn send_status(&self, mode: LoopMode) {
+    fn send_status(&self, state: WorldState) {
         self.channel
-            .send_on_stream(WorldStatus::new(self.world.runtime_params.step, mode))
+            .send_on_stream(WorldStatus::new(self.world.runtime_params.step, state))
             .unwrap();
     }
 
@@ -319,11 +303,97 @@ where
     fn reset(&mut self) {
         self.world.reset();
         self.info = WorldStepInfo::default();
-        self.send_status(LoopMode::LoopNone);
+        self.send_status(WorldState::Stopped);
+        self.res_status_ok();
     }
 
     #[inline]
-    fn step(&mut self, default_mode: LoopMode) -> bool {
+    fn step(&mut self) {
+        if self.is_ended() {
+            self.res_status_err(ResponseError::AlreadyEnded);
+        } else {
+            self.inline_step();
+            let state = if self.is_ended() {
+                WorldState::Ended
+            } else {
+                WorldState::Stopped
+            };
+
+            self.send_status(state);
+            self.res_status_ok();
+        }
+    }
+
+    #[inline]
+    fn stop(&mut self) {
+        self.send_status(WorldState::Stopped);
+        self.res_status_ok();
+    }
+
+    #[inline]
+    fn debug(&self) {
+        self.res_status_ok_with(format!("{}\n{:?}", self.world.log, self.info));
+    }
+
+    #[inline]
+    fn export(&self, dir: String) {
+        match self.world.export(&dir) {
+            Ok(_) => self.res_status_ok_with(format!("{} was successfully exported", dir)),
+            Err(_) => self.res_status_err(ResponseError::FileExportFailed),
+        }
+    }
+
+    fn start(&mut self, stop_at: u32) -> bool {
+        let mut stop_listening = false;
+        let step_to_end = stop_at * self.world.world_params.steps_per_day;
+
+        if self.is_ended() {
+            self.res_status_err(ResponseError::AlreadyEnded);
+        } else {
+            self.res_status_ok();
+            loop {
+                if !self.step_cont(step_to_end) {
+                    stop_listening = true;
+                }
+                if let Ok(msg) = self.channel.try_recv() {
+                    match msg {
+                        Request::Delete => {
+                            self.res_status_ok();
+                            break;
+                        }
+                        Request::Stop => {
+                            self.stop();
+                            break;
+                        }
+                        Request::Reset => {
+                            self.reset();
+                            break;
+                        }
+                        Request::Debug => self.debug(),
+                        _ => self.res_status_err(ResponseError::AlreadyStarted),
+                    }
+                }
+            }
+        }
+        stop_listening
+    }
+
+    #[inline]
+    fn step_cont(&mut self, step_to_end: u32) -> bool {
+        self.inline_step();
+        let (state, cont) = if self.is_ended() {
+            (WorldState::Ended, false)
+        } else if self.world.runtime_params.step > step_to_end {
+            (WorldState::Stopped, false)
+        } else {
+            (WorldState::Started, true)
+        };
+        self.send_status(state);
+        cont
+    }
+
+    #[inline]
+    fn inline_step(&mut self) {
         self.world.step();
         //    if loop_mode == LoopMode::LoopEndByCondition
         //        && world.scenario_index < self.scenario.len() as i32
@@ -338,94 +408,29 @@ where
                 ((1.0 / time_passed).min(30.0) - self.info.steps_per_sec) * 0.2;
         }
         self.info.prev_time = new_time;
-        if self.world.is_finished {
-            self.send_status(LoopMode::LoopFinished);
-            true
-        } else {
-            self.send_status(default_mode);
-            false
-        }
     }
 
     #[inline]
-    fn auto_stopped(&self, stop_at: u64) -> bool {
-        if self.world.runtime_params.step >= stop_at * self.world.world_params.steps_per_day - 1 {
-            self.send_status(LoopMode::LoopEndAsDaysPassed);
-            true
-        } else {
-            false
-        }
+    fn is_ended(&self) -> bool {
+        self.world.get_n_infected() == 0
     }
 
-    #[inline]
-    fn stop(&self) {
-        self.send_status(LoopMode::LoopEndByUser);
-    }
-
-    #[inline]
-    fn debug(&self) -> String {
-        format!("{}\n{:?}", self.world.log, self.info)
-    }
-
-    fn run_loop(mut self) {
-        'outer: loop {
+    fn listen(mut self) {
+        loop {
             match self.channel.recv().unwrap() {
                 Request::Delete => {
                     self.res_status_ok();
                     break;
                 }
-                Request::Reset => {
-                    self.reset();
-                    self.res_status_ok();
-                }
-                Request::Step => {
-                    if !self.world.is_finished {
-                        self.step(LoopMode::LoopEndByUser);
-                        self.res_status_ok();
-                    } else {
-                        self.res_status_err(ResponseError::AlreadyFinished);
-                    }
-                }
+                Request::Reset => self.reset(),
+                Request::Step => self.step(),
                 Request::Start(stop_at) => {
-                    if self.world.is_finished {
-                        self.res_status_err(ResponseError::AlreadyFinished);
-                    } else {
-                        self.res_status_ok();
-                        loop {
-                            if self.auto_stopped(stop_at) {
-                                break;
-                            }
-                            if self.step(LoopMode::LoopRunning) {
-                                break;
-                            }
-                            if let Ok(msg) = self.channel.try_recv() {
-                                match msg {
-                                    Request::Delete => {
-                                        self.res_status_ok();
-                                        break 'outer;
-                                    }
-                                    Request::Stop => {
-                                        self.stop();
-                                        self.res_status_ok();
-                                        break;
-                                    }
-                                    Request::Reset => {
-                                        self.reset();
-                                        self.res_status_ok();
-                                        break;
-                                    }
-                                    Request::Debug => self.res_status_ok_with(self.debug()),
-                                    _ => self.res_status_err(ResponseError::AlreadyRunning),
-                                }
-                            }
-                        }
+                    if self.start(stop_at) {
+                        break;
                     }
                 }
-                Request::Debug => self.res_status_ok_with(self.debug()),
-                Request::Export(dir) => match self.world.export(&dir) {
-                    Ok(_) => self.res_status_ok_with(format!("{} was successfully exported", dir)),
-                    Err(_) => self.res_status_err(ResponseError::FileExportFailed),
-                },
+                Request::Debug => self.debug(),
+                Request::Export(dir) => self.export(dir),
                 Request::Stop => self.res_status_err(ResponseError::AlreadyStopped),
             }
         }

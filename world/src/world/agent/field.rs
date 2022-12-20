@@ -27,7 +27,7 @@ use rayon::iter::ParallelIterator;
 struct TempParam {
     force: Point,
     best: Option<(Point, f64)>,
-    new_n_infects: u64,
+    new_n_infects: u32,
     new_contacts: Vec<Agent>,
     infected: Option<(f64, usize)>,
 }

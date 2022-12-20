@@ -1,7 +1,9 @@
 use std::{sync::mpsc, thread};
 
-use world::{Publisher, Subscriber, SubscriberError, WorldStatus};
-use world_if::Request;
+use world_if::{
+    pubsub::{Publisher, Subscriber, SubscriberError},
+    Request, WorldStatus,
+};
 
 pub struct MpscPublisher {
     stream_tx: mpsc::Sender<WorldStatus>,

@@ -113,9 +113,9 @@ impl Gathering {
         locs
     }
 
-    pub fn step(&mut self, steps_per_day: u64) -> bool {
-        self.duration -= 24. / steps_per_day as f64;
-        self.duration <= 0.
+    pub fn step(&mut self, days_per_step: f64) -> bool {
+        self.duration -= 24.0 * days_per_step;
+        self.duration <= 0.0
     }
 }
 
@@ -138,7 +138,8 @@ impl Gatherings {
         wp: &WorldParams,
         rp: &RuntimeParams,
     ) {
-        self.0.retain_mut(|gat| !gat.write().step(wp.steps_per_day));
+        self.0
+            .retain_mut(|gat| !gat.write().step(wp.days_per_step()));
 
         // caliculate the number of gathering circles
         // using random number in exponetial distribution.

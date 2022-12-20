@@ -8,12 +8,12 @@ use std::{collections::VecDeque, fmt::Display, io};
 use csv::Writer;
 
 pub struct InfectionCntInfo {
-    pub org_v: u64,
-    pub new_v: u64,
+    pub org_v: u32,
+    pub new_v: u32,
 }
 
 impl InfectionCntInfo {
-    pub fn new(org_v: u64, new_v: u64) -> Self {
+    pub fn new(org_v: u32, new_v: u32) -> Self {
         Self { org_v, new_v }
     }
 }
@@ -38,7 +38,7 @@ pub struct LocalStepLog {
 }
 
 impl LocalStepLog {
-    pub fn set_infect(&mut self, prev_n_infects: u64, curr_n_infects: u64) {
+    pub fn set_infect(&mut self, prev_n_infects: u32, curr_n_infects: u32) {
         self.infct = Some(InfectionCntInfo::new(prev_n_infects, curr_n_infects))
     }
 
@@ -73,7 +73,7 @@ impl Display for MyLog {
 }
 
 impl MyLog {
-    pub fn reset(&mut self, n_susceptible: usize, n_symptomatic: usize, n_asymptomatic: usize) {
+    pub fn reset(&mut self, n_susceptible: u32, n_symptomatic: u32, n_asymptomatic: u32) {
         let mut cnt = EnumMap::default();
         cnt[&HealthType::Susceptible] = n_susceptible;
         cnt[&HealthType::Symptomatic] = n_symptomatic;
@@ -82,7 +82,7 @@ impl MyLog {
         self.health_counts.push_front(HealthLog(cnt));
     }
 
-    fn n_infected(&self) -> usize {
+    pub fn n_infected(&self) -> u32 {
         self.health_counts[0].n_infected()
     }
 
@@ -98,9 +98,8 @@ impl MyLog {
         }
     }
 
-    pub fn push(&mut self) -> bool {
+    pub fn push(&mut self) {
         self.health_counts.push_front(self.health_counts[0].clone());
-        self.n_infected() == 0
     }
 
     pub fn write(&self, name: &str, dir: &str) -> io::Result<()> {
@@ -130,7 +129,7 @@ pub struct HealthDiff {
 }
 
 #[derive(Clone, Default, Debug)]
-pub struct HealthLog(EnumMap<HealthType, usize>);
+pub struct HealthLog(EnumMap<HealthType, u32>);
 
 impl HealthLog {
     fn apply_difference(&mut self, hd: HealthDiff) {
@@ -138,7 +137,7 @@ impl HealthLog {
         self.0[&hd.to] += 1;
     }
 
-    fn n_infected(&self) -> usize {
+    fn n_infected(&self) -> u32 {
         self.0[&HealthType::Symptomatic] + self.0[&HealthType::Asymptomatic]
     }
 }
