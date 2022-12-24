@@ -10,7 +10,7 @@ table = { path = "../libs/table" }
 custom_macro = { path = "../custom_macro" }
 world-if = { path = "../libs/world-if" }
 ipc-channel = "0.16"
-pico-args = "0.5"
+argopt = "0.3"
 rayon = "1.5"
 chrono = { version = "0.4", features = ["serde"] }
 csv = "1.1"

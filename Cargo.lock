@@ -1011,6 +1011,12 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "2a60c7ce501c71e03a9c9c0d35b861413ae925bd979cc7a4e30d060069aaac8d"
 
 [[package]]
+name = "minimal-lexical"
+version = "0.2.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "68354c5c6bd36d73ff3feceb05efa59b6acb7626617f4962be322a825e61f79a"
+
+[[package]]
 name = "mio"
 version = "0.6.23"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1081,6 +1087,16 @@ dependencies = [
  "cfg-if 0.1.10",
  "libc",
  "winapi 0.3.9",
+]
+
+[[package]]
+name = "nom"
+version = "7.1.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "a8903e5a29a317527874d0402f867152a3d21c908bb0b933e416c65e301d4c36"
+dependencies = [
+ "memchr",
+ "minimal-lexical",
 ]
 
 [[package]]
@@ -1170,6 +1186,13 @@ dependencies = [
 ]
 
 [[package]]
+name = "parser"
+version = "0.1.0"
+dependencies = [
+ "nom",
+]
+
+[[package]]
 name = "peg"
 version = "0.8.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1210,12 +1233,6 @@ name = "percent-encoding"
 version = "2.2.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "478c572c3d73181ff3c2539045f6eb99e5491218eae919370993b890cdbdd98e"
-
-[[package]]
-name = "pico-args"
-version = "0.5.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "5be167a7af36ee22fe3115051bc51f6e6c7054c9348e28deb4f49bd6f705a315"
 
 [[package]]
 name = "pin-project-lite"
@@ -1644,7 +1661,8 @@ name = "repl"
 version = "0.1.0"
 dependencies = [
  "async-trait",
- "peg",
+ "nom",
+ "parser",
  "tokio",
 ]
 
@@ -1866,6 +1884,16 @@ dependencies = [
  "cfg-if 1.0.0",
  "cpufeatures",
  "digest",
+]
+
+[[package]]
+name = "shared_child"
+version = "1.0.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "b0d94659ad3c2137fef23ae75b03d5241d633f8acded53d672decfa0e6e0caef"
+dependencies = [
+ "libc",
+ "winapi 0.3.9",
 ]
 
 [[package]]
@@ -2477,6 +2505,7 @@ dependencies = [
  "repl",
  "rustls",
  "serde",
+ "shared_child",
  "tokio",
  "worker-if",
 ]
@@ -2486,7 +2515,8 @@ name = "worker-if"
 version = "0.1.0"
 dependencies = [
  "anyhow",
- "peg",
+ "nom",
+ "parser",
  "serde",
  "serde-error",
  "thiserror",
@@ -2497,12 +2527,12 @@ dependencies = [
 name = "world"
 version = "0.1.0"
 dependencies = [
+ "argopt",
  "chrono",
  "csv",
  "custom_macro",
  "ipc-channel",
  "parking_lot",
- "pico-args",
  "protocol",
  "rand 0.8.5",
  "rand_distr",
@@ -2518,9 +2548,11 @@ dependencies = [
 name = "world-if"
 version = "0.1.0"
 dependencies = [
+ "anyhow",
  "chrono",
  "ipc-channel",
- "peg",
+ "nom",
+ "parser",
  "serde",
  "serde-error",
  "thiserror",

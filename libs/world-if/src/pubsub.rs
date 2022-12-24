@@ -2,20 +2,17 @@ use super::{Request, Response, WorldStatus};
 use ipc_channel::ipc::{self, IpcReceiver, IpcSender};
 
 pub trait Publisher {
-    type SendError<T>;
-    type RecvError;
-    type TryRecvError;
+    type SendErr<T>;
+    type RecvErr;
 
-    fn recv(&self) -> Result<Request, Self::RecvError>;
-    fn try_recv(&self) -> Result<Request, Self::TryRecvError>;
-    fn send_response(&self, data: Response) -> Result<(), Self::SendError<Response>>;
-    fn send_on_stream(&self, data: WorldStatus) -> Result<(), Self::SendError<WorldStatus>>;
+    fn recv(&self) -> Result<Request, Self::RecvErr>;
+    fn try_recv(&self) -> Result<Option<Request>, Self::RecvErr>;
+    fn send_response(&self, data: Response) -> Result<(), Self::SendErr<Response>>;
+    fn send_on_stream(&self, data: WorldStatus) -> Result<(), Self::SendErr<WorldStatus>>;
 }
 
 #[derive(thiserror::Error, Debug)]
-pub enum SubscriberError<TR, R, S> {
-    #[error("try receive error")]
-    TryRecvError(TR),
+pub enum RequestError<R, S> {
     #[error("receive error")]
     RecvError(R),
     #[error("send error")]
@@ -23,30 +20,35 @@ pub enum SubscriberError<TR, R, S> {
 }
 
 pub trait Subscriber {
-    type Err;
+    type RecvErr;
+    type SendErr;
 
-    fn recv_status(&self) -> Result<WorldStatus, Self::Err>;
-    fn try_recv_status(&self) -> Result<WorldStatus, Self::Err>;
+    fn recv_status(&self) -> Result<WorldStatus, Self::RecvErr>;
+    fn try_recv_status(&self) -> Result<Option<WorldStatus>, Self::RecvErr>;
 
-    fn send(&self, req: Request) -> Result<(), Self::Err>;
-    fn recv(&self) -> Result<Response, Self::Err>;
+    fn send(&self, req: Request) -> Result<(), Self::SendErr>;
+    fn recv(&self) -> Result<Response, Self::RecvErr>;
 
     fn seek_status(&self) -> Vec<WorldStatus> {
         let mut v = Vec::new();
-        while let Ok(s) = self.try_recv_status() {
+        while let Ok(Some(s)) = self.try_recv_status() {
             v.push(s);
         }
         v
     }
 
-    fn request(&self, req: Request) -> Result<Response, Self::Err> {
-        self.send(req)?;
-        Ok(self.recv()?)
+    fn request(
+        &self,
+        req: Request,
+    ) -> Result<Response, RequestError<Self::RecvErr, Self::SendErr>> {
+        self.send(req).map_err(RequestError::SendError)?;
+        self.recv().map_err(RequestError::RecvError)
     }
 
-    fn delete(&self) -> Result<Response, Self::Err> {
-        self.send(Request::Delete)?;
-        Ok(self.recv()?)
+    fn delete(&self) -> Result<(), RequestError<Self::RecvErr, Self::SendErr>> {
+        self.send(Request::Delete)
+            .map_err(RequestError::SendError)?;
+        self.recv().map(|_| ()).map_err(RequestError::RecvError)
     }
 }
 
@@ -72,24 +74,27 @@ impl IpcSubscriber {
 }
 
 impl Subscriber for IpcSubscriber {
-    type Err = SubscriberError<ipc::TryRecvError, ipc::IpcError, ipc_channel::Error>;
+    type RecvErr = ipc::IpcError;
+    type SendErr = ipc_channel::Error;
 
-    fn recv_status(&self) -> Result<WorldStatus, Self::Err> {
-        self.stream.recv().map_err(SubscriberError::RecvError)
+    fn recv_status(&self) -> Result<WorldStatus, Self::RecvErr> {
+        self.stream.recv()
     }
 
-    fn try_recv_status(&self) -> Result<WorldStatus, Self::Err> {
-        self.stream
-            .try_recv()
-            .map_err(SubscriberError::TryRecvError)
+    fn try_recv_status(&self) -> Result<Option<WorldStatus>, Self::RecvErr> {
+        match self.stream.try_recv() {
+            Ok(s) => Ok(Some(s)),
+            Err(ipc::TryRecvError::Empty) => Ok(None),
+            Err(ipc::TryRecvError::IpcError(e)) => Err(e),
+        }
     }
 
-    fn send(&self, req: Request) -> Result<(), Self::Err> {
-        self.req_tx.send(req).map_err(SubscriberError::SendError)
+    fn send(&self, req: Request) -> Result<(), Self::SendErr> {
+        self.req_tx.send(req)
     }
 
-    fn recv(&self) -> Result<Response, Self::Err> {
-        self.res_rx.recv().map_err(SubscriberError::RecvError)
+    fn recv(&self) -> Result<Response, Self::RecvErr> {
+        self.res_rx.recv()
     }
 }
 
@@ -114,23 +119,26 @@ impl IpcPublisher {
 }
 
 impl Publisher for IpcPublisher {
-    type SendError<T> = ipc_channel::Error;
-    type RecvError = ipc::IpcError;
-    type TryRecvError = ipc::TryRecvError;
+    type SendErr<T> = ipc_channel::Error;
+    type RecvErr = ipc::IpcError;
 
-    fn recv(&self) -> Result<Request, Self::RecvError> {
+    fn recv(&self) -> Result<Request, Self::RecvErr> {
         self.req_rx.recv()
     }
 
-    fn try_recv(&self) -> Result<Request, Self::TryRecvError> {
-        self.req_rx.try_recv()
+    fn try_recv(&self) -> Result<Option<Request>, Self::RecvErr> {
+        match self.req_rx.try_recv() {
+            Ok(r) => Ok(Some(r)),
+            Err(ipc::TryRecvError::Empty) => Ok(None),
+            Err(ipc::TryRecvError::IpcError(e)) => Err(e),
+        }
     }
 
-    fn send_response(&self, data: Response) -> Result<(), Self::SendError<Response>> {
+    fn send_response(&self, data: Response) -> Result<(), Self::SendErr<Response>> {
         self.res_tx.send(data)
     }
 
-    fn send_on_stream(&self, data: WorldStatus) -> Result<(), Self::SendError<WorldStatus>> {
+    fn send_on_stream(&self, data: WorldStatus) -> Result<(), Self::SendErr<WorldStatus>> {
         self.stream_tx.send(data)
     }
 }

@@ -9,6 +9,8 @@ version = "0.1.0"
 chrono = { version = "0.4", features = ["serde"] }
 ipc-channel = "0.16"
 serde = { version = "1.0", features = ["derive"] }
-peg = "0.8"
+nom = "7.1"
 thiserror = "1.0"
 serde-error = "0.1"
+anyhow = "1.0"
+parser = { path = "../parser" }

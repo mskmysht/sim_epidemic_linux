@@ -1,7 +1,7 @@
 use std::{sync::mpsc, thread};
 
 use world_if::{
-    pubsub::{Publisher, Subscriber, SubscriberError},
+    pubsub::{Publisher, Subscriber},
     Request, WorldStatus,
 };
 
@@ -26,26 +26,29 @@ impl MpscPublisher {
 }
 
 impl Publisher for MpscPublisher {
-    type SendError<T> = mpsc::SendError<T>;
-    type RecvError = mpsc::RecvError;
-    type TryRecvError = mpsc::TryRecvError;
+    type SendErr<T> = mpsc::SendError<T>;
+    type RecvErr = mpsc::RecvError;
 
-    fn recv(&self) -> Result<Request, Self::RecvError> {
+    fn recv(&self) -> Result<Request, Self::RecvErr> {
         self.req_rx.recv()
     }
 
-    fn try_recv(&self) -> Result<Request, Self::TryRecvError> {
-        self.req_rx.try_recv()
+    fn try_recv(&self) -> Result<Option<Request>, Self::RecvErr> {
+        match self.req_rx.try_recv() {
+            Ok(r) => Ok(Some(r)),
+            Err(mpsc::TryRecvError::Empty) => Ok(None),
+            Err(mpsc::TryRecvError::Disconnected) => Err(mpsc::RecvError),
+        }
     }
 
     fn send_response(
         &self,
         data: world_if::Response,
-    ) -> Result<(), Self::SendError<world_if::Response>> {
+    ) -> Result<(), Self::SendErr<world_if::Response>> {
         self.res_tx.send(data)
     }
 
-    fn send_on_stream(&self, data: WorldStatus) -> Result<(), Self::SendError<WorldStatus>> {
+    fn send_on_stream(&self, data: WorldStatus) -> Result<(), Self::SendErr<WorldStatus>> {
         self.stream_tx.send(data)
     }
 }
@@ -71,27 +74,31 @@ impl MpscSubscriber {
 }
 
 impl Subscriber for MpscSubscriber {
-    type Err = SubscriberError<mpsc::TryRecvError, mpsc::RecvError, mpsc::SendError<Request>>;
+    type RecvErr = mpsc::RecvError;
+    type SendErr = mpsc::SendError<Request>;
 
-    fn recv_status(&self) -> Result<WorldStatus, Self::Err> {
-        self.stream_rx.recv().map_err(SubscriberError::RecvError)
+    fn recv_status(&self) -> Result<WorldStatus, Self::RecvErr> {
+        self.stream_rx.recv()
     }
 
-    fn try_recv_status(&self) -> Result<WorldStatus, Self::Err> {
-        self.stream_rx
-            .try_recv()
-            .map_err(SubscriberError::TryRecvError)
+    fn try_recv_status(&self) -> Result<Option<WorldStatus>, Self::RecvErr> {
+        match self.stream_rx.try_recv() {
+            Ok(s) => Ok(Some(s)),
+            Err(mpsc::TryRecvError::Empty) => Ok(None),
+            Err(mpsc::TryRecvError::Disconnected) => Err(mpsc::RecvError),
+        }
     }
 
-    fn send(&self, req: Request) -> Result<(), Self::Err> {
-        self.req_tx.send(req).map_err(SubscriberError::SendError)
+    fn send(&self, req: Request) -> Result<(), Self::SendErr> {
+        self.req_tx.send(req)
     }
 
-    fn recv(&self) -> Result<world_if::Response, Self::Err> {
-        self.res_rx.recv().map_err(SubscriberError::RecvError)
+    fn recv(&self) -> Result<world_if::Response, Self::RecvErr> {
+        self.res_rx.recv()
     }
 }
 
+#[derive(Debug)]
 enum RequestWrapper {
     Info,
     Req(Request),
@@ -105,12 +112,14 @@ struct MyHandler {
 impl repl::Parsable for MyHandler {
     type Parsed = RequestWrapper;
 
-    fn parse(buf: &str) -> repl::ParseResult<Self::Parsed> {
-        if buf.starts_with("info") {
-            return Ok(RequestWrapper::Info);
-        }
-        let req = world_if::parse::request(buf)?;
-        Ok(RequestWrapper::Req(req))
+    fn parse(input: &str) -> repl::nom::IResult<&str, Self::Parsed> {
+        use repl::nom::branch::alt;
+        use repl::nom::bytes::complete::tag;
+        use repl::nom::combinator::map;
+        alt((
+            map(tag("info"), |_| RequestWrapper::Info),
+            map(world_if::parse::request, RequestWrapper::Req),
+        ))(input)
     }
 }
 
@@ -162,9 +171,7 @@ fn main() {
         let status = subscriber.recv_status().unwrap();
         repl::Repl::new(MyHandler { subscriber, status }).run()
     });
+    handle.join().unwrap();
     input.join().unwrap();
-    match handle.join() {
-        Ok(_) => println!("stopped"),
-        Err(e) => eprintln!("{e:?}"),
-    }
+    println!("stopped");
 }

@@ -11,17 +11,15 @@ pub struct StdHandler {
 }
 
 impl StdHandler {
-    pub fn new(path: String) -> Self {
-        Self {
-            manager: WorldManager::new(path),
-        }
+    pub fn new(manager: WorldManager) -> Self {
+        Self { manager }
     }
 }
 
 impl repl::Parsable for StdHandler {
     type Parsed = Req;
 
-    fn parse(buf: &str) -> repl::ParseResult<Self::Parsed> {
+    fn parse(buf: &str) -> repl::nom::IResult<&str, Self::Parsed> {
         worker_if::parse::request(buf)
     }
 }
@@ -42,7 +40,7 @@ impl repl::Handler for StdHandler {
     type Output = Res;
 
     fn callback(&mut self, input: Self::Input) -> Self::Output {
-        self.manager.callback(input)
+        self.manager.request(input)
     }
 }
 
@@ -52,7 +50,7 @@ impl repl::AsyncHandler for StdHandler {
     type Output = Res;
 
     async fn callback(&mut self, input: Self::Input) -> Self::Output {
-        self.manager.callback(input)
+        self.manager.request(input)
     }
 }
 
@@ -65,11 +63,12 @@ fn main(
     #[opt(short = 'a')]
     is_async: bool,
 ) -> Result<(), Box<dyn error::Error>> {
+    let (manager, _) = worker::channel(world_path);
     if is_async {
         let rt = tokio::runtime::Runtime::new()?;
-        rt.block_on(repl::AsyncRepl::new(StdHandler::new(world_path)).run());
+        rt.block_on(repl::AsyncRepl::new(StdHandler::new(manager)).run());
     } else {
-        repl::Repl::new(StdHandler::new(world_path)).run();
+        repl::Repl::new(StdHandler::new(manager)).run();
     }
     Ok(())
 }

@@ -15,7 +15,8 @@ pub enum Request {
 pub enum ResponseOk {
     Item(String),
     ItemList(Vec<String>),
-    ItemInfo(String),
+    ItemInfo(world_if::WorldStatus),
+    Deleted,
     Custom(world_if::ResponseOk),
 }
 
@@ -25,6 +26,8 @@ pub enum ResponseError {
     FailedToSpawn(anyhow::Error),
     #[error("error has occured in the child process")]
     ProcessIOError(anyhow::Error),
+    #[error("abort child process")]
+    Abort(anyhow::Error),
     #[error("no id found")]
     NoIdFound,
     #[error("custom error")]

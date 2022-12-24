@@ -1,11 +1,8 @@
-use parking_lot::Mutex;
 use quinn::Endpoint;
 use std::{
     error::Error,
     net::{Ipv4Addr, SocketAddr, SocketAddrV4, TcpListener},
-    sync::Arc,
 };
-use worker::WorldManager;
 
 type DynResult<T> = Result<T, Box<dyn Error>>;
 
@@ -53,7 +50,8 @@ async fn run(
         quic_config::get_server_config(cert_path, pkey_path, timeout)?,
         addr,
     )?;
-    let manager = Arc::new(Mutex::new(WorldManager::new(world_path)));
+
+    let (manager, _) = worker::channel(world_path);
 
     while let Some(connecting) = endpoint.accept().await {
         let connection = connecting.await?;
@@ -63,11 +61,11 @@ async fn run(
         let e = loop {
             match connection.accept_bi().await {
                 Ok((mut send, mut recv)) => {
-                    let manager = Arc::clone(&manager);
+                    let manager = manager.clone();
                     tokio::spawn(async move {
                         let req = protocol::quic::read_data(&mut recv).await.unwrap();
                         println!("[request] {req:?}");
-                        let res = manager.lock().callback(req);
+                        let res = manager.request(req);
                         println!("[response] {res:?}");
                         protocol::quic::write_data(&mut send, &res).await.unwrap();
                     });
@@ -79,12 +77,15 @@ async fn run(
         };
         println!("[info] Disconnect {} ({})", ip, e);
     }
+
     Ok(())
 }
 
 fn run_tcp(world_path: String) -> DynResult<()> {
     let listener = TcpListener::bind(SocketAddrV4::new(Ipv4Addr::UNSPECIFIED, 8080))?;
-    let mut manager = WorldManager::new(world_path);
+
+    let (manager, _) = worker::channel(world_path);
+
     for stream in listener.incoming() {
         let mut stream = stream?;
         let addr = stream.peer_addr()?.to_string();
@@ -95,7 +96,7 @@ fn run_tcp(world_path: String) -> DynResult<()> {
                 Err(_) => break,
             };
             println!("[request] {req:?}");
-            let res = manager.callback(req);
+            let res = manager.request(req);
             println!("[response] {res:?}");
             if let Err(e) = protocol::write_data(&mut stream, &res) {
                 eprintln!("{e}");
@@ -103,5 +104,6 @@ fn run_tcp(world_path: String) -> DynResult<()> {
         }
         println!("[info] Disconnect {addr}");
     }
+
     Ok(())
 }

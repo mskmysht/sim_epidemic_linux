@@ -47,7 +47,7 @@ pub mod quic {
 
     impl repl::Parsable for MyHandler {
         type Parsed = Req;
-        fn parse(buf: &str) -> repl::ParseResult<Self::Parsed> {
+        fn parse(buf: &str) -> repl::nom::IResult<&str, Self::Parsed> {
             worker_if::parse::request(buf)
         }
     }
@@ -90,7 +90,7 @@ pub mod tcp {
 
     impl<'a> repl::Parsable for MyHandler<'a> {
         type Parsed = Req;
-        fn parse(buf: &str) -> repl::ParseResult<Self::Parsed> {
+        fn parse(buf: &str) -> repl::nom::IResult<&str, Self::Parsed> {
             worker_if::parse::request(buf)
         }
     }

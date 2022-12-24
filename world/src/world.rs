@@ -227,41 +227,31 @@ fn get_uptime() -> f64 {
 //     //[todo] LoopEndByTimeLimit,
 // }
 
-// impl From<RunningMode> for WorldState {
-//     fn from(mode: RunningMode) -> Self {
-//         match mode {
-//             RunningMode::Started => WorldState::Started,
-//             _ => WorldState::Stopped,
-//         }
-//     }
-// }
-
 #[derive(Default, Debug)]
 struct WorldStepInfo {
     prev_time: f64,
     steps_per_sec: f64,
 }
 
-pub struct WorldSpawner<C: Publisher> {
+pub struct WorldSpawner<P: Publisher> {
     world: World,
     info: WorldStepInfo,
-    // running_mode: RunningMode,
-    channel: C,
+    publisher: P,
 }
 
-impl<C> WorldSpawner<C>
+impl<P> WorldSpawner<P>
 where
-    C: Publisher + Send + 'static,
-    C::RecvError: std::fmt::Debug,
-    C::SendError<Response>: std::fmt::Debug,
-    C::SendError<WorldStatus>: std::fmt::Debug,
+    P: Publisher + Send + 'static,
+    P::RecvErr: std::fmt::Debug,
+    P::SendErr<Response>: std::fmt::Debug,
+    P::SendErr<WorldStatus>: std::fmt::Debug,
 {
-    pub fn new(id: String, channel: C) -> Self {
+    pub fn new(id: String, publisher: P) -> Self {
         let world = World::new(id, new_runtime_params(), new_world_params());
         let spawner = Self {
             world,
             info: WorldStepInfo::default(),
-            channel,
+            publisher,
         };
         spawner.send_status(WorldState::Stopped);
         spawner
@@ -274,27 +264,27 @@ where
     }
 
     #[inline]
-    fn res_status_ok(&self) {
-        self.channel
+    fn res_ok(&self) {
+        self.publisher
             .send_response(ResponseOk::Success.into())
             .unwrap();
     }
 
     #[inline]
-    fn res_status_ok_with(&self, msg: String) {
-        self.channel
+    fn res_ok_with(&self, msg: String) {
+        self.publisher
             .send_response(ResponseOk::SuccessWithMessage(msg).into())
             .unwrap();
     }
 
     #[inline]
-    fn res_status_err(&self, err: ResponseError) {
-        self.channel.send_response(err.into()).unwrap();
+    fn res_err(&self, err: ResponseError) {
+        self.publisher.send_response(err.into()).unwrap();
     }
 
     #[inline]
     fn send_status(&self, state: WorldState) {
-        self.channel
+        self.publisher
             .send_on_stream(WorldStatus::new(self.world.runtime_params.step, state))
             .unwrap();
     }
@@ -304,13 +294,13 @@ where
         self.world.reset();
         self.info = WorldStepInfo::default();
         self.send_status(WorldState::Stopped);
-        self.res_status_ok();
+        self.res_ok();
     }
 
     #[inline]
     fn step(&mut self) {
         if self.is_ended() {
-            self.res_status_err(ResponseError::AlreadyEnded);
+            self.res_err(ResponseError::AlreadyEnded);
         } else {
             self.inline_step();
             let state = if self.is_ended() {
@@ -320,62 +310,59 @@ where
             };
 
             self.send_status(state);
-            self.res_status_ok();
+            self.res_ok();
         }
     }
 
     #[inline]
     fn stop(&mut self) {
         self.send_status(WorldState::Stopped);
-        self.res_status_ok();
+        self.res_ok();
     }
 
     #[inline]
     fn debug(&self) {
-        self.res_status_ok_with(format!("{}\n{:?}", self.world.log, self.info));
+        self.res_ok_with(format!("{}\n{:?}", self.world.log, self.info));
     }
 
     #[inline]
     fn export(&self, dir: String) {
         match self.world.export(&dir) {
-            Ok(_) => self.res_status_ok_with(format!("{} was successfully exported", dir)),
-            Err(_) => self.res_status_err(ResponseError::FileExportFailed),
+            Ok(_) => self.res_ok_with(format!("{} was successfully exported", dir)),
+            Err(_) => self.res_err(ResponseError::FileExportFailed),
         }
     }
 
     fn start(&mut self, stop_at: u32) -> bool {
-        let mut stop_listening = false;
-        let step_to_end = stop_at * self.world.world_params.steps_per_day;
-
         if self.is_ended() {
-            self.res_status_err(ResponseError::AlreadyEnded);
-        } else {
-            self.res_status_ok();
-            loop {
-                if !self.step_cont(step_to_end) {
-                    stop_listening = true;
-                }
-                if let Ok(msg) = self.channel.try_recv() {
-                    match msg {
-                        Request::Delete => {
-                            self.res_status_ok();
-                            break;
-                        }
-                        Request::Stop => {
-                            self.stop();
-                            break;
-                        }
-                        Request::Reset => {
-                            self.reset();
-                            break;
-                        }
-                        Request::Debug => self.debug(),
-                        _ => self.res_status_err(ResponseError::AlreadyStarted),
+            self.res_err(ResponseError::AlreadyEnded);
+            return false;
+        }
+
+        let step_to_end = stop_at * self.world.world_params.steps_per_day;
+        self.res_ok();
+        while self.step_cont(step_to_end) {
+            if let Some(msg) = self.publisher.try_recv().unwrap() {
+                match msg {
+                    Request::Delete => {
+                        self.res_ok();
+                        return true;
                     }
+                    Request::Stop => {
+                        self.stop();
+                        break;
+                    }
+                    Request::Reset => {
+                        self.reset();
+                        break;
+                    }
+                    #[cfg(debug_assertions)]
+                    Request::Debug => self.debug(),
+                    _ => self.res_err(ResponseError::AlreadyStarted),
                 }
             }
         }
-        stop_listening
+        false
     }
 
     #[inline]
@@ -417,9 +404,9 @@ where
 
     fn listen(mut self) {
         loop {
-            match self.channel.recv().unwrap() {
+            match self.publisher.recv().unwrap() {
                 Request::Delete => {
-                    self.res_status_ok();
+                    self.res_ok();
                     break;
                 }
                 Request::Reset => self.reset(),
@@ -428,10 +415,12 @@ where
                     if self.start(stop_at) {
                         break;
                     }
+                    debug_assert!(false, "force to invoke panic");
                 }
+                #[cfg(debug_assertions)]
                 Request::Debug => self.debug(),
                 Request::Export(dir) => self.export(dir),
-                Request::Stop => self.res_status_err(ResponseError::AlreadyStopped),
+                Request::Stop => self.res_err(ResponseError::AlreadyStopped),
             }
         }
     }

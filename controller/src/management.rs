@@ -1,5 +1,5 @@
 pub mod server;
-pub mod worker;
+pub mod worker_client;
 
 use std::{
     collections::{hash_map::Entry, HashMap},
@@ -14,7 +14,7 @@ use ulid::Ulid;
 
 use crate::api_server::{job, task, ResourceManagerInterface};
 
-use self::{server::ServerInfo, worker::WorkerClient};
+use self::{server::ServerInfo, worker_client::WorkerClient};
 
 #[derive(Default)]
 struct Task {
@@ -68,7 +68,7 @@ impl Job {
 #[derive(Default)]
 pub struct ResourceManager {
     jobs: Arc<RwLock<HashMap<String, Job>>>,
-    worker_handlers: Vec<WorkerClient>,
+    worker_clients: Vec<WorkerClient>,
 }
 
 impl ResourceManager {
@@ -81,7 +81,7 @@ impl ResourceManager {
         let config = quic_config::get_client_config(&cert_path)?;
         for (i, server_info) in servers.into_iter().enumerate() {
             manager
-                .worker_handlers
+                .worker_clients
                 .push(WorkerClient::new(addr.clone(), config.clone(), server_info, i).await?)
         }
         Ok(manager)

@@ -1,19 +1,23 @@
 use std::{
     collections::HashMap,
-    process,
-    sync::Arc,
+    ffi::OsStr,
+    process::{self, ExitStatus},
+    sync::{mpsc, Arc},
     thread::{self, JoinHandle},
 };
 
 use ipc_channel::ipc::IpcOneShotServer;
 use parking_lot::{Mutex, RwLock};
-use worker_if::world_if::{
-    self,
-    pubsub::{IpcSubscriber, Subscriber},
+use shared_child::SharedChild;
+use worker_if::{
+    world_if::{
+        self,
+        pubsub::{IpcSubscriber, Subscriber},
+    },
+    Response,
 };
 
 type Request = worker_if::Request;
-type Response = worker_if::Response;
 
 fn new_unique_string<const LEN: usize>() -> String {
     use rand::Rng;
@@ -25,63 +29,149 @@ fn new_unique_string<const LEN: usize>() -> String {
         .collect()
 }
 
-struct WorldInfo {
+struct WorldItem {
     subscriber: IpcSubscriber,
     current_status: world_if::WorldStatus,
+    wait_handle: JoinHandle<ExitStatus>,
+    child: Arc<SharedChild>,
+    pid: u32,
 }
 
-impl WorldInfo {
-    fn new(subscriber: IpcSubscriber) -> Result<Self, <IpcSubscriber as Subscriber>::Err> {
-        let status = subscriber.recv_status()?;
+impl WorldItem {
+    fn new<S: AsRef<OsStr>>(
+        program: S,
+        id: String,
+        child_tx: mpsc::SyncSender<String>,
+    ) -> anyhow::Result<Self> {
+        let (server, server_name) = IpcOneShotServer::new()?;
+        let mut command = process::Command::new(program);
+        command.args(["--world-id", &id, "--server-name", &server_name]);
+        let child = Arc::new(SharedChild::spawn(&mut command)?);
+        let (_, subscriber): (_, IpcSubscriber) = server.accept()?;
+        let pid = child.id();
+        let wait_handle = {
+            let child = Arc::clone(&child);
+            thread::spawn(move || {
+                let s = child.wait().expect("command was not running.");
+                child_tx.send(id).unwrap();
+                s
+            })
+        };
+        let current_status = subscriber.recv_status()?;
         Ok(Self {
             subscriber,
-            current_status: status,
+            current_status,
+            wait_handle,
+            child,
+            pid,
         })
     }
 }
 
-pub struct WorldManager {
-    path: String,
-    info_map: Arc<RwLock<HashMap<String, Mutex<WorldInfo>>>>,
-    handles: Vec<JoinHandle<()>>,
-}
+#[derive(Clone)]
+pub struct WorldManager(Arc<WorldMangerInner>);
 
 impl WorldManager {
-    pub fn new(path: String) -> Self {
-        Self {
+    fn new(path: String, child_tx: mpsc::SyncSender<String>) -> Self {
+        Self(Arc::new(WorldMangerInner {
+            table: Default::default(),
             path,
-            info_map: Arc::new(RwLock::new(HashMap::default())),
-            handles: Vec::new(),
+            child_tx,
+        }))
+    }
+
+    pub fn request(&self, req: Request) -> Response {
+        self.0.request(req)
+    }
+
+    fn remove(&self, id: &String) -> Option<Mutex<WorldItem>> {
+        self.0.table.write().remove(id)
+    }
+
+    fn listen(self, terminate_rx: mpsc::Receiver<()>, child_rx: mpsc::Receiver<String>) {
+        loop {
+            match terminate_rx.try_recv() {
+                Ok(_) | Err(mpsc::TryRecvError::Disconnected) => {
+                    break;
+                }
+                _ => {}
+            }
+            if let Ok(ref id) = child_rx.recv() {
+                if let Some(item) = self.remove(id) {
+                    let item = item.into_inner();
+                    let s = item.wait_handle.join().unwrap();
+                    if s.success() {
+                        println!(
+                            "[warn] World {id} (PID: {}) stopped with exit status {s}.",
+                            item.pid
+                        );
+                    } else {
+                        eprintln!(
+                            "[error] World {id} (PID: {}) aborted with exit status {s}.",
+                            item.pid
+                        );
+                    }
+                }
+            }
+        }
+    }
+}
+
+pub struct Terminal {
+    terminate_tx: mpsc::SyncSender<()>,
+    handle: Option<JoinHandle<()>>,
+}
+
+impl Terminal {
+    fn new(terminate_tx: mpsc::SyncSender<()>, handle: JoinHandle<()>) -> Self {
+        Self {
+            terminate_tx,
+            handle: Some(handle),
+        }
+    }
+}
+
+pub fn channel(path: String) -> (WorldManager, Terminal) {
+    let (terminate_tx, terminate_rx) = mpsc::sync_channel(1);
+    let (child_tx, child_rx) = mpsc::sync_channel(64);
+    let manager = WorldManager::new(path, child_tx);
+
+    (
+        manager.clone(),
+        Terminal::new(
+            terminate_tx,
+            thread::spawn(move || manager.listen(terminate_rx, child_rx)),
+        ),
+    )
+}
+
+impl Drop for Terminal {
+    fn drop(&mut self) {
+        self.terminate_tx.send(()).unwrap();
+        self.handle.take().unwrap().join().unwrap();
+    }
+}
+
+struct WorldMangerInner {
+    table: RwLock<HashMap<String, Mutex<WorldItem>>>,
+    path: String,
+    child_tx: mpsc::SyncSender<String>,
+}
+
+impl WorldMangerInner {
+    pub fn request(&self, req: Request) -> Response {
+        match req {
+            Request::SpawnItem => self.spawn_item(),
+            Request::GetItemList => self.get_item_list(),
+            Request::GetItemInfo(ref id) => self.get_item_info(id),
+            Request::Custom(ref id, req) => self.custom(id, req),
+            Request::DeleteItem(ref id) => self.delete(id),
         }
     }
 
-    pub fn close(&mut self) {
-        for handle in self.handles.drain(..) {
-            handle.join().unwrap();
-        }
-    }
-
-    fn delete_all(
-        &mut self,
-    ) -> Vec<(
-        String,
-        Result<world_if::Response, <IpcSubscriber as Subscriber>::Err>,
-    )> {
-        let all = self
-            .info_map
-            .write()
-            .drain()
-            .map(|(id, info)| {
-                let res = info.lock().subscriber.request(world_if::Request::Delete);
-                (id, res)
-            })
-            .collect();
-        all
-    }
-
-    fn entry_world(&mut self) -> anyhow::Result<String> {
+    fn spawn_item(&self) -> Response {
         use std::collections::hash_map::Entry;
-        let mut map = self.info_map.write();
+        let mut map = self.table.write();
         let entry = {
             loop {
                 let id = new_unique_string::<3>();
@@ -90,101 +180,86 @@ impl WorldManager {
                 }
             }
         };
+
         let id = entry.key().clone();
-        let (server, server_name) = IpcOneShotServer::new()?;
-        let mut child = process::Command::new(&self.path)
-            .args(["--world-id", &id, "--server-name", &server_name])
-            .spawn()?;
-        let (_, subscriber): (_, IpcSubscriber) = server.accept()?;
-        println!("[info] Create World {id}.");
-        let handle = {
-            let id = id.clone();
-            let pid = child.id();
-            let map = Arc::clone(&self.info_map);
-            thread::spawn(move || {
-                let s = child.wait().expect("command was not running.");
-                if map.write().remove(&id).is_some() {
-                    println!("[warn] World {id} (PID: {pid}) is stopped with exit status {s}.");
-                } else {
-                    println!("[info] World {id} (PID: {pid}) is closed with exit status {s}.");
-                }
-            })
-        };
-        entry.insert(Mutex::new(WorldInfo::new(subscriber)?));
-        self.handles.push(handle);
-        Ok(id)
-    }
-
-    fn get_mut_with<F: FnMut(&mut WorldInfo) -> Response>(&self, id: &str, mut f: F) -> Response {
-        let map = self.info_map.read();
-        let Some(info) = map.get(id) else {
-            return worker_if::ResponseError::NoIdFound.into();
-        };
-        let mut info = info.lock();
-        f(&mut info)
-    }
-
-    fn get_with<F: FnOnce(&WorldInfo) -> Response>(&self, id: &str, f: F) -> Response {
-        let map = self.info_map.read();
-        let Some(info) = map.get(id) else {
-            return worker_if::ResponseError::NoIdFound.into();
-        };
-        let info = info.lock();
-        f(&info)
-    }
-
-    fn remove_with<F: FnOnce(&WorldInfo) -> Response>(&self, id: &str, f: F) -> Response {
-        let mut map = self.info_map.write();
-        let Some(info) = map.remove(id) else {
-            return worker_if::ResponseError::NoIdFound.into();
-        };
-        let info = info.lock();
-        f(&info)
-    }
-
-    pub fn callback(&mut self, req: Request) -> Response {
-        match req {
-            Request::SpawnItem => match self.entry_world() {
-                Ok(id) => worker_if::ResponseOk::Item(id).into(),
-                Err(e) => worker_if::ResponseError::FailedToSpawn(e).into(),
-            },
-            Request::GetItemList => {
-                worker_if::ResponseOk::ItemList(self.info_map.read().keys().cloned().collect())
-                    .into()
+        match WorldItem::new(&self.path, id.clone(), self.child_tx.clone()) {
+            Ok(item) => {
+                entry.insert(Mutex::new(item));
+                println!("[info] Create World {id}.");
+                worker_if::ResponseOk::Item(id).into()
             }
-            Request::GetItemInfo(ref id) => self.get_mut_with(id, |info| {
-                if let Some(s) = info.subscriber.seek_status().into_iter().last() {
-                    info.current_status = s;
-                }
-                worker_if::ResponseOk::ItemInfo((&info.current_status).to_string()).into()
-            }),
-            Request::Custom(ref id, req) => {
-                self.get_with(id, |info| match info.subscriber.request(req) {
-                    Ok(r) => r.as_result().into(),
-                    Err(e) => worker_if::ResponseError::process_io_error(e).into(),
-                })
+            Err(e) => worker_if::ResponseError::FailedToSpawn(e).into(),
+        }
+    }
+
+    fn get_item_list(&self) -> Response {
+        worker_if::ResponseOk::ItemList(self.table.read().keys().cloned().collect()).into()
+    }
+
+    fn get_item_info(&self, id: &str) -> Response {
+        self.get_with(id, |entry| {
+            let mut entry = entry.lock();
+            if let Some(s) = entry.subscriber.seek_status().into_iter().last() {
+                entry.current_status = s;
             }
-            Request::DeleteItem(ref id) => {
-                self.remove_with(id, |info| match info.subscriber.delete() {
-                    Ok(r) => r.as_result().into(),
-                    Err(e) => worker_if::ResponseError::process_io_error(e).into(),
-                })
+            worker_if::ResponseOk::ItemInfo(entry.current_status.clone()).into()
+        })
+    }
+
+    fn custom(&self, id: &str, req: world_if::Request) -> Response {
+        self.get_with(id, |entry| {
+            let entry = entry.lock();
+            match entry.subscriber.request(req) {
+                Ok(r) => r.as_result().into(),
+                Err(e) => worker_if::ResponseError::process_io_error(e).into(),
+            }
+        })
+    }
+
+    fn delete(&self, id: &str) -> Response {
+        let mut map = self.table.write();
+        let Some(entry) = map.remove(id) else {
+            return worker_if::ResponseError::NoIdFound.into();
+        };
+        let entry = entry.into_inner();
+        match entry.subscriber.delete() {
+            Ok(_) => {
+                entry.wait_handle.join().unwrap();
+                worker_if::ResponseOk::Deleted.into()
+            }
+            Err(e) => {
+                entry.child.kill().unwrap();
+                entry.wait_handle.join().unwrap();
+                worker_if::ResponseError::Abort(e.into()).into()
             }
         }
+    }
+
+    #[inline]
+    fn get_with<F: FnOnce(&Mutex<WorldItem>) -> Response>(&self, id: &str, f: F) -> Response {
+        let map = self.table.read();
+        let Some(entry) = map.get(id) else {
+            return worker_if::ResponseError::NoIdFound.into();
+        };
+        f(entry)
     }
 }
 
-impl Drop for WorldManager {
+impl Drop for WorldMangerInner {
     fn drop(&mut self) {
-        for (id, res) in self.delete_all().into_iter() {
-            match res {
-                Ok(r) => match r {
-                    world_if::Response::Ok(_) => println!("[info] Delete World {id}."),
-                    world_if::Response::Err(e) => eprintln!("[error] {:?}", e),
-                },
-                Err(e) => eprintln!("{:?}", e),
+        for (id, entry) in self.table.write().drain() {
+            let entry = entry.into_inner();
+            match entry.subscriber.delete() {
+                Ok(_) => {
+                    entry.wait_handle.join().unwrap();
+                    println!("[info] Delete World {id}.");
+                }
+                Err(e) => {
+                    entry.child.kill().unwrap();
+                    entry.wait_handle.join().unwrap();
+                    eprintln!("[error] {:?}", e);
+                }
             }
         }
-        self.close();
     }
 }

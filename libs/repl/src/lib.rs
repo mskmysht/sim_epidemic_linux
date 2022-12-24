@@ -1,44 +1,55 @@
 use async_trait::async_trait;
-use peg::parser;
+pub use nom;
+use nom::{Finish, IResult};
 use std::{
     borrow::BorrowMut,
-    error,
+    fmt::Debug,
     io::{self, Write},
-    ops::ControlFlow,
     sync::Arc,
 };
 use tokio::sync::Mutex;
 
-pub enum Command {
+#[derive(Debug)]
+pub enum Command<T> {
     Quit,
     None,
-    Delegate(String),
+    Delegate(T),
 }
 
-parser! {
-    grammar parse() for str {
-        rule _() = quiet!{ [' ' | '\t']* }
-        rule eof() = quiet!{ ['\n'] }
+mod parser {
+    use super::{Command, Parsable};
+    use nom::{
+        branch::alt,
+        character::complete::{multispace0, space0},
+        combinator::{all_consuming, map},
+        sequence::delimited,
+        IResult,
+    };
+    use parser::nullary;
 
-        pub rule command() -> Command
-            = _ ":q" _ eof() { Command::Quit }
-            / _ eof() { Command::None }
-            / s:$([_]+) { Command::Delegate(String::from(s)) }
+    pub fn command<P: Parsable>(input: &str) -> IResult<&str, Command<P::Parsed>> {
+        all_consuming(delimited(
+            multispace0,
+            alt((
+                nullary(":q", || Command::Quit),
+                map(P::parse, |v| Command::Delegate(v)),
+                map(space0, |_| Command::None),
+            )),
+            multispace0,
+        ))(input)
     }
 }
-
-pub type ParseResult<T> = Result<T, peg::error::ParseError<<str as peg::Parse>::PositionRepr>>;
 
 pub trait Repler {
     type Parsed;
     type Arg;
-    fn parse(input: &str) -> ParseResult<Self::Parsed>;
+    fn parse(input: &str) -> IResult<&str, Self::Parsed>;
     fn logging(output: Self::Arg);
 }
 
 pub trait Parsable {
     type Parsed;
-    fn parse(buf: &str) -> ParseResult<Self::Parsed>;
+    fn parse(input: &str) -> IResult<&str, Self::Parsed>;
 }
 
 pub trait Logging {
@@ -52,6 +63,26 @@ pub trait Handler {
     fn callback(&mut self, input: Self::Input) -> Self::Output;
 }
 
+fn parse_input<P>() -> Command<P::Parsed>
+where
+    P: Parsable,
+    P::Parsed: Debug,
+{
+    loop {
+        let mut buf = String::new();
+        io::stdout().flush().unwrap();
+        print!("> ");
+        io::stdout().flush().unwrap();
+        io::stdin().read_line(&mut buf).unwrap();
+        match parser::command::<P>(&buf).finish() {
+            Ok((_, cmd)) => {
+                break cmd;
+            }
+            Err(e) => println!("{e}"),
+        }
+    }
+}
+
 pub struct Repl<R: Handler> {
     runtime: R,
 }
@@ -59,39 +90,23 @@ pub struct Repl<R: Handler> {
 impl<R> Repl<R>
 where
     R: Handler + Parsable<Parsed = R::Input> + Logging<Arg = R::Output>,
+    R::Input: Debug,
 {
     pub fn new(runtime: R) -> Self {
         Self { runtime }
     }
 
-    pub fn step(&mut self) -> Result<ControlFlow<()>, Box<dyn error::Error>> {
-        let mut buf = String::new();
-        io::stdout().flush()?;
-        print!("> ");
-        io::stdout().flush()?;
-        io::stdin().read_line(&mut buf)?;
-        let cmd = parse::command(buf.as_str())?;
-        match cmd {
-            Command::Quit => return Ok(ControlFlow::Break(())),
-            Command::Delegate(str) => {
-                let input = R::parse(str.as_str())?;
-                let output = R::callback(&mut self.runtime, input);
-                R::logging(output);
-            }
-            Command::None => {}
-        };
-        Ok(ControlFlow::Continue(()))
-    }
-
     pub fn run(mut self) {
         loop {
-            match self.step() {
-                Err(e) => eprintln!("{e}"),
-                Ok(ControlFlow::Break(_)) => break,
-                Ok(_) => {}
+            match parse_input::<R>() {
+                Command::Quit => break,
+                Command::None => {}
+                Command::Delegate(input) => {
+                    let output = R::callback(&mut self.runtime, input);
+                    R::logging(output);
+                }
             }
         }
-        drop(self)
     }
 }
 
@@ -112,7 +127,7 @@ where
 impl<R> AsyncRepl<R>
 where
     R: AsyncHandler + Parsable<Parsed = R::Input> + Logging<Arg = R::Output> + Send + 'static,
-    R::Input: Send,
+    R::Input: Send + Debug,
 {
     pub fn new(runtime: R) -> Self {
         Self {
@@ -120,38 +135,19 @@ where
         }
     }
 
-    async fn step(&mut self) -> Result<ControlFlow<()>, Box<dyn error::Error>> {
-        let mut buf = String::new();
-        io::stdout().flush()?;
-        print!("> ");
-        io::stdout().flush()?;
-        io::stdin().read_line(&mut buf)?;
-        let cmd = parse::command(buf.as_str())?;
-        match cmd {
-            Command::Quit => return Ok(ControlFlow::Break(())),
-            Command::None => {}
-            Command::Delegate(str) => {
-                let input = R::parse(str.as_str())?;
-                let runtime = Arc::clone(&self.runtime);
-                tokio::spawn(async move {
-                    let output = R::callback(runtime.lock().await.borrow_mut(), input).await;
-                    R::logging(output);
-                });
-            }
-        }
-        Ok(ControlFlow::Continue(()))
-    }
-
-    pub async fn run(mut self) {
+    pub async fn run(self) {
         loop {
-            match self.step().await {
-                Err(e) => eprintln!("{e}"),
-                Ok(ControlFlow::Break(_)) => break,
-                Ok(_) => {}
+            match parse_input::<R>() {
+                Command::Quit => break,
+                Command::None => {}
+                Command::Delegate(input) => {
+                    let runtime = Arc::clone(&self.runtime);
+                    tokio::spawn(async move {
+                        let output = R::callback(runtime.lock().await.borrow_mut(), input).await;
+                        R::logging(output);
+                    });
+                }
             }
         }
-        drop(self)
     }
 }
-
-// pub struct StdListener<T> {}
