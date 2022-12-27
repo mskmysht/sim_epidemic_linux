@@ -53,6 +53,7 @@ impl WorldItem {
             let child = Arc::clone(&child);
             thread::spawn(move || {
                 let s = child.wait().expect("command was not running.");
+                println!("{s:?}");
                 child_tx.send(id).unwrap();
                 s
             })
@@ -69,29 +70,61 @@ impl WorldItem {
 }
 
 #[derive(Clone)]
-pub struct WorldManager(Arc<WorldMangerInner>);
+pub struct WorldManager(Arc<WorldManagerInner>, Arc<Terminal>);
 
 impl WorldManager {
-    fn new(path: String, child_tx: mpsc::SyncSender<String>) -> Self {
-        Self(Arc::new(WorldMangerInner {
-            table: Default::default(),
-            path,
-            child_tx,
-        }))
+    pub fn new(path: String) -> Self {
+        let (child_tx, child_rx) = mpsc::sync_channel(64);
+        let (terminate_tx, terminate_rx) = mpsc::sync_channel(1);
+        let inner = Arc::new(WorldManagerInner::new(path, child_tx, terminate_tx));
+        Self(
+            inner.clone(),
+            Arc::new(Terminal(Some(thread::spawn(move || {
+                inner.listen(terminate_rx, child_rx);
+                println!("ended listen");
+            })))),
+        )
     }
 
     pub fn request(&self, req: Request) -> Response {
         self.0.request(req)
     }
+}
 
-    fn remove(&self, id: &String) -> Option<Mutex<WorldItem>> {
-        self.0.table.write().remove(id)
+struct Terminal(Option<JoinHandle<()>>);
+
+impl Drop for Terminal {
+    fn drop(&mut self) {
+        self.0.take().unwrap().join().unwrap();
+    }
+}
+
+struct WorldManagerInner {
+    table: RwLock<HashMap<String, Mutex<WorldItem>>>,
+    path: String,
+    child_tx: mpsc::SyncSender<String>,
+    terminate_tx: mpsc::SyncSender<()>,
+}
+
+impl WorldManagerInner {
+    fn new(
+        path: String,
+        child_tx: mpsc::SyncSender<String>,
+        terminate_tx: mpsc::SyncSender<()>,
+    ) -> Self {
+        Self {
+            table: Default::default(),
+            path,
+            child_tx,
+            terminate_tx,
+        }
     }
 
-    fn listen(self, terminate_rx: mpsc::Receiver<()>, child_rx: mpsc::Receiver<String>) {
+    fn listen(&self, terminate_rx: mpsc::Receiver<()>, child_rx: mpsc::Receiver<String>) {
         loop {
             match terminate_rx.try_recv() {
                 Ok(_) | Err(mpsc::TryRecvError::Disconnected) => {
+                    println!("[debug] ended listening");
                     break;
                 }
                 _ => {}
@@ -115,51 +148,12 @@ impl WorldManager {
             }
         }
     }
-}
 
-pub struct Terminal {
-    terminate_tx: mpsc::SyncSender<()>,
-    handle: Option<JoinHandle<()>>,
-}
-
-impl Terminal {
-    fn new(terminate_tx: mpsc::SyncSender<()>, handle: JoinHandle<()>) -> Self {
-        Self {
-            terminate_tx,
-            handle: Some(handle),
-        }
+    fn remove(&self, id: &String) -> Option<Mutex<WorldItem>> {
+        self.table.write().remove(id)
     }
-}
 
-pub fn channel(path: String) -> (WorldManager, Terminal) {
-    let (terminate_tx, terminate_rx) = mpsc::sync_channel(1);
-    let (child_tx, child_rx) = mpsc::sync_channel(64);
-    let manager = WorldManager::new(path, child_tx);
-
-    (
-        manager.clone(),
-        Terminal::new(
-            terminate_tx,
-            thread::spawn(move || manager.listen(terminate_rx, child_rx)),
-        ),
-    )
-}
-
-impl Drop for Terminal {
-    fn drop(&mut self) {
-        self.terminate_tx.send(()).unwrap();
-        self.handle.take().unwrap().join().unwrap();
-    }
-}
-
-struct WorldMangerInner {
-    table: RwLock<HashMap<String, Mutex<WorldItem>>>,
-    path: String,
-    child_tx: mpsc::SyncSender<String>,
-}
-
-impl WorldMangerInner {
-    pub fn request(&self, req: Request) -> Response {
+    fn request(&self, req: Request) -> Response {
         match req {
             Request::SpawnItem => self.spawn_item(),
             Request::GetItemList => self.get_item_list(),
@@ -245,7 +239,7 @@ impl WorldMangerInner {
     }
 }
 
-impl Drop for WorldMangerInner {
+impl Drop for WorldManagerInner {
     fn drop(&mut self) {
         for (id, entry) in self.table.write().drain() {
             let entry = entry.into_inner();
@@ -261,5 +255,7 @@ impl Drop for WorldMangerInner {
                 }
             }
         }
+        println!("send terminate signal");
+        self.terminate_tx.send(()).unwrap();
     }
 }

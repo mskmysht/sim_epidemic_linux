@@ -63,7 +63,7 @@ fn main(
     #[opt(short = 'a')]
     is_async: bool,
 ) -> Result<(), Box<dyn error::Error>> {
-    let (manager, _) = worker::channel(world_path);
+    let manager = worker::WorldManager::new(world_path);
     if is_async {
         let rt = tokio::runtime::Runtime::new()?;
         rt.block_on(repl::AsyncRepl::new(StdHandler::new(manager)).run());

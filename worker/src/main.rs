@@ -51,7 +51,7 @@ async fn run(
         addr,
     )?;
 
-    let (manager, _) = worker::channel(world_path);
+    let manager = worker::WorldManager::new(world_path);
 
     while let Some(connecting) = endpoint.accept().await {
         let connection = connecting.await?;
@@ -84,7 +84,7 @@ async fn run(
 fn run_tcp(world_path: String) -> DynResult<()> {
     let listener = TcpListener::bind(SocketAddrV4::new(Ipv4Addr::UNSPECIFIED, 8080))?;
 
-    let (manager, _) = worker::channel(world_path);
+    let manager = worker::WorldManager::new(world_path);
 
     for stream in listener.incoming() {
         let mut stream = stream?;
