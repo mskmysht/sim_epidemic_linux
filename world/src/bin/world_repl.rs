@@ -1,5 +1,6 @@
 use std::{sync::mpsc, thread};
 
+use repl::Parsable;
 use world_if::{
     pubsub::{Publisher, Subscriber},
     Request, WorldStatus,
@@ -104,12 +105,8 @@ enum RequestWrapper {
     Req(Request),
 }
 
-struct MyHandler {
-    subscriber: MpscSubscriber,
-    status: WorldStatus,
-}
-
-impl repl::Parsable for MyHandler {
+struct WorldParser;
+impl Parsable for WorldParser {
     type Parsed = RequestWrapper;
 
     fn parse(input: &str) -> repl::nom::IResult<&str, Self::Parsed> {
@@ -120,40 +117,6 @@ impl repl::Parsable for MyHandler {
             map(tag("info"), |_| RequestWrapper::Info),
             map(world_if::parse::request, RequestWrapper::Req),
         ))(input)
-    }
-}
-
-impl repl::Logging for MyHandler {
-    type Arg = world_if::Response;
-
-    fn logging(arg: Self::Arg) {
-        match arg {
-            world_if::Response::Ok(s) => println!("[info] {s:?}"),
-            world_if::Response::Err(e) => eprintln!("[error] {e:?}"),
-        }
-    }
-}
-
-impl repl::Handler for MyHandler {
-    type Input = RequestWrapper;
-    type Output = world_if::Response;
-
-    fn callback(&mut self, input: Self::Input) -> Self::Output {
-        match input {
-            RequestWrapper::Info => {
-                if let Some(status) = self.subscriber.seek_status().into_iter().last() {
-                    self.status = status;
-                }
-                world_if::ResponseOk::SuccessWithMessage((&self.status).to_string()).into()
-            }
-            RequestWrapper::Req(req) => self.subscriber.request(req).unwrap(),
-        }
-    }
-}
-
-impl Drop for MyHandler {
-    fn drop(&mut self) {
-        println!("{:?}", self.subscriber.delete().unwrap());
     }
 }
 
@@ -168,8 +131,28 @@ fn main() {
     let handle = spawner.spawn().unwrap();
     let input = thread::spawn(move || {
         let subscriber = MpscSubscriber::new(req_tx, res_rx, stream_rx);
-        let status = subscriber.recv_status().unwrap();
-        repl::Repl::new(MyHandler { subscriber, status }).run()
+        let mut status = subscriber.recv_status().unwrap();
+        loop {
+            match WorldParser::recv_input() {
+                repl::Command::Quit => break,
+                repl::Command::None => {}
+                repl::Command::Delegate(input) => {
+                    let output = match input {
+                        RequestWrapper::Info => {
+                            if let Some(s) = subscriber.seek_status().into_iter().last() {
+                                status = s;
+                            }
+                            world_if::ResponseOk::SuccessWithMessage((&status).to_string()).into()
+                        }
+                        RequestWrapper::Req(req) => subscriber.request(req).unwrap(),
+                    };
+                    match output {
+                        world_if::Response::Ok(s) => println!("[info] {s:?}"),
+                        world_if::Response::Err(e) => eprintln!("[error] {e:?}"),
+                    }
+                }
+            }
+        }
     });
     handle.join().unwrap();
     input.join().unwrap();

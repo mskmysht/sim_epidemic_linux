@@ -1,56 +1,20 @@
 use std::error;
 
-use async_trait::async_trait;
-use worker::WorldManager;
+use repl::Parsable;
 
-type Req = worker_if::Request;
-type Res = worker_if::Response;
+struct WorkerParser;
+impl Parsable for WorkerParser {
+    type Parsed = worker_if::Request;
 
-pub struct StdHandler {
-    manager: WorldManager,
-}
-
-impl StdHandler {
-    pub fn new(manager: WorldManager) -> Self {
-        Self { manager }
+    fn parse(input: &str) -> repl::nom::IResult<&str, Self::Parsed> {
+        worker_if::parse::request(input)
     }
 }
 
-impl repl::Parsable for StdHandler {
-    type Parsed = Req;
-
-    fn parse(buf: &str) -> repl::nom::IResult<&str, Self::Parsed> {
-        worker_if::parse::request(buf)
-    }
-}
-
-impl repl::Logging for StdHandler {
-    type Arg = Res;
-
-    fn logging(arg: Self::Arg) {
-        match arg {
-            worker_if::Response::Ok(s) => println!("[info] {s:?}"),
-            worker_if::Response::Err(e) => eprintln!("[error] {e:?}"),
-        }
-    }
-}
-
-impl repl::Handler for StdHandler {
-    type Input = Req;
-    type Output = Res;
-
-    fn callback(&mut self, input: Self::Input) -> Self::Output {
-        self.manager.request(input)
-    }
-}
-
-#[async_trait]
-impl repl::AsyncHandler for StdHandler {
-    type Input = Req;
-    type Output = Res;
-
-    async fn callback(&mut self, input: Self::Input) -> Self::Output {
-        self.manager.request(input)
+fn logging(response: &worker_if::Response) {
+    match response {
+        worker_if::Response::Ok(s) => println!("[info] {s:?}"),
+        worker_if::Response::Err(e) => eprintln!("[error] {e:?}"),
     }
 }
 
@@ -63,12 +27,33 @@ fn main(
     #[opt(short = 'a')]
     is_async: bool,
 ) -> Result<(), Box<dyn error::Error>> {
-    let manager = worker::WorldManager::new(world_path);
+    let managing = worker::WorldManaging::new(world_path);
     if is_async {
         let rt = tokio::runtime::Runtime::new()?;
-        rt.block_on(repl::AsyncRepl::new(StdHandler::new(manager)).run());
+        rt.block_on(async {
+            loop {
+                match WorkerParser::recv_input() {
+                    repl::Command::Quit => break,
+                    repl::Command::None => {}
+                    repl::Command::Delegate(input) => {
+                        let manager = managing.get_manager().clone();
+                        tokio::spawn(async move {
+                            logging(&manager.request(input));
+                        });
+                    }
+                }
+            }
+        });
     } else {
-        repl::Repl::new(StdHandler::new(manager)).run();
+        loop {
+            match WorkerParser::recv_input() {
+                repl::Command::Quit => break,
+                repl::Command::None => {}
+                repl::Command::Delegate(input) => {
+                    logging(&managing.get_manager().request(input));
+                }
+            }
+        }
     }
     Ok(())
 }

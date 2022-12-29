@@ -51,17 +51,17 @@ async fn run(
         addr,
     )?;
 
-    let manager = worker::WorldManager::new(world_path);
+    let managing = worker::WorldManaging::new(world_path);
 
     while let Some(connecting) = endpoint.accept().await {
         let connection = connecting.await?;
         let ip = connection.remote_address().to_string();
         println!("[info] Acceept {}", ip);
 
-        let e = loop {
+        loop {
             match connection.accept_bi().await {
                 Ok((mut send, mut recv)) => {
-                    let manager = manager.clone();
+                    let manager = managing.get_manager().clone();
                     tokio::spawn(async move {
                         let req = protocol::quic::read_data(&mut recv).await.unwrap();
                         println!("[request] {req:?}");
@@ -71,11 +71,11 @@ async fn run(
                     });
                 }
                 Err(e) => {
-                    break e;
+                    println!("[info] Disconnect {} ({})", ip, e);
+                    break;
                 }
             }
-        };
-        println!("[info] Disconnect {} ({})", ip, e);
+        }
     }
 
     Ok(())
@@ -84,7 +84,8 @@ async fn run(
 fn run_tcp(world_path: String) -> DynResult<()> {
     let listener = TcpListener::bind(SocketAddrV4::new(Ipv4Addr::UNSPECIFIED, 8080))?;
 
-    let manager = worker::WorldManager::new(world_path);
+    let managing = worker::WorldManaging::new(world_path);
+    let manager = managing.get_manager();
 
     for stream in listener.incoming() {
         let mut stream = stream?;

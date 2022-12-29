@@ -1,7 +1,8 @@
 use controller::{
     management::server::ServerInfo,
-    repl_handler::{quic, tcp},
+    repl_handler::{logging, quic, tcp, WorkerParser},
 };
+use repl::Parsable;
 use std::{
     error::Error,
     net::{SocketAddr, TcpStream},
@@ -18,26 +19,37 @@ fn start(
     name: String,
 ) -> Result<(), Box<dyn Error>> {
     let rt = tokio::runtime::Runtime::new()?;
-    rt.block_on(run(addr, cert_path, server_info, name))
-}
-
-async fn run(
-    addr: SocketAddr,
-    cert_path: String,
-    server_info: ServerInfo,
-    name: String,
-) -> Result<(), Box<dyn Error>> {
-    repl::AsyncRepl::new(quic::MyHandler::new(addr, cert_path, server_info, name).await?)
-        .run()
-        .await;
-    Ok(())
+    rt.block_on(async move {
+        let mut handler = quic::MyHandler::new(addr, cert_path, server_info, name).await?;
+        loop {
+            match WorkerParser::recv_input() {
+                repl::Command::Quit => break,
+                repl::Command::None => {}
+                repl::Command::Delegate(input) => {
+                    let output = handler.callback(input).await;
+                    logging(output);
+                }
+            }
+        }
+        Ok(())
+    })
 }
 
 #[argopt::subcmd]
 fn start_tcp(container1: SocketAddr, /*, container2: Ipv4Addr */) -> Result<(), Box<dyn Error>> {
     if let Ok(stream) = TcpStream::connect(container1) {
         println!("Connected to the server!");
-        repl::Repl::new(tcp::MyHandler(stream, "container-1")).run();
+        let mut handler = tcp::MyHandler(stream, "container-1");
+        loop {
+            match WorkerParser::recv_input() {
+                repl::Command::Quit => break,
+                repl::Command::None => {}
+                repl::Command::Delegate(input) => {
+                    let output = handler.callback(input);
+                    logging(output);
+                }
+            }
+        }
     } else {
         println!("Couldn't connect to server...");
     }

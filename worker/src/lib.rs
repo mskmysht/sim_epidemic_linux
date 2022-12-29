@@ -41,7 +41,7 @@ impl WorldItem {
     fn new<S: AsRef<OsStr>>(
         program: S,
         id: String,
-        child_tx: mpsc::SyncSender<String>,
+        child_tx: mpsc::SyncSender<Option<String>>,
     ) -> anyhow::Result<Self> {
         let (server, server_name) = IpcOneShotServer::new()?;
         let mut command = process::Command::new(program);
@@ -54,7 +54,7 @@ impl WorldItem {
             thread::spawn(move || {
                 let s = child.wait().expect("command was not running.");
                 println!("{s:?}");
-                child_tx.send(id).unwrap();
+                child_tx.send(Some(id)).unwrap();
                 s
             })
         };
@@ -69,91 +69,17 @@ impl WorldItem {
     }
 }
 
+type WorldTable = Arc<RwLock<HashMap<String, Mutex<WorldItem>>>>;
+
 #[derive(Clone)]
-pub struct WorldManager(Arc<WorldManagerInner>, Arc<Terminal>);
+pub struct WorldManager {
+    table: WorldTable,
+    notify_tx: mpsc::SyncSender<Option<String>>,
+    path: String,
+}
 
 impl WorldManager {
-    pub fn new(path: String) -> Self {
-        let (child_tx, child_rx) = mpsc::sync_channel(64);
-        let (terminate_tx, terminate_rx) = mpsc::sync_channel(1);
-        let inner = Arc::new(WorldManagerInner::new(path, child_tx, terminate_tx));
-        Self(
-            inner.clone(),
-            Arc::new(Terminal(Some(thread::spawn(move || {
-                inner.listen(terminate_rx, child_rx);
-                println!("ended listen");
-            })))),
-        )
-    }
-
     pub fn request(&self, req: Request) -> Response {
-        self.0.request(req)
-    }
-}
-
-struct Terminal(Option<JoinHandle<()>>);
-
-impl Drop for Terminal {
-    fn drop(&mut self) {
-        self.0.take().unwrap().join().unwrap();
-    }
-}
-
-struct WorldManagerInner {
-    table: RwLock<HashMap<String, Mutex<WorldItem>>>,
-    path: String,
-    child_tx: mpsc::SyncSender<String>,
-    terminate_tx: mpsc::SyncSender<()>,
-}
-
-impl WorldManagerInner {
-    fn new(
-        path: String,
-        child_tx: mpsc::SyncSender<String>,
-        terminate_tx: mpsc::SyncSender<()>,
-    ) -> Self {
-        Self {
-            table: Default::default(),
-            path,
-            child_tx,
-            terminate_tx,
-        }
-    }
-
-    fn listen(&self, terminate_rx: mpsc::Receiver<()>, child_rx: mpsc::Receiver<String>) {
-        loop {
-            match terminate_rx.try_recv() {
-                Ok(_) | Err(mpsc::TryRecvError::Disconnected) => {
-                    println!("[debug] ended listening");
-                    break;
-                }
-                _ => {}
-            }
-            if let Ok(ref id) = child_rx.recv() {
-                if let Some(item) = self.remove(id) {
-                    let item = item.into_inner();
-                    let s = item.wait_handle.join().unwrap();
-                    if s.success() {
-                        println!(
-                            "[warn] World {id} (PID: {}) stopped with exit status {s}.",
-                            item.pid
-                        );
-                    } else {
-                        eprintln!(
-                            "[error] World {id} (PID: {}) aborted with exit status {s}.",
-                            item.pid
-                        );
-                    }
-                }
-            }
-        }
-    }
-
-    fn remove(&self, id: &String) -> Option<Mutex<WorldItem>> {
-        self.table.write().remove(id)
-    }
-
-    fn request(&self, req: Request) -> Response {
         match req {
             Request::SpawnItem => self.spawn_item(),
             Request::GetItemList => self.get_item_list(),
@@ -176,7 +102,7 @@ impl WorldManagerInner {
         };
 
         let id = entry.key().clone();
-        match WorldItem::new(&self.path, id.clone(), self.child_tx.clone()) {
+        match WorldItem::new(&self.path, id.clone(), self.notify_tx.clone()) {
             Ok(item) => {
                 entry.insert(Mutex::new(item));
                 println!("[info] Create World {id}.");
@@ -239,9 +165,56 @@ impl WorldManagerInner {
     }
 }
 
-impl Drop for WorldManagerInner {
+pub struct WorldManaging {
+    manager: WorldManager,
+    notify_handle: Option<JoinHandle<()>>,
+}
+
+impl WorldManaging {
+    pub fn new(path: String) -> Self {
+        let (notify_tx, notify_rx) = mpsc::sync_channel(64);
+        let manager = WorldManager {
+            table: WorldTable::default(),
+            path,
+            notify_tx,
+        };
+        let table = Arc::clone(&manager.table);
+        let notify_handle = Some(thread::spawn(move || loop {
+            match notify_rx.recv().unwrap() {
+                Some(ref id) => {
+                    if let Some(item) = table.write().remove(id) {
+                        let item = item.into_inner();
+                        let s = item.wait_handle.join().unwrap();
+                        if s.success() {
+                            println!(
+                                "[warn] World {id} (PID: {}) stopped with exit status {s}.",
+                                item.pid
+                            );
+                        } else {
+                            eprintln!(
+                                "[error] World {id} (PID: {}) aborted with exit status {s}.",
+                                item.pid
+                            );
+                        }
+                    }
+                }
+                None => break,
+            }
+        }));
+        Self {
+            manager,
+            notify_handle,
+        }
+    }
+
+    pub fn get_manager(&self) -> &WorldManager {
+        &self.manager
+    }
+}
+
+impl Drop for WorldManaging {
     fn drop(&mut self) {
-        for (id, entry) in self.table.write().drain() {
+        for (id, entry) in self.manager.table.write().drain() {
             let entry = entry.into_inner();
             match entry.subscriber.delete() {
                 Ok(_) => {
@@ -255,7 +228,7 @@ impl Drop for WorldManagerInner {
                 }
             }
         }
-        println!("send terminate signal");
-        self.terminate_tx.send(()).unwrap();
+        self.manager.notify_tx.send(None).unwrap();
+        self.notify_handle.take().unwrap().join().unwrap();
     }
 }
