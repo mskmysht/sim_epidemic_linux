@@ -262,8 +262,11 @@ dependencies = [
 name = "controller"
 version = "0.1.0"
 dependencies = [
+ "anyhow",
  "argopt",
  "async-trait",
+ "bincode",
+ "futures-util",
  "parking_lot",
  "poem",
  "poem-openapi",
@@ -274,6 +277,7 @@ dependencies = [
  "rustls",
  "thiserror",
  "tokio",
+ "tokio-util",
  "ulid",
  "worker-if",
  "world-if",

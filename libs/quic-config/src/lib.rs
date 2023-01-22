@@ -1,5 +1,5 @@
 use quinn::{ClientConfig, ServerConfig, TransportConfig, VarInt};
-use std::{error::Error, path::Path, sync::Arc};
+use std::{error::Error, path::Path, sync::Arc, time::Duration};
 
 pub fn get_server_config<P: AsRef<Path>>(
     cert_path: P,
@@ -10,7 +10,8 @@ pub fn get_server_config<P: AsRef<Path>>(
     let key = rustls::PrivateKey(file_io::load(pkey_path)?);
     let mut config = ServerConfig::with_single_cert(vec![cert], key)?;
     let mut tc = TransportConfig::default();
-    tc.max_idle_timeout(Some(VarInt::from_u32(timeout).into()));
+    tc.max_idle_timeout(Some(Duration::from_secs(60).try_into()?));
+    tc.keep_alive_interval(Some(Duration::from_secs(30).try_into()?));
     config.transport_config(Arc::new(tc));
     Ok(config)
 }

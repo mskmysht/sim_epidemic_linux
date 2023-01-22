@@ -12,7 +12,7 @@ use poem_openapi::{
 };
 use poem_openapi::{OpenApiService, Tags};
 
-use crate::management::{server::ServerInfo, ResourceManager};
+use crate::management::{server::ServerInfo, JobManager};
 
 #[derive(Tags)]
 enum ApiTags {
@@ -37,19 +37,19 @@ enum GetResponse {
 }
 
 #[async_trait]
-pub trait ResourceManagerInterface {
-    fn create_job(&self, config: job::Config) -> Option<String>;
-    fn get_job(&self, id: &String) -> Option<job::Job>;
-    fn get_all_jobs(&self) -> Vec<job::Job>;
+pub trait ResourceManager {
+    async fn create_job(&self, config: job::Config) -> Option<String>;
+    async fn get_job(&self, id: &String) -> Option<job::Job>;
+    async fn get_all_jobs(&self) -> Vec<job::Job>;
 }
 
-pub struct Api<M: ResourceManagerInterface>(M);
+pub struct Api<M: ResourceManager>(M);
 
 #[OpenApi]
-impl<M: ResourceManagerInterface + Send + Sync + 'static> Api<M> {
+impl<M: ResourceManager + Send + Sync + 'static> Api<M> {
     #[oai(tag = "ApiTags::Job", path = "/jobs", method = "post")]
     async fn create_job(&self, config: Json<job::Config>) -> Result<CreateJobResponse> {
-        if let Some(id) = self.0.create_job(config.0) {
+        if let Some(id) = self.0.create_job(config.0).await {
             Ok(CreateJobResponse::JobId(Json(id)))
         } else {
             Ok(CreateJobResponse::JobAlreadyExists)
@@ -58,7 +58,7 @@ impl<M: ResourceManagerInterface + Send + Sync + 'static> Api<M> {
 
     #[oai(tag = "ApiTags::Job", path = "/jobs/:id", method = "get")]
     async fn get_job(&self, id: Path<String>) -> Result<GetResponse> {
-        match self.0.get_job(&id.0) {
+        match self.0.get_job(&id.0).await {
             Some(job) => Ok(GetResponse::Job(Json(job.clone()))),
             None => Ok(GetResponse::NotFound(PlainText(format!(
                 "Job {} is not found.",
@@ -69,7 +69,7 @@ impl<M: ResourceManagerInterface + Send + Sync + 'static> Api<M> {
 
     #[oai(path = "/jobs", method = "get")]
     async fn get_all_jobs(&self) -> Result<Json<Vec<job::Job>>> {
-        Ok(Json(self.0.get_all_jobs()))
+        Ok(Json(self.0.get_all_jobs().await))
     }
 }
 
@@ -79,7 +79,7 @@ pub async fn create_app(
     servers: Vec<ServerInfo>,
 ) -> impl Endpoint {
     let api_service = OpenApiService::new(
-        Api(ResourceManager::new(addr, cert_path, servers)
+        Api(JobManager::new(addr, cert_path, servers, 127)
             .await
             .expect("Cannot connect servers.")),
         "Hello World",

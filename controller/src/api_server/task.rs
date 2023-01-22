@@ -14,13 +14,13 @@ pub enum TaskState {
 #[oai(rename_all = "camelCase")]
 pub struct Task {
     /// Task id.
-    pub id: u64,
+    pub id: String,
     /// Task state.
     pub state: TaskState,
 }
 
 impl Task {
-    pub fn new(id: u64, state: TaskState) -> Self {
+    pub fn new(id: String, state: TaskState) -> Self {
         Self { id, state }
     }
 }
