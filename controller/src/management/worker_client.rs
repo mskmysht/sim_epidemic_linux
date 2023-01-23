@@ -7,13 +7,14 @@ use tokio_util::codec::{FramedRead, FramedWrite, LengthDelimitedCodec};
 
 use super::{
     server::{MyConnection, ServerInfo},
-    TaskId,
+    JobId, TaskId,
 };
 
 pub struct WorkerClient {
     connection: MyConnection,
     req_tx: FramedWrite<SendStream, LengthDelimitedCodec>,
     res_rx: FramedRead<RecvStream, LengthDelimitedCodec>,
+    status_tx: mpsc::Sender<(JobId, TaskId, bool)>,
 }
 
 impl WorkerClient {
@@ -23,7 +24,7 @@ impl WorkerClient {
         server_info: ServerInfo,
         index: usize,
         pool_tx: mpsc::Sender<usize>,
-        status_tx: mpsc::Sender<(TaskId, bool)>,
+        status_tx: mpsc::Sender<(JobId, TaskId, bool)>,
     ) -> Result<Self, Box<dyn Error>> {
         let connection = MyConnection::new(
             addr,
@@ -52,6 +53,7 @@ impl WorkerClient {
             connection,
             req_tx,
             res_rx,
+            status_tx,
         })
     }
 
@@ -66,8 +68,8 @@ impl WorkerClient {
         }
     }
 
-    pub async fn run(&mut self, task_id: TaskId) {
-        todo!()
+    pub async fn run(&mut self, job_id: JobId, task_id: TaskId) {
+        self.status_tx.send((job_id, task_id, true)).await.unwrap();
     }
 
     pub async fn spawn_item(&mut self) -> anyhow::Result<String> {

@@ -21,7 +21,7 @@ use crate::api_server::{
 
 use self::{server::ServerInfo, worker_client::WorkerClient};
 
-#[derive(Default)]
+#[derive(Clone, Debug, Default)]
 pub struct Task {
     state: task::TaskState,
 }
@@ -35,32 +35,38 @@ impl Task {
 struct Job {
     config: job::Config,
     state: job::JobState,
-    tasks: Vec<TaskId>,
+    tasks: TaskTable,
+    remained_count: usize,
+    succeeded_count: usize,
+    failed_count: usize,
 }
 
 impl Job {
     fn new(config: job::Config) -> Self {
+        let tasks = (0..config.iteration_count)
+            .map(|_| (Ulid::new().to_string(), Task::default()))
+            .collect();
+        let remained_count = config.iteration_count as usize;
         Self {
             config,
             state: job::JobState::default(),
-            tasks: Vec::new(),
+            tasks,
+            remained_count,
+            succeeded_count: 0,
+            failed_count: 0,
         }
     }
 
-    fn make_obj(&self, id: String, table: &TaskTable) -> job::Job {
+    fn make_obj(&self, id: String) -> job::Job {
         job::Job::new(
             id,
             self.config.clone(),
             self.state.clone(),
-            self.make_task_map(table),
+            self.tasks
+                .iter()
+                .map(|(id, task)| (id.clone(), task.make_obj(id.clone())))
+                .collect(),
         )
-    }
-
-    fn make_task_map(&self, table: &TaskTable) -> HashMap<String, task::Task> {
-        self.tasks
-            .iter()
-            .map(|id| (id.clone(), table.get(id).unwrap().make_obj(id.clone())))
-            .collect()
     }
 }
 
@@ -70,7 +76,6 @@ type TaskId = String;
 type TaskTable = HashMap<TaskId, Task>;
 pub struct JobManager {
     job_table: Arc<RwLock<JobTable>>,
-    task_table: Arc<RwLock<TaskTable>>,
     job_request_tx: mpsc::Sender<JobId>,
 }
 
@@ -98,47 +103,53 @@ impl JobManager {
         let workers = Arc::new(RwLock::new(workers));
 
         let job_table = Default::default();
-        let task_table = Default::default();
         let (job_request_tx, mut job_request_rx) = mpsc::channel(max_job_request);
         let this = Self {
             job_table,
-            task_table,
             job_request_tx,
         };
 
         let job_table = Arc::clone(&this.job_table);
-        let task_table = Arc::clone(&this.task_table);
         tokio::spawn(async move {
-            while let Some(ref job_id) = job_request_rx.recv().await {
+            while let Some(job_id) = job_request_rx.recv().await {
                 let mut table = job_table.write().await;
-                if let Some(job) = table.get_mut(job_id) {
+                if let Some(job) = table.get_mut(&job_id) {
                     job.state = JobState::Running;
-                    for task_id in &job.tasks {
-                        let mut table = task_table.write().await;
-                        if let Some(task) = table.get_mut(task_id) {
-                            task.state = TaskState::Running;
-                            if let Some(index) = pool_rx.recv().await {
-                                let mut ws = workers.write().await;
-                                ws[index].run(task_id.clone()).await;
-                            }
+                    for (task_id, task) in job.tasks.iter_mut() {
+                        task.state = TaskState::Running;
+                        if let Some(index) = pool_rx.recv().await {
+                            let mut ws = workers.write().await;
+                            ws[index].run(job_id.clone(), task_id.clone()).await;
                         }
                     }
                 }
             }
         });
 
-        let task_table = Arc::clone(&this.task_table);
+        let job_table = Arc::clone(&this.job_table);
         tokio::spawn(async move {
-            while let Some((task_id, b)) = status_rx.recv().await {
-                let mut table = task_table.write().await;
-                if let Some(task) = table.get_mut(&task_id) {
-                    task.state = match b {
-                        true => TaskState::Succeeded,
-                        false => TaskState::Failed,
-                    };
+            while let Some((ref job_id, ref task_id, succeeded)) = status_rx.recv().await {
+                let mut jt = job_table.write().await;
+                let job = jt.get_mut(job_id).unwrap();
+                let task = job.tasks.get_mut(task_id).unwrap();
+                job.remained_count -= 1;
+                if succeeded {
+                    task.state = TaskState::Succeeded;
+                    job.succeeded_count += 1;
+                } else {
+                    task.state = TaskState::Failed;
+                    job.failed_count += 1;
+                }
+                if job.remained_count == 0 {
+                    if job.failed_count == 0 {
+                        job.state = JobState::Succeeded;
+                    } else {
+                        job.state = JobState::Failed;
+                    }
                 }
             }
         });
+
         Ok(this)
     }
 }
@@ -156,18 +167,16 @@ impl ResourceManager for JobManager {
     }
 
     async fn get_job(&self, id: &String) -> Option<job::Job> {
-        let table = &self.task_table.read().await;
         let db = self.job_table.read().await;
-        db.get(id).map(|job| job.make_obj(id.clone(), table))
+        db.get(id).map(|job| job.make_obj(id.clone()))
     }
 
     async fn get_all_jobs(&self) -> Vec<job::Job> {
-        let table = &self.task_table.read().await;
         self.job_table
             .read()
             .await
             .iter()
-            .map(|(id, job)| job.make_obj(id.clone(), table))
+            .map(|(id, job)| job.make_obj(id.clone()))
             .collect()
     }
 }
