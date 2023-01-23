@@ -87,8 +87,7 @@ impl JobManager {
         max_job_request: usize,
     ) -> Result<Self, Box<dyn Error>> {
         let config = quic_config::get_client_config(&cert_path)?;
-        let (pool_tx, mut pool_rx) = mpsc::channel(servers.len());
-        let (status_tx, mut status_rx) = mpsc::channel(servers.len());
+        let (pool_tx, pool_rx) = mpsc::channel(servers.len());
         let workers = try_join_all(servers.into_iter().enumerate().map(|(i, server_info)| {
             WorkerClient::new(
                 addr.clone(),
@@ -96,61 +95,83 @@ impl JobManager {
                 server_info,
                 i,
                 pool_tx.clone(),
-                status_tx.clone(),
             )
         }))
         .await?;
-        let workers = Arc::new(RwLock::new(workers));
 
         let job_table = Default::default();
-        let (job_request_tx, mut job_request_rx) = mpsc::channel(max_job_request);
-        let this = Self {
+        let (job_request_tx, job_request_rx) = mpsc::channel(max_job_request);
+
+        Self::listen_job_request(workers, Arc::clone(&job_table), job_request_rx, pool_rx);
+
+        Ok(Self {
             job_table,
             job_request_tx,
-        };
+        })
+    }
 
-        let job_table = Arc::clone(&this.job_table);
+    fn listen_job_request(
+        workers: Vec<WorkerClient>,
+        job_table: Arc<RwLock<JobTable>>,
+        mut job_request_rx: mpsc::Receiver<JobId>,
+        mut pool_rx: mpsc::Receiver<usize>,
+    ) {
         tokio::spawn(async move {
+            let workers = Arc::new(RwLock::new(workers));
             while let Some(job_id) = job_request_rx.recv().await {
                 let mut table = job_table.write().await;
-                if let Some(job) = table.get_mut(&job_id) {
-                    job.state = JobState::Running;
-                    for (task_id, task) in job.tasks.iter_mut() {
-                        task.state = TaskState::Running;
-                        if let Some(index) = pool_rx.recv().await {
-                            let mut ws = workers.write().await;
-                            ws[index].run(job_id.clone(), task_id.clone()).await;
-                        }
+                let job = table.get_mut(&job_id).unwrap();
+                job.state = JobState::Running;
+                for (task_id, task) in job.tasks.iter_mut() {
+                    task.state = TaskState::Running;
+                    if let Some(index) = pool_rx.recv().await {
+                        Self::execute(
+                            Arc::clone(&job_table),
+                            Arc::clone(&workers),
+                            index,
+                            job.config.clone(),
+                            job_id.clone(),
+                            task_id.clone(),
+                        );
                     }
                 }
             }
         });
+    }
 
-        let job_table = Arc::clone(&this.job_table);
+    fn execute(
+        job_table: Arc<RwLock<JobTable>>,
+        workers: Arc<RwLock<Vec<WorkerClient>>>,
+        index: usize,
+        job_config: job::Config,
+        job_id: JobId,
+        task_id: TaskId,
+    ) {
         tokio::spawn(async move {
-            while let Some((ref job_id, ref task_id, succeeded)) = status_rx.recv().await {
-                let mut jt = job_table.write().await;
-                let job = jt.get_mut(job_id).unwrap();
-                let task = job.tasks.get_mut(task_id).unwrap();
-                job.remained_count -= 1;
-                if succeeded {
-                    task.state = TaskState::Succeeded;
-                    job.succeeded_count += 1;
+            let mut ws = workers.write().await;
+            let succeeded = match ws[index].run(&job_config).await {
+                Ok(false) | Err(_) => false,
+                _ => true,
+            };
+            let mut table = job_table.write().await;
+            let job = table.get_mut(&job_id).unwrap();
+            let task = job.tasks.get_mut(&task_id).unwrap();
+            job.remained_count -= 1;
+            if succeeded {
+                task.state = TaskState::Succeeded;
+                job.succeeded_count += 1;
+            } else {
+                task.state = TaskState::Failed;
+                job.failed_count += 1;
+            }
+            if job.remained_count == 0 {
+                if job.failed_count == 0 {
+                    job.state = JobState::Succeeded;
                 } else {
-                    task.state = TaskState::Failed;
-                    job.failed_count += 1;
-                }
-                if job.remained_count == 0 {
-                    if job.failed_count == 0 {
-                        job.state = JobState::Succeeded;
-                    } else {
-                        job.state = JobState::Failed;
-                    }
+                    job.state = JobState::Failed;
                 }
             }
         });
-
-        Ok(this)
     }
 }
 

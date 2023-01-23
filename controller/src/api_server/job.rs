@@ -1,32 +1,14 @@
 use std::collections::HashMap;
 
+use api::job::{JobParam, WorldParams};
 use poem_openapi::{types::Example, Enum, Object};
 
 use super::task::Task;
 
 #[derive(Object, Clone, Debug)]
-#[oai(rename_all = "camelCase")]
-pub struct WorldParams {
-    #[oai(validator(minimum(value = "1", exclusive = false)))]
-    population_size: u64,
-}
-
-#[derive(Object, Clone, Debug)]
-#[oai(rename_all = "camelCase")]
-pub struct JobParam {
-    #[oai(validator(minimum(value = "1", exclusive = false)))]
-    stop_at: u64,
-    world_params: WorldParams,
-    // scenario: Scenario,
-    // vaccines
-    // variants
-    // gatherings
-}
-
-#[derive(Object, Clone, Debug)]
 #[oai(example, rename_all = "camelCase")]
 pub struct Config {
-    param: JobParam,
+    pub param: JobParam,
     #[oai(validator(minimum(value = "1", exclusive = false)))]
     pub iteration_count: u64,
     output_fields: Vec<String>,

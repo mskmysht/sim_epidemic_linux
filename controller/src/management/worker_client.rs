@@ -5,16 +5,14 @@ use std::{error::Error, net::SocketAddr};
 use tokio::sync::mpsc;
 use tokio_util::codec::{FramedRead, FramedWrite, LengthDelimitedCodec};
 
-use super::{
-    server::{MyConnection, ServerInfo},
-    JobId, TaskId,
-};
+use crate::api_server::job;
+
+use super::server::{MyConnection, ServerInfo};
 
 pub struct WorkerClient {
     connection: MyConnection,
     req_tx: FramedWrite<SendStream, LengthDelimitedCodec>,
     res_rx: FramedRead<RecvStream, LengthDelimitedCodec>,
-    status_tx: mpsc::Sender<(JobId, TaskId, bool)>,
 }
 
 impl WorkerClient {
@@ -24,7 +22,6 @@ impl WorkerClient {
         server_info: ServerInfo,
         index: usize,
         pool_tx: mpsc::Sender<usize>,
-        status_tx: mpsc::Sender<(JobId, TaskId, bool)>,
     ) -> Result<Self, Box<dyn Error>> {
         let connection = MyConnection::new(
             addr,
@@ -53,7 +50,6 @@ impl WorkerClient {
             connection,
             req_tx,
             res_rx,
-            status_tx,
         })
     }
 
@@ -68,8 +64,23 @@ impl WorkerClient {
         }
     }
 
-    pub async fn run(&mut self, job_id: JobId, task_id: TaskId) {
-        self.status_tx.send((job_id, task_id, true)).await.unwrap();
+    pub async fn run(&mut self, config: &job::Config) -> anyhow::Result<bool> {
+        let id = match self.request(&worker_if::Request::SpawnItem).await? {
+            worker_if::ResponseOk::Item(id) => id,
+            _ => unreachable!(),
+        };
+        match self
+            .request(&worker_if::Request::Custom(
+                id,
+                world_if::Request::Execute(config.param.stop_at),
+            ))
+            .await?
+        {
+            worker_if::ResponseOk::Custom(_) => Ok(true),
+            _ => unreachable!(),
+        }
+        // self.status_tx.send((job_id, task_id, true)).await.unwrap();
+        // Ok(true)
     }
 
     pub async fn spawn_item(&mut self) -> anyhow::Result<String> {

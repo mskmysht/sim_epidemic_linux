@@ -6,6 +6,7 @@ members = [
   "controller",
   "cert-gen",
   "custom_macro",
+  "libs/api",
   "libs/world-if",
   "libs/worker-if",
   "libs/protocol",

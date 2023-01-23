@@ -365,6 +365,16 @@ where
         false
     }
 
+    fn execute(&mut self, stop_at: u32) {
+        if self.is_ended() {
+            self.res_err(ResponseError::AlreadyEnded);
+        }
+
+        let step_to_end = stop_at * self.world.world_params.steps_per_day;
+        while self.step_cont(step_to_end) {}
+        self.res_ok();
+    }
+
     #[inline]
     fn step_cont(&mut self, step_to_end: u32) -> bool {
         self.inline_step();
@@ -416,6 +426,10 @@ where
                         break;
                     }
                     debug_assert!(false, "force to invoke panic");
+                }
+                Request::Execute(stop_at) => {
+                    self.execute(stop_at);
+                    break;
                 }
                 #[cfg(debug_assertions)]
                 Request::Debug => self.debug(),

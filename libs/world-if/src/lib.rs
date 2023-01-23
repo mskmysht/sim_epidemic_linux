@@ -15,6 +15,7 @@ pub enum Request {
     #[cfg(debug_assertions)]
     Debug,
     Export(String),
+    Execute(u32),
 }
 
 #[derive(Debug, serde::Deserialize, serde::Serialize)]
