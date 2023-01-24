@@ -7,7 +7,7 @@ use nom::{
 };
 use parser::{binary, no_invisibles, no_newline_string1, nullary, unary};
 
-use crate::Request;
+use super::Request;
 
 fn parse_expr(input: &str) -> IResult<&str, Request> {
     alt((
@@ -18,7 +18,7 @@ fn parse_expr(input: &str) -> IResult<&str, Request> {
         binary(
             "msg",
             map(no_invisibles, ToString::to_string),
-            world_if::parse::request,
+            world_if::realtime::parse::request,
             Request::Custom,
         ),
     ))(input)

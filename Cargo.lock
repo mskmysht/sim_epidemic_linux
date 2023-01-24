@@ -2506,6 +2506,7 @@ dependencies = [
  "anyhow",
  "argopt",
  "async-trait",
+ "bincode",
  "futures-util",
  "ipc-channel",
  "parking_lot",
@@ -2520,6 +2521,7 @@ dependencies = [
  "serde",
  "shared_child",
  "tokio",
+ "tokio-util",
  "worker-if",
 ]
 
@@ -2562,7 +2564,6 @@ name = "world-if"
 version = "0.1.0"
 dependencies = [
  "anyhow",
- "api",
  "chrono",
  "ipc-channel",
  "nom",

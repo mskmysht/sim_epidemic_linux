@@ -1,10 +1,12 @@
 use std::fmt::Debug;
 
+use worker_if::realtime::{parse, Request};
+
 pub struct WorkerParser;
 impl repl::Parsable for WorkerParser {
-    type Parsed = worker_if::Request;
+    type Parsed = Request;
     fn parse(buf: &str) -> repl::nom::IResult<&str, Self::Parsed> {
-        worker_if::parse::request(buf)
+        parse::request(buf)
     }
 }
 
@@ -25,6 +27,8 @@ where
 
 pub mod quic {
     use std::{error::Error, net::SocketAddr};
+
+    use worker_if::realtime::{Request, Response};
 
     use crate::management::server::{MyConnection, ServerInfo};
 
@@ -50,8 +54,8 @@ pub mod quic {
 
         pub async fn callback(
             &mut self,
-            req: worker_if::Request,
-        ) -> Result<worker_if::Response, Box<dyn Error + Send + Sync>> {
+            req: Request,
+        ) -> Result<Response, Box<dyn Error + Send + Sync>> {
             if self.0.connection.close_reason().is_some() {
                 self.0.connect().await?;
             }
@@ -67,10 +71,12 @@ pub mod quic {
 pub mod tcp {
     use std::{io, net::TcpStream};
 
+    use worker_if::realtime::{Request, Response};
+
     pub struct MyHandler<'a>(pub TcpStream, pub &'a str);
 
     impl<'a> MyHandler<'a> {
-        pub fn callback(&mut self, req: worker_if::Request) -> io::Result<worker_if::Response> {
+        pub fn callback(&mut self, req: Request) -> io::Result<Response> {
             let n = protocol::write_data(&mut self.0, &req)?;
             eprintln!("[info] sent {n} bytes data");
             let res = protocol::read_data(&mut self.0)?;

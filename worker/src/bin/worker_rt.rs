@@ -1,0 +1,110 @@
+use quinn::Endpoint;
+use std::{
+    error::Error,
+    net::{Ipv4Addr, SocketAddr, SocketAddrV4, TcpListener},
+};
+
+type DynResult<T> = Result<T, Box<dyn Error>>;
+
+#[argopt::cmd_group(commands = [start_tcp, start])]
+fn main() -> DynResult<()> {}
+
+#[argopt::subcmd]
+fn start_tcp(
+    /// world binary path
+    #[opt(long)]
+    world_path: String,
+) -> DynResult<()> {
+    run_tcp(world_path)
+}
+
+#[argopt::subcmd]
+fn start(
+    /// path of certificate file
+    #[opt(long)]
+    cert_path: String,
+    /// path of private key file
+    #[opt(long)]
+    pkey_path: String,
+    /// world binary path
+    #[opt(long)]
+    world_path: String,
+    /// address to listen
+    #[opt(long)]
+    addr: SocketAddr,
+    /// idle timeout
+    timeout: u32,
+) -> DynResult<()> {
+    let rt = tokio::runtime::Runtime::new()?;
+    rt.block_on(run(cert_path, pkey_path, world_path, addr, timeout))
+}
+
+async fn run(
+    cert_path: String,
+    pkey_path: String,
+    world_path: String,
+    addr: SocketAddr,
+    timeout: u32,
+) -> DynResult<()> {
+    let endpoint = Endpoint::server(
+        quic_config::get_server_config(cert_path, pkey_path, timeout)?,
+        addr,
+    )?;
+
+    let managing = worker::realtime::WorldManaging::new(world_path);
+
+    while let Some(connecting) = endpoint.accept().await {
+        let connection = connecting.await?;
+        let ip = connection.remote_address().to_string();
+        println!("[info] Acceept {}", ip);
+
+        loop {
+            match connection.accept_bi().await {
+                Ok((mut send, mut recv)) => {
+                    let manager = managing.get_manager().clone();
+                    tokio::spawn(async move {
+                        let req = protocol::quic::read_data(&mut recv).await.unwrap();
+                        println!("[request] {req:?}");
+                        let res = manager.request(req);
+                        println!("[response] {res:?}");
+                        protocol::quic::write_data(&mut send, &res).await.unwrap();
+                    });
+                }
+                Err(e) => {
+                    println!("[info] Disconnect {} ({})", ip, e);
+                    break;
+                }
+            }
+        }
+    }
+
+    Ok(())
+}
+
+fn run_tcp(world_path: String) -> DynResult<()> {
+    let listener = TcpListener::bind(SocketAddrV4::new(Ipv4Addr::UNSPECIFIED, 8080))?;
+
+    let managing = worker::realtime::WorldManaging::new(world_path);
+    let manager = managing.get_manager();
+
+    for stream in listener.incoming() {
+        let mut stream = stream?;
+        let addr = stream.peer_addr()?.to_string();
+        println!("[info] Acceept {addr}");
+        loop {
+            let req = match protocol::read_data(&mut stream) {
+                Ok(req) => req,
+                Err(_) => break,
+            };
+            println!("[request] {req:?}");
+            let res = manager.request(req);
+            println!("[response] {res:?}");
+            if let Err(e) = protocol::write_data(&mut stream, &res) {
+                eprintln!("{e}");
+            }
+        }
+        println!("[info] Disconnect {addr}");
+    }
+
+    Ok(())
+}

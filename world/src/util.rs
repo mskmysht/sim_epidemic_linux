@@ -2,6 +2,8 @@ pub mod enum_map;
 pub mod math;
 pub mod random;
 
+use std::time::{SystemTime, UNIX_EPOCH};
+
 pub trait DrainMap<T, U, V, F: FnMut(&mut T) -> (U, Option<V>)> {
     type Target;
     fn drain_map_mut(&mut self, f: F) -> Self::Target;
@@ -68,4 +70,11 @@ impl<T> ContainerExt for Option<T> {
             None => false,
         }
     }
+}
+
+pub fn get_uptime() -> f64 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .expect("SystemTime before UNIX EPOCH!")
+        .as_secs_f64()
 }

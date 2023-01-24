@@ -149,7 +149,7 @@ impl JobManager {
     ) {
         tokio::spawn(async move {
             let mut ws = workers.write().await;
-            let succeeded = match ws[index].run(&job_config).await {
+            let succeeded = match ws[index].run(&task_id, &job_config).await {
                 Ok(false) | Err(_) => false,
                 _ => true,
             };

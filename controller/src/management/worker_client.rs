@@ -1,18 +1,20 @@
 use futures_util::{SinkExt, StreamExt};
-use quinn::{ClientConfig, RecvStream, SendStream};
+use quinn::{ClientConfig, SendStream};
 use repl::nom::AsBytes;
 use std::{error::Error, net::SocketAddr};
 use tokio::sync::mpsc;
 use tokio_util::codec::{FramedRead, FramedWrite, LengthDelimitedCodec};
+use worker_if::batch::{world_if, Request, Response, ResponseOk};
 
 use crate::api_server::job;
 
-use super::server::{MyConnection, ServerInfo};
+use super::{
+    server::{MyConnection, ServerInfo},
+    TaskId,
+};
 
 pub struct WorkerClient {
     connection: MyConnection,
-    req_tx: FramedWrite<SendStream, LengthDelimitedCodec>,
-    res_rx: FramedRead<RecvStream, LengthDelimitedCodec>,
 }
 
 impl WorkerClient {
@@ -31,61 +33,43 @@ impl WorkerClient {
         )
         .await?;
 
-        let recv = connection.connection.accept_uni().await?;
-        let mut trans = FramedRead::new(recv, LengthDelimitedCodec::new());
+        let signal = connection.connection.accept_uni().await?;
+        let mut signal = FramedRead::new(signal, LengthDelimitedCodec::new());
+
         tokio::spawn(async move {
-            while let Some(frame) = trans.next().await {
+            while let Some(frame) = signal.next().await {
                 let data = frame.unwrap();
-                let a = bincode::deserialize::<bool>(data.as_bytes()).unwrap();
-                if a {
-                    pool_tx.send(index).await.unwrap();
-                }
+                bincode::deserialize::<()>(data.as_bytes()).unwrap();
+                pool_tx.send(index).await.unwrap();
             }
         });
 
-        let (send, recv) = connection.connection.open_bi().await?;
-        let req_tx = FramedWrite::new(send, LengthDelimitedCodec::new());
-        let res_rx = FramedRead::new(recv, LengthDelimitedCodec::new());
-        Ok(Self {
-            connection,
-            req_tx,
-            res_rx,
-        })
+        Ok(Self { connection })
     }
 
-    async fn request(&mut self, req: &worker_if::Request) -> anyhow::Result<worker_if::ResponseOk> {
-        self.req_tx.send(bincode::serialize(req)?.into()).await?;
-        let res = bincode::deserialize::<worker_if::Response>(
-            self.res_rx.next().await.unwrap()?.as_bytes(),
-        )?;
+    async fn request(&mut self, req: &Request) -> anyhow::Result<ResponseOk> {
+        let (send, recv) = self.connection.connection.open_bi().await?;
+        let mut req_tx = FramedWrite::new(send, LengthDelimitedCodec::new());
+        let mut res_rx = FramedRead::new(recv, LengthDelimitedCodec::new());
+
+        req_tx.send(bincode::serialize(req)?.into()).await?;
+        let res = bincode::deserialize::<Response>(res_rx.next().await.unwrap()?.as_bytes())?;
         match res {
-            worker_if::Response::Ok(ok) => Ok(ok),
-            worker_if::Response::Err(e) => Err(anyhow::Error::new(e)),
+            Response::Ok(ok) => Ok(ok),
+            Response::Err(e) => Err(anyhow::Error::new(e)),
         }
     }
 
-    pub async fn run(&mut self, config: &job::Config) -> anyhow::Result<bool> {
-        let id = match self.request(&worker_if::Request::SpawnItem).await? {
-            worker_if::ResponseOk::Item(id) => id,
-            _ => unreachable!(),
-        };
+    pub async fn run(&mut self, task_id: &TaskId, config: &job::Config) -> anyhow::Result<bool> {
+        self.request(&Request::LaunchItem(task_id.clone())).await?;
         match self
-            .request(&worker_if::Request::Custom(
-                id,
+            .request(&Request::Custom(
+                task_id.clone(),
                 world_if::Request::Execute(config.param.stop_at),
             ))
             .await?
         {
-            worker_if::ResponseOk::Custom(_) => Ok(true),
-            _ => unreachable!(),
-        }
-        // self.status_tx.send((job_id, task_id, true)).await.unwrap();
-        // Ok(true)
-    }
-
-    pub async fn spawn_item(&mut self) -> anyhow::Result<String> {
-        match self.request(&worker_if::Request::SpawnItem).await? {
-            worker_if::ResponseOk::Item(id) => Ok(id),
+            ResponseOk::Custom(_) => Ok(true),
             _ => unreachable!(),
         }
     }

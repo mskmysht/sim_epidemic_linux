@@ -1,20 +1,21 @@
 use std::error;
 
 use repl::Parsable;
+use worker_if::realtime::{parse, Request, Response};
 
 struct WorkerParser;
 impl Parsable for WorkerParser {
-    type Parsed = worker_if::Request;
+    type Parsed = Request;
 
     fn parse(input: &str) -> repl::nom::IResult<&str, Self::Parsed> {
-        worker_if::parse::request(input)
+        parse::request(input)
     }
 }
 
-fn logging(response: &worker_if::Response) {
+fn logging(response: &Response) {
     match response {
-        worker_if::Response::Ok(s) => println!("[info] {s:?}"),
-        worker_if::Response::Err(e) => eprintln!("[error] {e:?}"),
+        Response::Ok(s) => println!("[info] {s:?}"),
+        Response::Err(e) => eprintln!("[error] {e:?}"),
     }
 }
 
@@ -27,7 +28,7 @@ fn main(
     #[opt(short = 'a')]
     is_async: bool,
 ) -> Result<(), Box<dyn error::Error>> {
-    let managing = worker::WorldManaging::new(world_path);
+    let managing = worker::realtime::WorldManaging::new(world_path);
     if is_async {
         let rt = tokio::runtime::Runtime::new()?;
         rt.block_on(async {

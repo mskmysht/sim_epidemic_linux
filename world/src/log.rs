@@ -1,6 +1,6 @@
 use crate::{
-    commons::HealthType,
     util::enum_map::{Enum, EnumMap},
+    world::commons::HealthType,
 };
 
 use std::{collections::VecDeque, fmt::Display, io};

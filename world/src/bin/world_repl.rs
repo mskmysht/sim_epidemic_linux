@@ -1,22 +1,23 @@
 use std::{sync::mpsc, thread};
 
 use repl::Parsable;
+use world::myprocess::realtime;
 use world_if::{
     pubsub::{Publisher, Subscriber},
-    Request, WorldStatus,
+    realtime::{Request, Response, ResponseOk, WorldStatus},
 };
 
 pub struct MpscPublisher {
     stream_tx: mpsc::Sender<WorldStatus>,
     req_rx: mpsc::Receiver<Request>,
-    res_tx: mpsc::Sender<world_if::Response>,
+    res_tx: mpsc::Sender<Response>,
 }
 
 impl MpscPublisher {
     pub fn new(
         stream_tx: mpsc::Sender<WorldStatus>,
         req_rx: mpsc::Receiver<Request>,
-        res_tx: mpsc::Sender<world_if::Response>,
+        res_tx: mpsc::Sender<Response>,
     ) -> Self {
         Self {
             stream_tx,
@@ -27,6 +28,9 @@ impl MpscPublisher {
 }
 
 impl Publisher for MpscPublisher {
+    type Req = Request;
+    type Res = Response;
+    type Stat = WorldStatus;
     type SendErr<T> = mpsc::SendError<T>;
     type RecvErr = mpsc::RecvError;
 
@@ -42,10 +46,7 @@ impl Publisher for MpscPublisher {
         }
     }
 
-    fn send_response(
-        &self,
-        data: world_if::Response,
-    ) -> Result<(), Self::SendErr<world_if::Response>> {
+    fn send_response(&self, data: Response) -> Result<(), Self::SendErr<Response>> {
         self.res_tx.send(data)
     }
 
@@ -56,14 +57,14 @@ impl Publisher for MpscPublisher {
 
 struct MpscSubscriber {
     req_tx: mpsc::Sender<Request>,
-    res_rx: mpsc::Receiver<world_if::Response>,
+    res_rx: mpsc::Receiver<Response>,
     stream_rx: mpsc::Receiver<WorldStatus>,
 }
 
 impl MpscSubscriber {
     fn new(
         req_tx: mpsc::Sender<Request>,
-        res_rx: mpsc::Receiver<world_if::Response>,
+        res_rx: mpsc::Receiver<Response>,
         stream_rx: mpsc::Receiver<WorldStatus>,
     ) -> Self {
         Self {
@@ -75,6 +76,9 @@ impl MpscSubscriber {
 }
 
 impl Subscriber for MpscSubscriber {
+    type Req = Request;
+    type Res = Response;
+    type Stat = WorldStatus;
     type RecvErr = mpsc::RecvError;
     type SendErr = mpsc::SendError<Request>;
 
@@ -94,7 +98,7 @@ impl Subscriber for MpscSubscriber {
         self.req_tx.send(req)
     }
 
-    fn recv(&self) -> Result<world_if::Response, Self::RecvErr> {
+    fn recv(&self) -> Result<Response, Self::RecvErr> {
         self.res_rx.recv()
     }
 }
@@ -115,7 +119,7 @@ impl Parsable for WorldParser {
         use repl::nom::combinator::map;
         alt((
             map(tag("info"), |_| RequestWrapper::Info),
-            map(world_if::parse::request, RequestWrapper::Req),
+            map(world_if::realtime::parse::request, RequestWrapper::Req),
         ))(input)
     }
 }
@@ -124,7 +128,7 @@ fn main() {
     let (req_tx, req_rx) = mpsc::channel();
     let (res_tx, res_rx) = mpsc::channel();
     let (stream_tx, stream_rx) = mpsc::channel();
-    let spawner = world::WorldSpawner::new(
+    let spawner = realtime::WorldSpawner::new(
         "test".to_string(),
         MpscPublisher::new(stream_tx, req_rx, res_tx),
     );
@@ -142,13 +146,13 @@ fn main() {
                             if let Some(s) = subscriber.seek_status().into_iter().last() {
                                 status = s;
                             }
-                            world_if::ResponseOk::SuccessWithMessage((&status).to_string()).into()
+                            ResponseOk::SuccessWithMessage((&status).to_string()).into()
                         }
                         RequestWrapper::Req(req) => subscriber.request(req).unwrap(),
                     };
                     match output {
-                        world_if::Response::Ok(s) => println!("[info] {s:?}"),
-                        world_if::Response::Err(e) => eprintln!("[error] {e:?}"),
+                        Response::Ok(s) => println!("[info] {s:?}"),
+                        Response::Err(e) => eprintln!("[error] {e:?}"),
                     }
                 }
             }

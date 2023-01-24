@@ -1,6 +1,6 @@
 use ipc_channel::ipc;
 use world::myprocess;
-use world_if::batch;
+use world_if::realtime;
 
 #[argopt::cmd]
 fn main(#[opt(long)] world_id: String, #[opt(long)] server_name: String) {
@@ -8,11 +8,11 @@ fn main(#[opt(long)] world_id: String, #[opt(long)] server_name: String) {
     let (res_tx, res_rx) = ipc::channel().unwrap();
     let (stream_tx, stream_rx) = ipc::channel().unwrap();
     let tx = ipc::IpcSender::connect(server_name).unwrap();
-    tx.send(batch::IpcSubscriber::new(req_tx, res_rx, stream_rx))
+    tx.send(realtime::IpcSubscriber::new(req_tx, res_rx, stream_rx))
         .unwrap();
-    let spawner = myprocess::batch::WorldSpawner::new(
+    let spawner = myprocess::realtime::WorldSpawner::new(
         world_id.clone(),
-        batch::IpcPublisher::new(stream_tx, req_rx, res_tx),
+        realtime::IpcPublisher::new(stream_tx, req_rx, res_tx),
     );
     let handle = spawner.spawn().unwrap();
     handle.join().unwrap();

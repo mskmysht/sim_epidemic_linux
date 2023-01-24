@@ -1,25 +1,18 @@
-use quinn::Endpoint;
-use std::{
-    error::Error,
-    net::{Ipv4Addr, SocketAddr, SocketAddrV4, TcpListener},
-};
+use futures_util::{SinkExt, StreamExt};
+use ipc_channel::ipc::IpcOneShotServer;
+use quinn::{Connection, Endpoint};
+use repl::nom::AsBytes;
+use std::collections::HashMap;
+use std::sync::Arc;
+use std::{error::Error, net::SocketAddr, process};
+use tokio::sync::{mpsc, Mutex};
+use tokio_util::codec::{FramedRead, FramedWrite, LengthDelimitedCodec};
+use worker_if::batch::world_if::IpcSubscriber;
+use worker_if::batch::{Request, Response, ResponseError, ResponseOk};
+use worker_if::realtime::world_if::Subscriber;
 
-type DynResult<T> = Result<T, Box<dyn Error>>;
-
-#[argopt::cmd_group(commands = [start_tcp, start])]
-fn main() -> DynResult<()> {}
-
-#[argopt::subcmd]
-fn start_tcp(
-    /// world binary path
-    #[opt(long)]
-    world_path: String,
-) -> DynResult<()> {
-    run_tcp(world_path)
-}
-
-#[argopt::subcmd]
-fn start(
+#[argopt::cmd]
+fn main(
     /// path of certificate file
     #[opt(long)]
     cert_path: String,
@@ -34,7 +27,7 @@ fn start(
     addr: SocketAddr,
     /// idle timeout
     timeout: u32,
-) -> DynResult<()> {
+) -> Result<(), Box<dyn Error>> {
     let rt = tokio::runtime::Runtime::new()?;
     rt.block_on(run(cert_path, pkey_path, world_path, addr, timeout))
 }
@@ -45,66 +38,101 @@ async fn run(
     world_path: String,
     addr: SocketAddr,
     timeout: u32,
-) -> DynResult<()> {
+) -> Result<(), Box<dyn Error>> {
     let endpoint = Endpoint::server(
         quic_config::get_server_config(cert_path, pkey_path, timeout)?,
         addr,
     )?;
 
-    let managing = worker::WorldManaging::new(world_path);
-
     while let Some(connecting) = endpoint.accept().await {
         let connection = connecting.await?;
         let ip = connection.remote_address().to_string();
         println!("[info] Acceept {}", ip);
-
-        loop {
-            match connection.accept_bi().await {
-                Ok((mut send, mut recv)) => {
-                    let manager = managing.get_manager().clone();
-                    tokio::spawn(async move {
-                        let req = protocol::quic::read_data(&mut recv).await.unwrap();
-                        println!("[request] {req:?}");
-                        let res = manager.request(req);
-                        println!("[response] {res:?}");
-                        protocol::quic::write_data(&mut send, &res).await.unwrap();
-                    });
-                }
-                Err(e) => {
-                    println!("[info] Disconnect {} ({})", ip, e);
-                    break;
-                }
-            }
+        if let Err(e) = hoge(world_path.clone(), connection).await {
+            println!("[info] Disconnect {} ({})", ip, e);
         }
     }
 
     Ok(())
 }
 
-fn run_tcp(world_path: String) -> DynResult<()> {
-    let listener = TcpListener::bind(SocketAddrV4::new(Ipv4Addr::UNSPECIFIED, 8080))?;
+async fn hoge(world_path: String, connection: Connection) -> anyhow::Result<()> {
+    println!("waiting...");
 
-    let managing = worker::WorldManaging::new(world_path);
-    let manager = managing.get_manager();
+    // let request = connection.accept_uni().await?;
+    // let mut request = FramedRead::new(request, LengthDelimitedCodec::new());
+    // request.next().await;
+    // println!("accepted");
 
-    for stream in listener.incoming() {
-        let mut stream = stream?;
-        let addr = stream.peer_addr()?.to_string();
-        println!("[info] Acceept {addr}");
-        loop {
-            let req = match protocol::read_data(&mut stream) {
-                Ok(req) => req,
-                Err(_) => break,
-            };
-            println!("[request] {req:?}");
-            let res = manager.request(req);
-            println!("[response] {res:?}");
-            if let Err(e) = protocol::write_data(&mut stream, &res) {
-                eprintln!("{e}");
-            }
-        }
-        println!("[info] Disconnect {addr}");
+    let signal = connection.open_uni().await?;
+    let mut signal = FramedWrite::new(signal, LengthDelimitedCodec::new());
+    let (tx, mut rx) = tokio::sync::mpsc::channel(1024);
+    for _ in 0..10 {
+        tx.send(()).await.unwrap();
     }
 
+    tokio::spawn(async move {
+        while let Some(_) = rx.recv().await {
+            signal
+                .send(bincode::serialize(&()).unwrap().into())
+                .await
+                .unwrap();
+        }
+    });
+
+    let table = Arc::new(Mutex::new(HashMap::new()));
+    loop {
+        let (send, recv) = connection.accept_bi().await?;
+        let world_path = world_path.clone();
+        let table = Arc::clone(&table);
+        let tx = tx.clone();
+        tokio::spawn(async move {
+            let mut res_tx = FramedWrite::new(send, LengthDelimitedCodec::new());
+            let mut req_rx = FramedRead::new(recv, LengthDelimitedCodec::new());
+
+            let data = req_rx.next().await.unwrap().unwrap();
+            let req: Request = bincode::deserialize(data.as_bytes()).unwrap();
+            println!("[request] {req:?}");
+
+            let res: Response = match req {
+                Request::LaunchItem(id) => match launch(world_path, id, table, tx).await {
+                    Ok(_) => ResponseOk::Item.into(),
+                    Err(e) => ResponseError::FailedToSpawn(e).into(),
+                },
+                Request::Custom(id, req) => {
+                    let table = table.lock().await;
+                    match table[&id].request(req) {
+                        Ok(r) => r.as_result().into(),
+                        Err(e) => ResponseError::process_io_error(e).into(),
+                    }
+                }
+            };
+            println!("[response] {res:?}");
+            res_tx
+                .send(bincode::serialize(&res).unwrap().into())
+                .await
+                .unwrap();
+        });
+    }
+}
+
+async fn launch(
+    world_path: String,
+    id: String,
+    table: Arc<Mutex<HashMap<String, IpcSubscriber>>>,
+    tx: mpsc::Sender<()>,
+) -> anyhow::Result<()> {
+    let (server, server_name) = IpcOneShotServer::new()?;
+    let mut command = process::Command::new(&world_path);
+    command.args(["--world-id", &id, "--server-name", &server_name]);
+    let child = shared_child::SharedChild::spawn(&mut command)?;
+    let (_, subscriber): (_, IpcSubscriber) = server.accept()?;
+    let mut table = table.lock().await;
+    table.insert(id, subscriber);
+    tokio::spawn(async move {
+        // let pid = child.id();
+        child.wait().unwrap();
+        tx.send(()).await.unwrap();
+    });
     Ok(())
 }

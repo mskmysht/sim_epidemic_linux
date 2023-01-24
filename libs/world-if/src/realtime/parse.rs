@@ -7,7 +7,7 @@ use nom::{
 };
 use parser::{no_newline_string1, nullary, unary};
 
-use crate::Request;
+use super::Request;
 
 fn _parse_expr(input: &str) -> IResult<&str, Request> {
     alt((
