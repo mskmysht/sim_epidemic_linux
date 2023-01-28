@@ -25,49 +25,29 @@ fn main(
     /// address to listen
     #[opt(long)]
     addr: SocketAddr,
-    /// idle timeout
-    timeout: u32,
 ) -> Result<(), Box<dyn Error>> {
     let rt = tokio::runtime::Runtime::new()?;
-    rt.block_on(run(cert_path, pkey_path, world_path, addr, timeout))
-}
-
-async fn run(
-    cert_path: String,
-    pkey_path: String,
-    world_path: String,
-    addr: SocketAddr,
-    timeout: u32,
-) -> Result<(), Box<dyn Error>> {
-    let endpoint = Endpoint::server(
-        quic_config::get_server_config(cert_path, pkey_path, timeout)?,
-        addr,
-    )?;
-
-    while let Some(connecting) = endpoint.accept().await {
-        let connection = connecting.await?;
-        let ip = connection.remote_address().to_string();
-        println!("[info] Acceept {}", ip);
-        if let Err(e) = hoge(world_path.clone(), connection).await {
-            println!("[info] Disconnect {} ({})", ip, e);
+    let endpoint = Endpoint::server(quic_config::get_server_config(cert_path, pkey_path)?, addr)?;
+    rt.block_on(async {
+        while let Some(connecting) = endpoint.accept().await {
+            let connection = connecting.await.unwrap();
+            let ip = connection.remote_address().to_string();
+            println!("[info] Acceept {}", ip);
+            if let Err(e) = run(world_path.clone(), connection).await {
+                println!("[info] Disconnect {} ({})", ip, e);
+            }
         }
-    }
-
+    });
     Ok(())
 }
 
-async fn hoge(world_path: String, connection: Connection) -> anyhow::Result<()> {
-    println!("waiting...");
-
-    // let request = connection.accept_uni().await?;
-    // let mut request = FramedRead::new(request, LengthDelimitedCodec::new());
-    // request.next().await;
-    // println!("accepted");
-
+async fn run(world_path: String, connection: Connection) -> Result<(), Box<dyn Error>> {
     let signal = connection.open_uni().await?;
     let mut signal = FramedWrite::new(signal, LengthDelimitedCodec::new());
     let (tx, mut rx) = tokio::sync::mpsc::channel(1024);
-    for _ in 0..10 {
+    let available_item_count = 10;
+
+    for _ in 0..available_item_count {
         tx.send(()).await.unwrap();
     }
 
@@ -95,7 +75,7 @@ async fn hoge(world_path: String, connection: Connection) -> anyhow::Result<()> 
             println!("[request] {req:?}");
 
             let res: Response = match req {
-                Request::LaunchItem(id) => match launch(world_path, id, table, tx).await {
+                Request::LaunchItem(id) => match launch_item(world_path, id, table, tx).await {
                     Ok(_) => ResponseOk::Item.into(),
                     Err(e) => ResponseError::FailedToSpawn(e).into(),
                 },
@@ -108,6 +88,7 @@ async fn hoge(world_path: String, connection: Connection) -> anyhow::Result<()> 
                 }
             };
             println!("[response] {res:?}");
+
             res_tx
                 .send(bincode::serialize(&res).unwrap().into())
                 .await
@@ -116,7 +97,7 @@ async fn hoge(world_path: String, connection: Connection) -> anyhow::Result<()> 
     }
 }
 
-async fn launch(
+async fn launch_item(
     world_path: String,
     id: String,
     table: Arc<Mutex<HashMap<String, IpcSubscriber>>>,

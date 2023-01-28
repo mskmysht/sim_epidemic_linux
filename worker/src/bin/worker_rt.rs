@@ -32,11 +32,9 @@ fn start(
     /// address to listen
     #[opt(long)]
     addr: SocketAddr,
-    /// idle timeout
-    timeout: u32,
 ) -> DynResult<()> {
     let rt = tokio::runtime::Runtime::new()?;
-    rt.block_on(run(cert_path, pkey_path, world_path, addr, timeout))
+    rt.block_on(run(cert_path, pkey_path, world_path, addr))
 }
 
 async fn run(
@@ -44,12 +42,8 @@ async fn run(
     pkey_path: String,
     world_path: String,
     addr: SocketAddr,
-    timeout: u32,
 ) -> DynResult<()> {
-    let endpoint = Endpoint::server(
-        quic_config::get_server_config(cert_path, pkey_path, timeout)?,
-        addr,
-    )?;
+    let endpoint = Endpoint::server(quic_config::get_server_config(cert_path, pkey_path)?, addr)?;
 
     let managing = worker::realtime::WorldManaging::new(world_path);
 

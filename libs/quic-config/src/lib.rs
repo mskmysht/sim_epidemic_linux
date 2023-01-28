@@ -4,7 +4,6 @@ use std::{error::Error, path::Path, sync::Arc, time::Duration};
 pub fn get_server_config<P: AsRef<Path>>(
     cert_path: P,
     pkey_path: P,
-    timeout: u32,
 ) -> Result<ServerConfig, Box<dyn Error>> {
     let cert = rustls::Certificate(file_io::load(cert_path)?);
     let key = rustls::PrivateKey(file_io::load(pkey_path)?);
