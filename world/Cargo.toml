@@ -7,7 +7,7 @@ edition = "2021"
 
 [dependencies]
 table = { path = "../libs/table" }
-custom_macro = { path = "../custom_macro" }
+enum_map = { path = "../libs/enum_map" }
 world-if = { path = "../libs/world-if" }
 ipc-channel = "0.16"
 argopt = "0.3"

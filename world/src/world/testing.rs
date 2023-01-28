@@ -1,5 +1,5 @@
 use super::{agent::Agent, commons::ParamsForStep};
-use crate::util::enum_map::{Enum, EnumMap};
+use enum_map::{macros::Enum, EnumMap};
 
 use std::collections::VecDeque;
 

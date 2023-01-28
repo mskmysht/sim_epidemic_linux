@@ -456,14 +456,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "custom_macro"
-version = "0.1.0"
-dependencies = [
- "quote",
- "syn",
-]
-
-[[package]]
 name = "darling"
 version = "0.13.4"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -570,6 +562,21 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "9852635589dc9f9ea1b6fe9f05b50ef208c85c834a562f0c6abb1c475736ec2b"
 dependencies = [
  "cfg-if 1.0.0",
+]
+
+[[package]]
+name = "enum_map"
+version = "0.1.0"
+dependencies = [
+ "enum_map_derive",
+]
+
+[[package]]
+name = "enum_map_derive"
+version = "0.1.0"
+dependencies = [
+ "quote",
+ "syn",
 ]
 
 [[package]]
@@ -2545,7 +2552,7 @@ dependencies = [
  "argopt",
  "chrono",
  "csv",
- "custom_macro",
+ "enum_map",
  "ipc-channel",
  "parking_lot",
  "protocol",

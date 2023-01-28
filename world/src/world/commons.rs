@@ -1,9 +1,9 @@
 use crate::util::{
-    enum_map::Enum,
     math::{self, Percentage, Permille, Point},
     random::DistInfo,
 };
 
+use enum_map::macros::Enum;
 use table::TableIndex;
 
 use rand::Rng;

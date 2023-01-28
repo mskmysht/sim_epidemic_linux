@@ -1,9 +1,8 @@
-use crate::{
-    util::enum_map::{Enum, EnumMap},
-    world::commons::HealthType,
-};
+use crate::world::commons::HealthType;
 
 use std::{collections::VecDeque, fmt::Display, io};
+
+use enum_map::{macros, Enum, EnumMap};
 
 use csv::Writer;
 
@@ -18,7 +17,7 @@ impl InfectionCntInfo {
     }
 }
 
-#[derive(Enum, Clone)]
+#[derive(macros::Enum, Clone)]
 pub enum HistgramType {
     HistIncub,
     HistRecov,

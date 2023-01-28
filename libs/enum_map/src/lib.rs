@@ -1,5 +1,3 @@
-pub use custom_macro::Enum;
-
 use std::{
     fmt::Debug,
     marker::PhantomData,
@@ -64,3 +62,5 @@ impl<K: Enum, V> IndexMut<&K> for EnumMap<K, V> {
         &mut self.arr[index.to_index()]
     }
 }
+
+pub use enum_map_derive as macros;

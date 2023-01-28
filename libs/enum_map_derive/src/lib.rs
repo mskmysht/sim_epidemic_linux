@@ -1,9 +1,8 @@
-extern crate proc_macro;
 use quote::quote;
 use syn::{parse_macro_input, Data, DeriveInput, Error};
 
 #[proc_macro_derive(Enum)]
-pub fn enum_derive(input: proc_macro::TokenStream) -> proc_macro::TokenStream {
+pub fn derive_enum(input: proc_macro::TokenStream) -> proc_macro::TokenStream {
     let item = parse_macro_input!(input as DeriveInput);
     let name = item.ident;
     let gen = match item.data {
@@ -30,7 +29,7 @@ pub fn enum_derive(input: proc_macro::TokenStream) -> proc_macro::TokenStream {
 
                     quote! {
                     #[automatically_derived]
-                    impl Enum for #name {
+                    impl enum_map::Enum for #name {
                         type Arr = [Self; #num];
                         const LEN: usize = #num;
                         const ALL: Self::Arr = [

@@ -3,6 +3,8 @@ pub(super) mod commons;
 mod contact;
 pub(super) mod testing;
 
+use chrono::Local;
+use enum_map::EnumMap;
 use std::io;
 
 use self::{
@@ -13,12 +15,7 @@ use self::{
     commons::{HealthType, ParamsForStep, RuntimeParams, VaccineInfo, VariantInfo, WorldParams},
     testing::TestQueue,
 };
-use crate::{
-    log::MyLog,
-    util::{enum_map::EnumMap, math::Point},
-};
-
-use chrono::Local;
+use crate::{log::MyLog, util::math::Point};
 
 pub struct World {
     pub id: String,
