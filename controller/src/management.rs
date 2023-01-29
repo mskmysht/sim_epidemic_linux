@@ -27,7 +27,7 @@ pub struct Task {
 }
 
 impl Task {
-    fn make_obj(&self, id: String) -> task::Task {
+    fn make_obj(&self, id: TaskId) -> task::Task {
         task::Task::new(id, self.state.clone())
     }
 }
@@ -57,7 +57,7 @@ impl Job {
         }
     }
 
-    fn make_obj(&self, id: String) -> job::Job {
+    fn make_obj(&self, id: JobId) -> job::Job {
         job::Job::new(
             id,
             self.config.clone(),
@@ -187,9 +187,9 @@ impl ResourceManager for JobManager {
         Some(job_id)
     }
 
-    async fn get_job(&self, id: &String) -> Option<job::Job> {
+    async fn get_job(&self, id: &str) -> Option<job::Job> {
         let db = self.job_table.read().await;
-        db.get(id).map(|job| job.make_obj(id.clone()))
+        db.get(id).map(|job| job.make_obj(id.to_string()))
     }
 
     async fn get_all_jobs(&self) -> Vec<job::Job> {
@@ -199,6 +199,10 @@ impl ResourceManager for JobManager {
             .iter()
             .map(|(id, job)| job.make_obj(id.clone()))
             .collect()
+    }
+
+    async fn terminate_job(&self, id: &str) -> bool {
+        todo!()
     }
 }
 

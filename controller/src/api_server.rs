@@ -34,13 +34,18 @@ enum GetResponse {
     Job(Json<job::Job>),
     #[oai(status = 404)]
     NotFound(PlainText<String>),
+    #[oai(status = 200)]
+    Terminating,
+    #[oai(status = 404)]
+    Failed(PlainText<String>),
 }
 
 #[async_trait]
 pub trait ResourceManager {
     async fn create_job(&self, config: job::Config) -> Option<String>;
-    async fn get_job(&self, id: &String) -> Option<job::Job>;
+    async fn get_job(&self, id: &str) -> Option<job::Job>;
     async fn get_all_jobs(&self) -> Vec<job::Job>;
+    async fn terminate_job(&self, id: &str) -> bool;
 }
 
 pub struct Api<M: ResourceManager>(M);
@@ -64,6 +69,18 @@ impl<M: ResourceManager + Send + Sync + 'static> Api<M> {
                 "Job {} is not found.",
                 id.0
             )))),
+        }
+    }
+
+    #[oai(tag = "ApiTags::Job", path = "/jobs/:id", method = "put")]
+    async fn terminate_job(&self, id: Path<String>) -> Result<GetResponse> {
+        if self.0.terminate_job(&id.0).await {
+            Ok(GetResponse::Terminating)
+        } else {
+            Ok(GetResponse::Failed(PlainText(format!(
+                "Job {} cannot be terminated.",
+                id.0
+            ))))
         }
     }
 
