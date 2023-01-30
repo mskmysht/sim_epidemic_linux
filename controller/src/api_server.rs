@@ -26,6 +26,8 @@ enum CreateJobResponse {
     JobId(Json<String>),
     #[oai(status = 409)]
     JobAlreadyExists,
+    #[oai(status = 404)]
+    Failed(PlainText<String>),
 }
 
 #[derive(ApiResponse)]
@@ -34,18 +36,24 @@ enum GetResponse {
     Job(Json<job::Job>),
     #[oai(status = 404)]
     NotFound(PlainText<String>),
-    #[oai(status = 200)]
-    Terminating,
+}
+
+#[derive(ApiResponse)]
+enum TerminateResponse {
+    #[oai(status = 204)]
+    Succeeded,
+    #[oai(status = 405)]
+    AlreadyTerminated,
     #[oai(status = 404)]
-    Failed(PlainText<String>),
+    NotFound(PlainText<String>),
 }
 
 #[async_trait]
 pub trait ResourceManager {
-    async fn create_job(&self, config: job::Config) -> Option<String>;
+    async fn create_job(&self, config: job::Config) -> anyhow::Result<Option<String>>;
     async fn get_job(&self, id: &str) -> Option<job::Job>;
     async fn get_all_jobs(&self) -> Vec<job::Job>;
-    async fn terminate_job(&self, id: &str) -> bool;
+    async fn terminate_job(&self, id: &str) -> Option<bool>;
 }
 
 pub struct Api<M: ResourceManager>(M);
@@ -54,10 +62,12 @@ pub struct Api<M: ResourceManager>(M);
 impl<M: ResourceManager + Send + Sync + 'static> Api<M> {
     #[oai(tag = "ApiTags::Job", path = "/jobs", method = "post")]
     async fn create_job(&self, config: Json<job::Config>) -> Result<CreateJobResponse> {
-        if let Some(id) = self.0.create_job(config.0).await {
-            Ok(CreateJobResponse::JobId(Json(id)))
-        } else {
-            Ok(CreateJobResponse::JobAlreadyExists)
+        match self.0.create_job(config.0).await {
+            Ok(Some(id)) => Ok(CreateJobResponse::JobId(Json(id))),
+            Ok(None) => Ok(CreateJobResponse::JobAlreadyExists),
+            Err(_) => Ok(CreateJobResponse::Failed(PlainText(
+                "Job creation failed.".to_string(),
+            ))),
         }
     }
 
@@ -72,15 +82,15 @@ impl<M: ResourceManager + Send + Sync + 'static> Api<M> {
         }
     }
 
-    #[oai(tag = "ApiTags::Job", path = "/jobs/:id", method = "put")]
-    async fn terminate_job(&self, id: Path<String>) -> Result<GetResponse> {
-        if self.0.terminate_job(&id.0).await {
-            Ok(GetResponse::Terminating)
-        } else {
-            Ok(GetResponse::Failed(PlainText(format!(
-                "Job {} cannot be terminated.",
+    #[oai(tag = "ApiTags::Job", path = "/jobs/:id/terminate", method = "post")]
+    async fn terminate_job(&self, id: Path<String>) -> Result<TerminateResponse> {
+        match self.0.terminate_job(&id.0).await {
+            Some(true) => Ok(TerminateResponse::Succeeded),
+            Some(false) => Ok(TerminateResponse::AlreadyTerminated),
+            None => Ok(TerminateResponse::NotFound(PlainText(format!(
+                "Job {} is not found.",
                 id.0
-            ))))
+            )))),
         }
     }
 

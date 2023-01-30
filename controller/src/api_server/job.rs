@@ -37,8 +37,7 @@ pub enum JobState {
     Queued,
     Scheduled,
     Running,
-    Failed,
-    Succeeded,
+    Completed,
 }
 
 #[derive(Object, Clone, Debug)]

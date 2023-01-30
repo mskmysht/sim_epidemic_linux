@@ -8,7 +8,7 @@ use crate::pubsub::{Publisher, Subscriber};
 #[derive(Debug, serde::Deserialize, serde::Serialize)]
 pub enum Request {
     Execute(u32),
-    Stop,
+    Terminate,
 }
 
 #[derive(Debug, serde::Deserialize, serde::Serialize)]

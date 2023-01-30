@@ -1,6 +1,7 @@
 use quinn::{ClientConfig, Connection, Endpoint};
 use std::{error::Error, net::SocketAddr, str::FromStr};
 
+#[derive(Debug)]
 pub struct MyConnection {
     pub endpoint: Endpoint,
     pub server_name: String,

@@ -98,10 +98,11 @@ where
         }
 
         let step_to_end = stop_at * self.world.world_params.steps_per_day;
+        self.res_ok();
         while self.step_cont(step_to_end) {
             if let Some(msg) = self.publisher.try_recv().unwrap() {
                 match msg {
-                    Request::Stop => {
+                    Request::Terminate => {
                         self.stop();
                         break;
                     }
@@ -109,7 +110,6 @@ where
                 }
             }
         }
-        self.res_ok();
     }
 
     #[inline]
@@ -150,7 +150,7 @@ where
                     self.execute(stop_at);
                     break;
                 }
-                Request::Stop => self.res_err(ResponseError::AlreadyStopped),
+                Request::Terminate => self.res_err(ResponseError::AlreadyStopped),
             }
         }
     }

@@ -1,5 +1,5 @@
 use futures_util::{SinkExt, StreamExt};
-use quinn::{ClientConfig, SendStream};
+use quinn::ClientConfig;
 use repl::nom::AsBytes;
 use std::{error::Error, net::SocketAddr};
 use tokio::sync::mpsc;
@@ -13,6 +13,7 @@ use super::{
     TaskId,
 };
 
+#[derive(Debug)]
 pub struct WorkerClient {
     connection: MyConnection,
 }
@@ -23,7 +24,8 @@ impl WorkerClient {
         config: ClientConfig,
         server_info: ServerInfo,
         index: usize,
-        pool_tx: mpsc::Sender<usize>,
+        pool_tx: async_channel::Sender<usize>,
+        termination_tx: mpsc::UnboundedSender<(String, bool)>,
     ) -> Result<Self, Box<dyn Error>> {
         let connection = MyConnection::new(
             addr,
@@ -33,14 +35,32 @@ impl WorkerClient {
         )
         .await?;
 
-        let signal = connection.connection.accept_uni().await?;
-        let mut signal = FramedRead::new(signal, LengthDelimitedCodec::new());
+        let mut pool_stream = FramedRead::new(
+            connection.connection.accept_uni().await?,
+            LengthDelimitedCodec::new(),
+        );
+        println!("[info] accepted a worker pool stream");
 
         tokio::spawn(async move {
-            while let Some(frame) = signal.next().await {
+            while let Some(frame) = pool_stream.next().await {
                 let data = frame.unwrap();
                 bincode::deserialize::<()>(data.as_bytes()).unwrap();
                 pool_tx.send(index).await.unwrap();
+            }
+        });
+
+        let mut termination_stream = FramedRead::new(
+            connection.connection.accept_uni().await?,
+            LengthDelimitedCodec::new(),
+        );
+        // dump dummy data
+        termination_stream.next().await;
+        println!("[info] accepted a worker termination stream");
+        tokio::spawn(async move {
+            while let Some(frame) = termination_stream.next().await {
+                let data = frame.unwrap();
+                let r = bincode::deserialize::<(String, bool)>(data.as_bytes()).unwrap();
+                termination_tx.send(r).unwrap();
             }
         });
 
@@ -60,17 +80,22 @@ impl WorkerClient {
         }
     }
 
-    pub async fn run(&mut self, task_id: &TaskId, config: &job::Config) -> anyhow::Result<bool> {
+    pub async fn execute(&mut self, task_id: &TaskId, config: job::Config) -> anyhow::Result<()> {
         self.request(&Request::LaunchItem(task_id.clone())).await?;
-        match self
-            .request(&Request::Custom(
-                task_id.clone(),
-                world_if::Request::Execute(config.param.stop_at),
-            ))
-            .await?
-        {
-            ResponseOk::Custom(_) => Ok(true),
-            _ => unreachable!(),
-        }
+        self.request(&Request::Custom(
+            task_id.clone(),
+            world_if::Request::Execute(config.param.stop_at),
+        ))
+        .await?;
+        Ok(())
+    }
+
+    pub async fn terminate(&mut self, task_id: &TaskId) -> anyhow::Result<()> {
+        self.request(&Request::Custom(
+            task_id.clone(),
+            world_if::Request::Terminate,
+        ))
+        .await?;
+        Ok(())
     }
 }
