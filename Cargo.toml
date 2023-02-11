@@ -15,4 +15,5 @@ members = [
   "libs/quic-config",
   "libs/repl",
   "libs/table",
+  "libs/controller-if",
 ]

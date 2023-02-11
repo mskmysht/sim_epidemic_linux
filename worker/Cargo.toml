@@ -10,6 +10,7 @@ edition = "2018"
 worker-if = { path = "../libs/worker-if" }
 protocol = { path = "../libs/protocol" }
 quic-config = { path = "../libs/quic-config" }
+controller-if = { path = "../libs/controller-if" }
 repl = { path = "../libs/repl" }
 ipc-channel = "0.16"
 argopt = "0.3"

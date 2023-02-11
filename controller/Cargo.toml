@@ -10,6 +10,7 @@ worker-if = { path = "../libs/worker-if" }
 protocol = { path = "../libs/protocol" }
 world-if = { path = "../libs/world-if" }
 quic-config = { path = "../libs/quic-config" }
+controller-if = { path = "../libs/controller-if" }
 repl = { path = "../libs/repl" }
 api = { path = "../libs/api" }
 async-trait = "0.1"
@@ -27,3 +28,4 @@ ulid = "1"
 thiserror = "1.0"
 anyhow = "1.0"
 bincode = "1.3"
+tokio-postgres = "0.7"
