@@ -1,7 +1,8 @@
-use std::collections::HashMap;
+use std::collections::BTreeMap;
 
 use api::job::{JobParam, WorldParams};
 use poem_openapi::{types::Example, Enum, Object};
+use tokio_postgres::types::{FromSql, ToSql};
 
 use super::task::Task;
 
@@ -30,7 +31,7 @@ impl Example for Config {
     }
 }
 
-#[derive(Enum, Clone, Debug, Default)]
+#[derive(Enum, Clone, Debug, Default, ToSql, FromSql)]
 pub enum JobState {
     #[default]
     Created,
@@ -50,11 +51,11 @@ pub struct Job {
     /// Job state.
     pub state: JobState,
     // Tasks in the Job.
-    pub tasks: HashMap<String, Task>,
+    pub tasks: BTreeMap<String, Task>,
 }
 
 impl Job {
-    pub fn new(id: String, config: Config, state: JobState, tasks: HashMap<String, Task>) -> Self {
+    pub fn new(id: String, config: Config, state: JobState, tasks: BTreeMap<String, Task>) -> Self {
         Self {
             id,
             config,

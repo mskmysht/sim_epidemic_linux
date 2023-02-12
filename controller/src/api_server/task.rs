@@ -1,6 +1,7 @@
 use poem_openapi::{Enum, Object};
+use postgres_types::{FromSql, ToSql};
 
-#[derive(Enum, Clone, Debug, Default)]
+#[derive(Enum, Clone, Debug, Default, FromSql, ToSql)]
 pub enum TaskState {
     #[default]
     Pending,

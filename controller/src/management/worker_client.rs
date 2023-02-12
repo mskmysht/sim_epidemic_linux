@@ -4,11 +4,13 @@ use quinn::ClientConfig;
 use repl::nom::AsBytes;
 use std::{
     error::Error,
+    fmt::Display,
     net::SocketAddr,
     sync::{Arc, Weak},
 };
-use tokio::sync::{mpsc, RwLock, RwLockReadGuard};
+use tokio::sync::{mpsc, RwLock};
 use tokio_util::codec::{FramedRead, LengthDelimitedCodec};
+use uuid::Uuid;
 use worker_if::batch::{world_if, Request, Response, ResponseOk};
 
 use crate::api_server::{
@@ -18,7 +20,7 @@ use crate::api_server::{
 
 use super::{
     server::{MyConnection, ServerInfo},
-    Job, TaskTableRef,
+    TaskTableRef,
 };
 
 #[derive(Debug)]
@@ -87,9 +89,10 @@ impl WorkerClient {
     }
 
     pub async fn execute(&mut self, task_id: &TaskId, config: job::Config) -> anyhow::Result<()> {
-        self.request(&Request::LaunchItem(task_id.clone())).await?;
+        self.request(&Request::LaunchItem(task_id.to_string()))
+            .await?;
         self.request(&Request::Custom(
-            task_id.clone(),
+            task_id.to_string(),
             world_if::Request::Execute(config.param.stop_at),
         ))
         .await?;
@@ -98,7 +101,7 @@ impl WorkerClient {
 
     pub async fn terminate(&mut self, task_id: &TaskId) -> anyhow::Result<()> {
         self.request(&Request::Custom(
-            task_id.clone(),
+            task_id.to_string(),
             world_if::Request::Terminate,
         ))
         .await?;
@@ -143,17 +146,14 @@ impl WorkerManager {
                 exit_status,
             }) = task_termination_rx.recv().await
             {
-                let task_id: TaskId = world_id;
+                let task_id: TaskId = TaskId::try_from(world_id.as_str()).unwrap();
                 let task = &task_table.read().await[&task_id];
-                let job = &task.get_job().await;
                 let status = if exit_status {
                     TaskConsumptionStatus::ExitSucceeded
                 } else {
                     TaskConsumptionStatus::ExitFailed
                 };
-                job.notify_task_consumption(task.clone(), status)
-                    .await
-                    .unwrap();
+                task.notify_consumption(status);
             }
         });
 
@@ -172,45 +172,59 @@ impl WorkerManager {
 #[derive(Clone, Debug)]
 struct TaskInner {
     state: task::TaskState,
-    job: Job,
     worker: Weak<RwLock<WorkerClient>>,
     forced_termination: bool,
 }
 
 impl TaskInner {
-    fn new(job: Job) -> Self {
+    fn new() -> Self {
         Self {
             state: Default::default(),
-            job,
             worker: Weak::new(),
             forced_termination: false,
         }
     }
 }
 
-pub type TaskId = String;
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
+pub struct TaskId(pub(super) Uuid);
+
+impl TryFrom<&str> for TaskId {
+    type Error = uuid::Error;
+
+    fn try_from(value: &str) -> Result<Self, Self::Error> {
+        Ok(Self(value.try_into()?))
+    }
+}
+
+impl Display for TaskId {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{}", self.0.to_string())
+    }
+}
 
 #[derive(Clone, Debug)]
 pub struct Task {
     pub id: TaskId,
     inner: Arc<RwLock<TaskInner>>,
+    task_termination_tx: mpsc::UnboundedSender<(Task, TaskConsumptionStatus)>,
 }
 
 impl Task {
-    pub fn new(id: TaskId, job: Job) -> Self {
+    pub fn new(
+        id: TaskId,
+        task_termination_tx: mpsc::UnboundedSender<(Task, TaskConsumptionStatus)>,
+    ) -> Self {
         Self {
             id,
-            inner: Arc::new(RwLock::new(TaskInner::new(job))),
+            inner: Arc::new(RwLock::new(TaskInner::new())),
+            task_termination_tx,
         }
     }
 
     pub async fn make_obj(&self) -> task::Task {
         let task = self.inner.read().await;
-        task::Task::new(self.id.clone(), task.state.clone())
-    }
-
-    pub async fn get_job(&self) -> RwLockReadGuard<'_, Job> {
-        RwLockReadGuard::map(self.inner.read().await, |task| &task.job)
+        task::Task::new(self.id.to_string(), task.state.clone())
     }
 
     pub async fn force_to_terminate(&self) {
@@ -223,6 +237,12 @@ impl Task {
                 eprintln!("[error] {e}");
             }
         }
+    }
+
+    pub fn notify_consumption(&self, status: TaskConsumptionStatus) {
+        self.task_termination_tx
+            .send((self.clone(), status))
+            .unwrap();
     }
 
     pub async fn consume(
@@ -263,68 +283,9 @@ impl Task {
         Some(succeeded)
     }
 
-    async fn succeeded(&self) {
+    pub async fn update_state(&self, state: TaskState) {
         let mut task = self.inner.write().await;
-        task.state = TaskState::Succeeded;
-    }
-
-    pub async fn asigned(&self) {
-        let mut task = self.inner.write().await;
-        task.state = TaskState::Assigned;
-    }
-
-    async fn failed(&self) {
-        let mut task = self.inner.write().await;
-        task.state = TaskState::Failed;
-    }
-}
-
-pub struct TaskConsumer {
-    job: Job,
-    tasks: Vec<Task>,
-    config: job::Config,
-    worker_manager: WorkerManager,
-}
-
-impl TaskConsumer {
-    pub fn new(
-        job: Job,
-        tasks: Vec<Task>,
-        config: job::Config,
-        worker_manager: WorkerManager,
-    ) -> Self {
-        Self {
-            job,
-            tasks,
-            config,
-            worker_manager,
-        }
-    }
-
-    pub async fn consume(mut self) {
-        for (i, task) in self.tasks.into_iter().enumerate() {
-            match task
-                .consume(self.config.clone(), &mut self.worker_manager)
-                .await
-            {
-                Some(true) => {
-                    if i == 0 {
-                        self.job.running().await;
-                    }
-                }
-                Some(false) => self
-                    .job
-                    .notify_task_consumption(task, TaskConsumptionStatus::ExecutionFailed)
-                    .await
-                    .unwrap(),
-
-                None => self
-                    .job
-                    .notify_task_consumption(task, TaskConsumptionStatus::NotConsumed)
-                    .await
-                    .unwrap(),
-            }
-        }
+        task.state = state;
     }
 }
 
@@ -334,45 +295,4 @@ pub enum TaskConsumptionStatus {
     ExecutionFailed,
     ExitFailed,
     ExitSucceeded,
-}
-
-pub struct TaskListener {
-    task_termination_rx: mpsc::UnboundedReceiver<(Task, TaskConsumptionStatus)>,
-    task_count: usize,
-}
-
-impl TaskListener {
-    pub fn new(
-        task_termination_rx: mpsc::UnboundedReceiver<(Task, TaskConsumptionStatus)>,
-        task_count: usize,
-    ) -> Self {
-        Self {
-            task_termination_rx,
-            task_count,
-        }
-    }
-    pub async fn listen(mut self) {
-        for _ in 0..self.task_count {
-            let Some((task, status)) = self.task_termination_rx.recv().await else {
-                break;
-            };
-            match status {
-                TaskConsumptionStatus::ExecutionFailed => {
-                    println!("[info] task {} could not execute", task.id);
-                    task.failed().await;
-                }
-                TaskConsumptionStatus::ExitFailed => {
-                    println!("[info] task {} failured in process", task.id);
-                    task.failed().await;
-                }
-                TaskConsumptionStatus::ExitSucceeded => {
-                    println!("[info] task {} successfully terminated", task.id);
-                    task.succeeded().await;
-                }
-                TaskConsumptionStatus::NotConsumed => {
-                    println!("[info] task {} is skipped", task.id)
-                }
-            }
-        }
-    }
 }
