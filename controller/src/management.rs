@@ -1,155 +1,94 @@
 pub mod server;
 pub mod worker_client;
 
-use std::{collections::BTreeMap, error::Error, fmt::Display, net::SocketAddr, sync::Arc};
+use std::{
+    collections::HashMap, error::Error, fmt::Display, net::SocketAddr, sync::Arc, thread,
+    time::Duration,
+};
 
 use async_trait::async_trait;
-use tokio::{
-    sync::{mpsc, RwLock},
-    task::JoinHandle,
-};
+use futures_util::future::join_all;
+use tokio::sync::{mpsc, oneshot, RwLock};
 use tokio_postgres::{Client, NoTls};
 use uuid::Uuid;
 
 use crate::{
     api_server::{
         job::{self, JobState},
-        task::TaskState,
+        task::{self, TaskState},
         ResourceManager,
     },
     management::worker_client::WorkerManager,
 };
 
-use self::{
-    job_impl::JobInner,
-    server::ServerInfo,
-    worker_client::{Task, TaskConsumptionStatus, TaskId},
-};
+use self::{server::ServerInfo, worker_client::Worker};
+
+pub type WorkerTableRef = Arc<RwLock<HashMap<TaskId, Worker>>>;
+pub type TaskSenderTableRef = Arc<RwLock<HashMap<TaskId, oneshot::Sender<bool>>>>;
+type JobTableRef = Arc<RwLock<HashMap<JobId, Job>>>;
 
 #[derive(Clone, Debug)]
 struct Job {
     id: JobId,
     inner: Arc<RwLock<JobInner>>,
+    worker_table: WorkerTableRef,
 }
 
 impl Job {
-    fn new(id: JobId, config: job::Config, state: JobState, tasks: Vec<Task>) -> Self {
+    fn new(id: JobId, config: job::Config, state: JobState) -> Self {
         Self {
+            worker_table: Default::default(),
             id,
-            inner: Arc::new(RwLock::new(JobInner::new(config, state, tasks))),
+            inner: Arc::new(RwLock::new(JobInner::new(config, state))),
         }
     }
 
-    async fn queued(&self) {
+    async fn is_foreced_termination(&self) -> bool {
+        self.inner.read().await.forced_termination
+    }
+
+    async fn update_state(&self, state: JobState, db: &Db) {
+        db.update_job_state(&self.id, &state).await;
         let mut job = self.inner.write().await;
-        job.state = JobState::Queued;
+        job.state = state;
     }
 
-    async fn running(&self) {
-        let mut job = self.inner.write().await;
-        job.state = JobState::Running;
-    }
-
-    async fn completed(&self) {
-        let mut job = self.inner.write().await;
-        job.state = JobState::Completed;
-        // job.task_termination_tx = None;
-        println!("[info] job {} terminated", self.id);
-    }
-
-    // async fn notify_task_consumption(
-    //     &self,
-    //     task: Task,
-    //     status: TaskConsumptionStatus,
-    // ) -> Result<(), mpsc::error::SendError<(Task, TaskConsumptionStatus)>> {
-    //     // let job = self.inner.read().await;
-    //     // job.task_termination_tx
-    //     self.task_termination_tx
-    //         .read()
-    //         .await
-    //         .as_ref()
-    //         .unwrap()
-    //         .send((task, status))
-    // }
-
-    async fn make_obj(&self) -> job::Job {
-        let job = self.inner.read().await;
-        let mut tasks = BTreeMap::new();
-        for task in &job.tasks {
-            tasks.insert(task.id.to_string(), task.make_obj().await);
-        }
-        job::Job::new(
-            self.id.to_string(),
-            job.config.clone(),
-            job.state.clone(),
-            tasks,
-        )
-    }
-}
-
-mod job_impl {
-    use super::worker_client::Task;
-    use crate::api_server::job::{self, JobState};
-
-    #[derive(Debug)]
-    pub struct JobInner {
-        pub config: job::Config,
-        pub state: job::JobState,
-        forced_termination: bool,
-        pub tasks: Vec<Task>,
-    }
-
-    impl JobInner {
-        pub fn new(config: job::Config, state: JobState, tasks: Vec<Task>) -> Self {
-            Self {
-                config,
-                state,
-                tasks,
-                forced_termination: false,
-                // task_termination_tx: None,
-            }
-        }
-
-        pub async fn schedule(&mut self) -> Option<&Vec<Task>> {
-            if self.forced_termination {
-                self.state = JobState::Completed;
-                return None;
-            }
-
-            let task_count = self.tasks.len();
-            if task_count == 0 {
-                self.state = JobState::Completed;
-                return None;
-            }
-            self.state = JobState::Scheduled;
-
-            // [todo] make states of all of tasks assigned
-            // for task in &self.tasks {
-            //     task.asigned().await;
-            // }
-            Some(&self.tasks)
-        }
-
-        pub async fn force_to_terminate(&mut self) -> Option<bool> {
-            match self.state {
-                JobState::Running => {
-                    self.forced_termination = true;
-                    for task in &self.tasks {
-                        task.force_to_terminate().await;
-                    }
-                    Some(true)
+    async fn force_to_terminate(&self) -> bool {
+        let mut inner = self.inner.write().await;
+        match inner.state {
+            JobState::Running => {
+                inner.forced_termination = true;
+                for (task_id, worker) in self.worker_table.write().await.drain() {
+                    worker.terminate(&task_id).await;
                 }
-                JobState::Created | JobState::Queued | JobState::Scheduled => {
-                    self.forced_termination = true;
-                    Some(true)
-                }
-                JobState::Completed => Some(false),
+                true
             }
+            JobState::Created | JobState::Queued | JobState::Scheduled => {
+                inner.forced_termination = true;
+                true
+            }
+            JobState::Completed => false,
         }
     }
 }
 
-#[derive(PartialEq, Eq, Clone, Debug, PartialOrd, Ord)]
+#[derive(Debug)]
+struct JobInner {
+    config: job::Config,
+    state: job::JobState,
+    forced_termination: bool,
+}
+
+impl JobInner {
+    fn new(config: job::Config, state: JobState) -> Self {
+        Self {
+            config,
+            state,
+            forced_termination: false,
+        }
+    }
+}
+#[derive(PartialEq, Eq, Clone, Debug, Hash)]
 struct JobId(Uuid);
 
 impl TryFrom<&str> for JobId {
@@ -166,36 +105,115 @@ impl Display for JobId {
     }
 }
 
-type TaskTable = BTreeMap<TaskId, Task>;
-type TaskTableRef = Arc<RwLock<TaskTable>>;
+#[derive(Debug, Clone, Hash, PartialEq, Eq)]
+pub struct TaskId(pub(super) Uuid);
 
-struct JobManager {
-    table: Arc<RwLock<BTreeMap<JobId, Job>>>,
-    task_table: TaskTableRef,
-    job_request_tx: mpsc::Sender<(Job, job::Config)>,
+impl TryFrom<&str> for TaskId {
+    type Error = uuid::Error;
+
+    fn try_from(value: &str) -> Result<Self, Self::Error> {
+        Ok(Self(value.try_into()?))
+    }
 }
 
-impl JobManager {
-    fn new(job_request_tx: mpsc::Sender<(Job, job::Config)>) -> Self {
-        Self {
-            table: Default::default(),
-            task_table: Default::default(),
-            job_request_tx,
+impl Display for TaskId {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{}", self.0.to_string())
+    }
+}
+
+async fn execute_task(
+    id: &TaskId,
+    config: job::Config,
+    rx: oneshot::Receiver<bool>,
+    worker: &Worker,
+    worker_table: WorkerTableRef,
+    db: &Db,
+) -> bool {
+    db.update_task_state(id, &TaskState::Assigned).await;
+
+    if worker.execute(id, config).await {
+        db.update_task_state(id, &TaskState::Running).await;
+    } else {
+        db.update_task_state(id, &TaskState::Failed).await;
+        println!("[info] task {} could not execute", id);
+        return false;
+    }
+
+    worker_table
+        .write()
+        .await
+        .insert(id.clone(), worker.clone());
+
+    if rx.await.unwrap() {
+        db.update_task_state(id, &TaskState::Succeeded).await;
+        println!("[info] task {} successfully terminated", id);
+    } else {
+        db.update_task_state(id, &TaskState::Failed).await;
+        println!("[info] task {} failured in process", id);
+    }
+    worker_table.write().await.remove(id);
+    return true;
+}
+
+#[derive(Debug)]
+struct JobQueued {
+    job: Job,
+    task_rxs: Vec<(TaskId, oneshot::Receiver<bool>)>,
+    config: job::Config,
+}
+
+impl JobQueued {
+    async fn dequeue(self, worker_manager: &WorkerManager, db: &Db) {
+        let job = self.job;
+
+        if job.is_foreced_termination().await {
+            job.update_state(JobState::Completed, db).await;
+            return;
         }
-    }
 
-    fn clone_task_table(&self) -> TaskTableRef {
-        Arc::clone(&self.task_table)
-    }
+        job.update_state(JobState::Scheduled, db).await;
 
-    async fn new_job(
+        worker_manager.wait().await;
+        job.update_state(JobState::Running, db).await;
+
+        let mut handles = Vec::new();
+        for (task_id, rx) in self.task_rxs {
+            if job.is_foreced_termination().await {
+                break;
+            }
+            let worker_manager = worker_manager.clone();
+            let worker_table = Arc::clone(&job.worker_table);
+            let config = self.config.clone();
+            let job = job.clone();
+            let db = db.clone();
+            handles.push(worker_manager.lease(|worker| async move {
+                thread::sleep(Duration::from_secs(1));
+                println!("[info] received task {}", task_id);
+                if job.is_foreced_termination().await {
+                    println!("[info] task {} is skipped", task_id);
+                    return false;
+                }
+                execute_task(&task_id, config, rx, &worker, worker_table, &db).await
+            }));
+        }
+        join_all(handles).await;
+        println!("---");
+        job.update_state(JobState::Completed, db).await;
+    }
+}
+
+#[derive(Clone)]
+struct Db(Arc<Client>);
+
+impl Db {
+    async fn insert(
         &self,
-        client: &Client,
-        config: job::Config,
-    ) -> Result<String, tokio_postgres::Error> {
-        let task_count = config.iteration_count;
-        let state = JobState::Created;
-        let rows = client
+        state: &JobState,
+        task_count: u64,
+    ) -> Result<(JobId, Vec<TaskId>), tokio_postgres::Error> {
+        let rows = self
+            .0
             .query(
                 "
                 INSERT INTO job (id, state) VALUES (DEFAULT, $1) RETURNING id
@@ -203,9 +221,9 @@ impl JobManager {
                 &[&state],
             )
             .await?;
-        let id = JobId(rows[0].get(0));
-        let mut tasks = Vec::new();
-        let statement = client
+        let job_id = JobId(rows[0].get(0));
+        let statement = self
+            .0
             .prepare(
                 "
                 INSERT INTO task (id, job_id, state) VALUES (DEFAULT, $1, $2)
@@ -213,133 +231,61 @@ impl JobManager {
             )
             .await?;
 
-        let mut tt = self.task_table.write().await;
-        let (tx, mut rx) = mpsc::unbounded_channel();
-
+        let mut task_ids = Vec::new();
         for _ in 0..task_count {
-            let rows = client
-                .query(&statement, &[&id.0, &TaskState::default()])
+            let rows = self
+                .0
+                .query(&statement, &[&job_id.0, &TaskState::default()])
                 .await?;
-            let task_id = TaskId(rows[0].get(0));
-            let task = Task::new(task_id.clone(), tx.clone());
-            tt.insert(task_id, task.clone());
-            tasks.push(task);
+            task_ids.push(TaskId(rows[0].get(0)));
         }
-        drop(tt);
-
-        let job = Job::new(id.clone(), config.clone(), state, tasks);
-        let mut table = self.table.write().await;
-        table.insert(id.clone(), job.clone());
-        drop(table);
-
-        let job_clone = job.clone();
-        tokio::spawn(async move {
-            for _ in 0..task_count {
-                let Some((task, status)) = rx.recv().await else {
-                    break;
-                };
-                match status {
-                    TaskConsumptionStatus::ExecutionFailed => {
-                        println!("[info] task {} could not execute", task.id);
-                        task.update_state(TaskState::Failed).await;
-                    }
-                    TaskConsumptionStatus::ExitFailed => {
-                        println!("[info] task {} failured in process", task.id);
-                        task.update_state(TaskState::Failed).await;
-                    }
-                    TaskConsumptionStatus::ExitSucceeded => {
-                        println!("[info] task {} successfully terminated", task.id);
-                        task.update_state(TaskState::Succeeded).await;
-                    }
-                    TaskConsumptionStatus::NotConsumed => {
-                        println!("[info] task {} is skipped", task.id)
-                    }
-                }
-            }
-            job_clone.completed().await;
-        });
-
-        let tx = self.job_request_tx.clone();
-        tokio::spawn(async move {
-            job.queued().await;
-            tx.send((job, config)).await.unwrap();
-        });
-
-        Ok(id.to_string())
+        Ok((job_id, task_ids))
     }
 
-    async fn get_job(&self, id: &str) -> Option<job::Job> {
-        let id = id.try_into().ok()?;
-        let table = self.table.read().await;
-        let job = table.get(&id)?;
-        Some(job.make_obj().await)
+    async fn update_task_state(&self, task_id: &TaskId, state: &TaskState) {
+        self.0
+            .execute(
+                "UPDATE task SET state = $1 WHERE id = $2",
+                &[state, &task_id.0],
+            )
+            .await
+            .unwrap();
     }
 
-    async fn get_all_jobs(&self) -> Vec<job::Job> {
-        let mut jobs = Vec::new();
-        let table = self.table.read().await;
-        for job in table.values() {
-            jobs.push(job.make_obj().await)
+    async fn update_job_state(&self, job_id: &JobId, state: &JobState) {
+        self.0
+            .execute(
+                "UPDATE job SET state = $1 WHERE id = $2",
+                &[state, &job_id.0],
+            )
+            .await
+            .unwrap();
+    }
+
+    async fn get_tasks(&self, job_id: &JobId) -> Vec<task::Task> {
+        let mut tasks = Vec::new();
+        for r in self
+            .0
+            .query("SELECT id, state FROM task WHERE job_id = $1", &[&job_id.0])
+            .await
+            .unwrap()
+        {
+            let id: Uuid = r.get(0);
+            let state: task::TaskState = r.get(1);
+            tasks.push(task::Task {
+                id: id.to_string(),
+                state,
+            })
         }
-        jobs
-    }
-    async fn terminate_job(&self, id: &str) -> Option<bool> {
-        let id = id.try_into().ok()?;
-        let table = self.table.read().await;
-        let mut job = table.get(&id)?.inner.write().await;
-        job.force_to_terminate().await
-    }
-}
-
-struct JobScheduler {
-    job_request_rx: mpsc::Receiver<(Job, job::Config)>,
-    worker_manager: WorkerManager,
-}
-
-impl JobScheduler {
-    fn new(
-        job_request_rx: mpsc::Receiver<(Job, job::Config)>,
-        worker_manager: WorkerManager,
-    ) -> Self {
-        Self {
-            job_request_rx,
-            worker_manager,
-        }
-    }
-    fn spawn(mut self) -> JoinHandle<()> {
-        tokio::spawn(async move {
-            while let Some((job, config)) = self.job_request_rx.recv().await {
-                println!("[info] received job {}", job.id);
-                let mut job_mut = job.inner.write().await;
-                let Some(tasks) = job_mut.schedule().await else {
-                    break;
-                };
-                let mut worker_manager = self.worker_manager.clone();
-                let tasks = tasks.clone();
-                drop(job_mut);
-                tokio::spawn(async move {
-                    for (i, task) in tasks.into_iter().enumerate() {
-                        match task.consume(config.clone(), &mut worker_manager).await {
-                            Some(true) => {
-                                if i == 0 {
-                                    job.running().await;
-                                }
-                            }
-                            Some(false) => {
-                                task.notify_consumption(TaskConsumptionStatus::ExecutionFailed)
-                            }
-                            None => task.notify_consumption(TaskConsumptionStatus::NotConsumed),
-                        }
-                    }
-                });
-            }
-        })
+        tasks
     }
 }
 
 pub struct Manager {
-    job_manager: JobManager,
-    sql_client: Client,
+    job_queue_tx: mpsc::Sender<JobQueued>,
+    job_table: JobTableRef,
+    task_sender_table: TaskSenderTableRef,
+    db: Db,
 }
 
 impl Manager {
@@ -349,37 +295,120 @@ impl Manager {
         servers: Vec<ServerInfo>,
         max_job_request: usize,
     ) -> Result<Self, Box<dyn Error>> {
-        let (job_request_tx, job_request_rx) = mpsc::channel(max_job_request);
-        let job_manager = JobManager::new(job_request_tx);
-        let worker_manager =
-            WorkerManager::new(addr, cert_path, servers, job_manager.clone_task_table()).await?;
-
-        JobScheduler::new(job_request_rx, worker_manager).spawn();
-
-        let (sql_client, connection) =
+        let (client, connection) =
             tokio_postgres::connect("host=localhost user=simepi password=simepi", NoTls).await?;
-
+        let db = Db(Arc::new(client));
         tokio::spawn(async move {
             if let Err(e) = connection.await {
                 println!("[error] Postresql database connection error: {e}");
             }
         });
+
+        let (job_queue_tx, mut job_queue_rx) = mpsc::channel::<JobQueued>(max_job_request);
+        let task_sender_table = Default::default();
+        let worker_manager =
+            WorkerManager::new(addr, cert_path, servers, Arc::clone(&task_sender_table)).await?;
+
+        let db_clone = db.clone();
+        tokio::spawn(async move {
+            while let Some(job_queued) = job_queue_rx.recv().await {
+                let id = job_queued.job.id.clone();
+                println!("[info] received job {}", id);
+                job_queued.dequeue(&worker_manager, &db_clone).await;
+                println!("[info] job {} terminated", id);
+            }
+        });
+
         println!("[info] created job manager");
         Ok(Self {
-            job_manager,
-            sql_client,
+            job_queue_tx,
+            job_table: Default::default(),
+            task_sender_table,
+            db,
         })
+    }
+
+    async fn create_job(&self, config: job::Config) -> Result<String, tokio_postgres::Error> {
+        let task_count = config.iteration_count;
+        let state = JobState::Created;
+        let (job_id, task_ids) = self.db.insert(&state, task_count).await?;
+
+        let mut task_rxs = Vec::new();
+        let mut task_sender_table = self.task_sender_table.write().await;
+        for task_id in task_ids {
+            let (tx, rx) = oneshot::channel();
+            task_sender_table.insert(task_id.clone(), tx);
+            task_rxs.push((task_id.clone(), rx));
+        }
+        drop(task_sender_table);
+
+        let job = Job::new(job_id.clone(), config.clone(), state);
+        let mut job_table = self.job_table.write().await;
+        job_table.insert(job_id.clone(), job.clone());
+        drop(job_table);
+
+        if task_count == 0 {
+            job.update_state(JobState::Completed, &self.db).await;
+        } else {
+            job.update_state(JobState::Queued, &self.db).await;
+            self.job_queue_tx
+                .send(JobQueued {
+                    job,
+                    task_rxs,
+                    config,
+                })
+                .await
+                .unwrap();
+        }
+
+        Ok(job_id.to_string())
+    }
+
+    async fn make_job(&self, job: &Job) -> job::Job {
+        let job_id = &job.id;
+        let tasks = self
+            .db
+            .get_tasks(job_id)
+            .await
+            .into_iter()
+            .map(|task| (task.id.clone(), task))
+            .collect();
+        let job = job.inner.read().await;
+        job::Job {
+            id: job_id.to_string(),
+            config: job.config.clone(),
+            state: job.state.clone(),
+            tasks,
+        }
+    }
+
+    async fn get_job(&self, id: &str) -> Option<job::Job> {
+        let id = id.try_into().ok()?;
+        let job_table = self.job_table.read().await;
+        let job = job_table.get(&id)?;
+        Some(self.make_job(job).await)
+    }
+
+    async fn get_all_jobs(&self) -> Vec<job::Job> {
+        let mut jobs = Vec::new();
+        let job_table = self.job_table.read().await;
+        for job in job_table.values() {
+            jobs.push(self.make_job(job).await)
+        }
+        jobs
+    }
+    async fn terminate_job(&self, id: &str) -> Option<bool> {
+        let id = id.try_into().ok()?;
+        let table = self.job_table.read().await;
+        let job = table.get(&id)?;
+        Some(job.force_to_terminate().await)
     }
 }
 
 #[async_trait]
 impl ResourceManager for Manager {
     async fn create_job(&self, config: job::Config) -> Option<String> {
-        match self
-            .job_manager
-            .new_job(&self.sql_client, config.clone())
-            .await
-        {
+        match self.create_job(config.clone()).await {
             Ok(id) => Some(id),
             Err(e) => {
                 println!("[error] {e}");
@@ -389,15 +418,15 @@ impl ResourceManager for Manager {
     }
 
     async fn get_job(&self, id: &str) -> Option<job::Job> {
-        self.job_manager.get_job(id).await
+        self.get_job(id).await
     }
 
     async fn get_all_jobs(&self) -> Vec<job::Job> {
-        self.job_manager.get_all_jobs().await
+        self.get_all_jobs().await
     }
 
     async fn terminate_job(&self, id: &str) -> Option<bool> {
-        self.job_manager.terminate_job(id).await
+        self.terminate_job(id).await
     }
 }
 

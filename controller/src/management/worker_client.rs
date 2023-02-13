@@ -1,26 +1,17 @@
 use controller_if::ProcessInfo;
-use futures_util::StreamExt;
+use futures_util::{Future, StreamExt};
 use quinn::ClientConfig;
 use repl::nom::AsBytes;
-use std::{
-    error::Error,
-    fmt::Display,
-    net::SocketAddr,
-    sync::{Arc, Weak},
-};
+use std::{error::Error, net::SocketAddr, sync::Arc};
 use tokio::sync::{mpsc, RwLock};
 use tokio_util::codec::{FramedRead, LengthDelimitedCodec};
-use uuid::Uuid;
 use worker_if::batch::{world_if, Request, Response, ResponseOk};
 
-use crate::api_server::{
-    job,
-    task::{self, TaskState},
-};
+use crate::api_server::job;
 
 use super::{
     server::{MyConnection, ServerInfo},
-    TaskTableRef,
+    TaskId,
 };
 
 #[derive(Debug)]
@@ -109,10 +100,32 @@ impl WorkerClient {
     }
 }
 
+#[derive(Clone, Debug)]
+pub struct Worker(Arc<RwLock<WorkerClient>>);
+
+impl Worker {
+    fn new(client: WorkerClient) -> Self {
+        Self(Arc::new(RwLock::new(client)))
+    }
+
+    pub async fn execute(&self, task_id: &TaskId, config: job::Config) -> bool {
+        let mut worker = self.0.write().await;
+        worker.execute(task_id, config).await.is_ok()
+    }
+
+    pub async fn terminate(&self, task_id: &TaskId) {
+        let mut worker = self.0.write().await;
+        if let Err(e) = worker.terminate(task_id).await {
+            eprintln!("[error] {e}");
+        }
+    }
+}
+
 #[derive(Clone)]
 pub struct WorkerManager {
     pool_rx: async_channel::Receiver<usize>,
-    workers: Arc<Vec<Arc<RwLock<WorkerClient>>>>,
+    workers: Arc<Vec<Worker>>,
+    peeked: Arc<RwLock<Option<Worker>>>,
 }
 
 impl WorkerManager {
@@ -120,14 +133,14 @@ impl WorkerManager {
         addr: SocketAddr,
         cert_path: String,
         servers: Vec<ServerInfo>,
-        task_table: TaskTableRef,
+        task_table: super::TaskSenderTableRef,
     ) -> Result<Self, Box<dyn Error>> {
         let (task_termination_tx, mut task_termination_rx) = mpsc::unbounded_channel();
         let config = quic_config::get_client_config(&cert_path)?;
         let (pool_tx, pool_rx) = async_channel::bounded(servers.len());
         let mut workers = Vec::new();
         for (i, server_info) in servers.into_iter().enumerate() {
-            workers.push(Arc::new(RwLock::new(
+            workers.push(Worker::new(
                 WorkerClient::new(
                     addr.clone(),
                     config.clone(),
@@ -137,7 +150,7 @@ impl WorkerManager {
                     task_termination_tx.clone(),
                 )
                 .await?,
-            )));
+            ));
         }
 
         tokio::spawn(async move {
@@ -147,152 +160,44 @@ impl WorkerManager {
             }) = task_termination_rx.recv().await
             {
                 let task_id: TaskId = TaskId::try_from(world_id.as_str()).unwrap();
-                let task = &task_table.read().await[&task_id];
-                let status = if exit_status {
-                    TaskConsumptionStatus::ExitSucceeded
-                } else {
-                    TaskConsumptionStatus::ExitFailed
-                };
-                task.notify_consumption(status);
+                let tx = task_table.write().await.remove(&task_id).unwrap();
+                tx.send(exit_status).unwrap();
             }
         });
 
         Ok(Self {
             workers: Arc::new(workers),
             pool_rx,
+            peeked: Default::default(),
         })
     }
 
-    pub async fn get(&mut self) -> Result<Arc<RwLock<WorkerClient>>, async_channel::RecvError> {
-        let index = self.pool_rx.recv().await?;
-        Ok(Arc::clone(&self.workers[index]))
-    }
-}
-
-#[derive(Clone, Debug)]
-struct TaskInner {
-    state: task::TaskState,
-    worker: Weak<RwLock<WorkerClient>>,
-    forced_termination: bool,
-}
-
-impl TaskInner {
-    fn new() -> Self {
-        Self {
-            state: Default::default(),
-            worker: Weak::new(),
-            forced_termination: false,
-        }
-    }
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
-pub struct TaskId(pub(super) Uuid);
-
-impl TryFrom<&str> for TaskId {
-    type Error = uuid::Error;
-
-    fn try_from(value: &str) -> Result<Self, Self::Error> {
-        Ok(Self(value.try_into()?))
-    }
-}
-
-impl Display for TaskId {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "{}", self.0.to_string())
-    }
-}
-
-#[derive(Clone, Debug)]
-pub struct Task {
-    pub id: TaskId,
-    inner: Arc<RwLock<TaskInner>>,
-    task_termination_tx: mpsc::UnboundedSender<(Task, TaskConsumptionStatus)>,
-}
-
-impl Task {
-    pub fn new(
-        id: TaskId,
-        task_termination_tx: mpsc::UnboundedSender<(Task, TaskConsumptionStatus)>,
-    ) -> Self {
-        Self {
-            id,
-            inner: Arc::new(RwLock::new(TaskInner::new())),
-            task_termination_tx,
+    pub async fn wait(&self) {
+        let mut peeked = self.peeked.write().await;
+        if peeked.is_none() {
+            let i = self.pool_rx.recv().await.unwrap();
+            *peeked = Some(self.workers[i].clone());
         }
     }
 
-    pub async fn make_obj(&self) -> task::Task {
-        let task = self.inner.read().await;
-        task::Task::new(self.id.to_string(), task.state.clone())
-    }
-
-    pub async fn force_to_terminate(&self) {
-        let mut task = self.inner.write().await;
-        task.forced_termination = true;
-        if matches!(task.state, TaskState::Running) {
-            let worker = task.worker.upgrade().unwrap();
-            let mut worker = worker.write().await;
-            if let Err(e) = worker.terminate(&self.id).await {
-                eprintln!("[error] {e}");
-            }
+    pub async fn lease<F: FnOnce(Worker) -> Fut + Send, Fut: Future<Output = bool> + Send>(
+        self,
+        f: F,
+    ) {
+        let worker = self.get().await;
+        if f(worker.clone()).await {
+            self.set(worker).await;
         }
     }
 
-    pub fn notify_consumption(&self, status: TaskConsumptionStatus) {
-        self.task_termination_tx
-            .send((self.clone(), status))
-            .unwrap();
-    }
-
-    pub async fn consume(
-        &self,
-        config: job::Config,
-        worker_manager: &mut WorkerManager,
-    ) -> Option<bool> {
-        let id = self.id.clone();
-        println!("[info] received task {}", id);
-        let task = &self.inner;
-        if task.read().await.forced_termination {
-            return None;
+    async fn get(&self) -> Worker {
+        match self.peeked.write().await.take() {
+            Some(worker) => worker,
+            None => self.workers[self.pool_rx.recv().await.unwrap()].clone(),
         }
-        let worker = worker_manager.get().await.unwrap();
-        {
-            let mut task = task.write().await;
-            if task.forced_termination {
-                return None;
-            } else {
-                task.state = TaskState::Assigned;
-                task.worker = Arc::downgrade(&worker);
-            }
-        }
-        let task = Arc::clone(task);
-        let succeeded = tokio::spawn(async move {
-            let mut task = task.write().await;
-            let mut worker = worker.write().await;
-            if worker.execute(&id, config).await.is_ok() {
-                task.state = TaskState::Running;
-                true
-            } else {
-                task.state = TaskState::Failed;
-                false
-            }
-        })
-        .await
-        .unwrap();
-        Some(succeeded)
     }
 
-    pub async fn update_state(&self, state: TaskState) {
-        let mut task = self.inner.write().await;
-        task.state = state;
+    async fn set(&self, worker: Worker) {
+        *self.peeked.write().await = Some(worker);
     }
-}
-
-#[derive(Debug)]
-pub enum TaskConsumptionStatus {
-    NotConsumed,
-    ExecutionFailed,
-    ExitFailed,
-    ExitSucceeded,
 }

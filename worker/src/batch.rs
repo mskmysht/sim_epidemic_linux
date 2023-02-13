@@ -102,7 +102,7 @@ impl WorldManager {
             let status = child.wait().unwrap();
             termination_tx
                 .send(controller_if::ProcessInfo {
-                    world_id: world_id,
+                    world_id,
                     exit_status: status.success(),
                 })
                 .unwrap();
