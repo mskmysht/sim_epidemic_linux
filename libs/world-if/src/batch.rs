@@ -1,19 +1,22 @@
 use std::fmt;
 
+pub use api::job::JobParam;
 use chrono::serde::ts_seconds;
 pub use ipc_channel::ipc::{self, IpcReceiver, IpcSender};
 use serde::{Deserialize, Serialize};
 
 #[derive(Debug, serde::Deserialize, serde::Serialize)]
 pub enum Request {
-    Execute(u32),
+    Execute(JobParam),
     Terminate,
 }
+
+pub type Error = serde_error::Error;
 
 #[derive(Debug, serde::Deserialize, serde::Serialize)]
 pub enum Response {
     Ok(ResponseOk),
-    Err(serde_error::Error),
+    Err(Error),
 }
 
 impl Response {

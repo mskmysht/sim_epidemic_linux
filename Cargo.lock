@@ -1542,6 +1542,7 @@ dependencies = [
 name = "protocol"
 version = "0.1.0"
 dependencies = [
+ "anyhow",
  "bincode",
  "bytes",
  "peg",
@@ -2708,7 +2709,9 @@ dependencies = [
  "repl",
  "rustls",
  "serde",
+ "serde-error",
  "shared_child",
+ "thiserror",
  "tokio",
  "tokio-util",
  "worker-if",
@@ -2754,6 +2757,7 @@ name = "world-if"
 version = "0.1.0"
 dependencies = [
  "anyhow",
+ "api",
  "chrono",
  "ipc-channel",
  "nom",

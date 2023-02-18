@@ -1,14 +1,27 @@
-use controller_if::ProcessInfo;
+use std::{collections::BTreeMap, error::Error, io, ops::Deref, process, sync::Arc};
+
 use futures_util::SinkExt;
-use ipc_channel::ipc::IpcOneShotServer;
+use ipc_channel::ipc::{self, IpcOneShotServer};
 use quinn::Connection;
-use std::collections::BTreeMap;
-use std::sync::Arc;
-use std::{error::Error, process};
-use tokio::sync::{mpsc, Mutex};
+use tokio::sync::{mpsc, Mutex, MutexGuard};
 use tokio_util::codec::{FramedWrite, LengthDelimitedCodec};
-use worker_if::batch::world_if;
-use worker_if::batch::{Request, Response, ResponseError, ResponseOk};
+
+use controller_if::ProcessInfo;
+use worker_if::batch::{self, world_if};
+
+#[derive(Debug, thiserror::Error)]
+pub enum ResponseError {
+    #[error("Failed to execute process")]
+    FailedToExecute(#[from] ExecuteError),
+    #[error("Ipc error has occured: {0}")]
+    IpcError(#[from] IpcError),
+    #[error("Some error has occured in the child process: {0}")]
+    FailedInProcess(#[from] world_if::Error),
+    #[error("No id found")]
+    NoIdFound,
+    // #[error("Abort child process")]
+    // Abort(anyhow::Error),
+}
 
 pub async fn run(
     world_path: String,
@@ -50,30 +63,51 @@ pub async fn run(
     while let Ok((mut send, mut recv)) = connection.accept_bi().await {
         let manager = Arc::clone(&manager);
         tokio::spawn(async move {
-            let req = protocol::quic::read_data(&mut recv).await.unwrap();
+            let req: batch::Request = protocol::quic::read_data(&mut recv).await.unwrap();
             println!("[request] {req:?}");
-            let res: Response = match req {
-                Request::LaunchItem(id) => match manager.launch_item(id).await {
-                    Ok(_) => ResponseOk::Item.into(),
-                    Err(e) => ResponseError::FailedToSpawn(e).into(),
-                },
-                Request::Custom(id, req) => match manager.request(id, req).await {
-                    Ok(r) => r.as_result().into(),
-                    Err(e) => ResponseError::process_any_error(e).into(),
-                },
+            match req {
+                batch::Request::Execute(id, param) => {
+                    let res: batch::Response<_> = manager.execute(id, param).await.into();
+                    println!("[response] {res:?}");
+                    protocol::quic::write_data(&mut send, &res).await.unwrap();
+                }
+                batch::Request::Terminate(id) => {
+                    let res: batch::Response<_> = manager.terminate(id).await.into();
+                    println!("[response] {res:?}");
+                    protocol::quic::write_data(&mut send, &res).await.unwrap();
+                }
             };
-            println!("[response] {res:?}");
-            protocol::quic::write_data(&mut send, &res).await.unwrap();
         });
     }
     Ok(())
 }
 
+type BiConnection = world_if::IpcBiConnection<world_if::Request, world_if::Response>;
 struct WorldManager {
     world_path: String,
-    table:
-        Mutex<BTreeMap<String, world_if::IpcBiConnection<world_if::Request, world_if::Response>>>,
+    table: Mutex<BTreeMap<String, BiConnection>>,
     termination_tx: mpsc::UnboundedSender<ProcessInfo>,
+}
+
+#[derive(thiserror::Error, Debug)]
+pub enum ExecuteError {
+    #[error("IO error has occured: {0}")]
+    IOError(#[from] io::Error),
+    #[error("Failed to connect by IO: {0}")]
+    FailedToConnect(#[from] bincode::Error),
+}
+
+#[derive(thiserror::Error, Debug)]
+pub enum IpcError {
+    #[error("send error: {0}")]
+    SendError(#[from] bincode::Error),
+    #[error("receive error: {0}")]
+    RecvError(#[from] ipc::IpcError),
+}
+
+fn request(bicon: &BiConnection, req: world_if::Request) -> Result<world_if::Response, IpcError> {
+    bicon.send(req)?;
+    Ok(bicon.recv()?)
 }
 
 impl WorldManager {
@@ -85,20 +119,45 @@ impl WorldManager {
         }
     }
 
-    async fn launch_item(&self, world_id: String) -> anyhow::Result<()> {
+    async fn execute(
+        &self,
+        world_id: String,
+        param: world_if::JobParam,
+    ) -> Result<(), ResponseError> {
+        let bicon = self.launch_process(world_id).await?;
+        match request(&bicon, world_if::Request::Execute(param))? {
+            world_if::Response::Ok(_) => Ok(()),
+            world_if::Response::Err(e) => Err(e.into()),
+        }
+    }
+
+    async fn terminate(&self, world_id: String) -> Result<(), ResponseError> {
+        let table = self.table.lock().await;
+        let Some(bicon) = table.get(&world_id) else {
+            return Err(ResponseError::NoIdFound)
+        };
+        match request(bicon, world_if::Request::Terminate)? {
+            world_if::Response::Ok(_) => Ok(()),
+            world_if::Response::Err(e) => Err(e.into()),
+        }
+    }
+
+    async fn launch_process(
+        &self,
+        world_id: String,
+    ) -> Result<impl Deref<Target = BiConnection> + '_, ExecuteError> {
         let (server, server_name) = IpcOneShotServer::new()?;
         let mut command = process::Command::new(&self.world_path);
         command.args(["--world-id", &world_id, "--server-name", &server_name]);
         let child = shared_child::SharedChild::spawn(&mut command)?;
         let (_, (bicon, stream)): (
             _,
-            (
-                world_if::IpcBiConnection<world_if::Request, world_if::Response>,
-                world_if::IpcReceiver<world_if::WorldStatus>,
-            ),
+            (BiConnection, world_if::IpcReceiver<world_if::WorldStatus>),
         ) = server.accept()?;
-        let mut table = self.table.lock().await;
-        table.insert(world_id.clone(), bicon);
+        let guard = self.table.lock().await;
+        let bicon = MutexGuard::map(guard, |table| {
+            table.entry(world_id.clone()).or_insert(bicon)
+        });
 
         tokio::spawn(async move {
             let mut status_hist = Vec::new();
@@ -119,21 +178,6 @@ impl WorldManager {
                 })
                 .unwrap();
         });
-        Ok(())
-    }
-
-    async fn request(
-        &self,
-        id: String,
-        req: world_if::Request,
-    ) -> anyhow::Result<world_if::Response> {
-        let table = self.table.lock().await;
-        let bicon = &table[&id];
-        bicon.send(req)?;
-        Ok(bicon.recv()?)
-        // match bicon.recv() {
-        //     Ok(r) => r.as_result().into(),
-        //     Err(e) => ResponseError::process_io_error(e).into(),
-        // }
+        Ok(bicon)
     }
 }

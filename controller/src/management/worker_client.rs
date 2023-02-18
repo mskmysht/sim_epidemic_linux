@@ -1,11 +1,12 @@
 use controller_if::ProcessInfo;
 use futures_util::{Future, StreamExt};
+use poem_openapi::__private::serde::Deserialize;
 use quinn::ClientConfig;
 use repl::nom::AsBytes;
 use std::{error::Error, net::SocketAddr, sync::Arc};
 use tokio::sync::{mpsc, RwLock};
 use tokio_util::codec::{FramedRead, LengthDelimitedCodec};
-use worker_if::batch::{world_if, Request, Response, ResponseOk};
+use worker_if::batch::{Request, Resource, Response};
 
 use crate::api_server::job;
 
@@ -68,35 +69,24 @@ impl WorkerClient {
         Ok(Self { connection })
     }
 
-    async fn request(&mut self, req: &Request) -> anyhow::Result<ResponseOk> {
-        let (mut send, mut recv) = self.connection.connection.open_bi().await?;
-
-        protocol::quic::write_data(&mut send, req).await?;
-        let res = protocol::quic::read_data(&mut recv).await?;
-        match res {
-            Response::Ok(ok) => Ok(ok),
-            Response::Err(e) => Err(anyhow::Error::new(e)),
-        }
+    async fn request<T: for<'de> Deserialize<'de>>(
+        &mut self,
+        req: Request,
+    ) -> anyhow::Result<Response<T>> {
+        protocol::quic::request(&self.connection.connection, req).await
     }
 
-    pub async fn execute(&mut self, task_id: &TaskId, config: job::Config) -> anyhow::Result<()> {
-        self.request(&Request::LaunchItem(task_id.to_string()))
-            .await?;
-        self.request(&Request::Custom(
-            task_id.to_string(),
-            world_if::Request::Execute(config.param.stop_at),
-        ))
-        .await?;
-        Ok(())
+    pub async fn execute(
+        &mut self,
+        task_id: &TaskId,
+        config: job::Config,
+    ) -> anyhow::Result<Response<()>> {
+        self.request(Request::Execute(task_id.to_string(), config.param))
+            .await
     }
 
-    pub async fn terminate(&mut self, task_id: &TaskId) -> anyhow::Result<()> {
-        self.request(&Request::Custom(
-            task_id.to_string(),
-            world_if::Request::Terminate,
-        ))
-        .await?;
-        Ok(())
+    pub async fn terminate(&mut self, task_id: &TaskId) -> anyhow::Result<Response<()>> {
+        self.request(Request::Terminate(task_id.to_string())).await
     }
 }
 
@@ -115,7 +105,8 @@ impl Worker {
 
     pub async fn terminate(&self, task_id: &TaskId) -> anyhow::Result<()> {
         let mut worker = self.0.write().await;
-        worker.terminate(task_id).await
+        worker.terminate(task_id).await?;
+        Ok(())
     }
 }
 
