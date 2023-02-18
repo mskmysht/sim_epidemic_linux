@@ -7,9 +7,8 @@ use std::sync::Arc;
 use std::{error::Error, process};
 use tokio::sync::{mpsc, Mutex};
 use tokio_util::codec::{FramedWrite, LengthDelimitedCodec};
-use worker_if::batch::world_if::IpcSubscriber;
+use worker_if::batch::world_if;
 use worker_if::batch::{Request, Response, ResponseError, ResponseOk};
-use worker_if::realtime::world_if::Subscriber;
 
 pub async fn run(
     world_path: String,
@@ -58,13 +57,10 @@ pub async fn run(
                     Ok(_) => ResponseOk::Item.into(),
                     Err(e) => ResponseError::FailedToSpawn(e).into(),
                 },
-                Request::Custom(id, req) => {
-                    let table = manager.table.lock().await;
-                    match table[&id].request(req) {
-                        Ok(r) => r.as_result().into(),
-                        Err(e) => ResponseError::process_io_error(e).into(),
-                    }
-                }
+                Request::Custom(id, req) => match manager.request(id, req).await {
+                    Ok(r) => r.as_result().into(),
+                    Err(e) => ResponseError::process_any_error(e).into(),
+                },
             };
             println!("[response] {res:?}");
             protocol::quic::write_data(&mut send, &res).await.unwrap();
@@ -75,7 +71,8 @@ pub async fn run(
 
 struct WorldManager {
     world_path: String,
-    table: Mutex<BTreeMap<String, IpcSubscriber>>,
+    table:
+        Mutex<BTreeMap<String, world_if::IpcBiConnection<world_if::Request, world_if::Response>>>,
     termination_tx: mpsc::UnboundedSender<ProcessInfo>,
 }
 
@@ -93,9 +90,24 @@ impl WorldManager {
         let mut command = process::Command::new(&self.world_path);
         command.args(["--world-id", &world_id, "--server-name", &server_name]);
         let child = shared_child::SharedChild::spawn(&mut command)?;
-        let (_, subscriber): (_, IpcSubscriber) = server.accept()?;
+        let (_, (bicon, stream)): (
+            _,
+            (
+                world_if::IpcBiConnection<world_if::Request, world_if::Response>,
+                world_if::IpcReceiver<world_if::WorldStatus>,
+            ),
+        ) = server.accept()?;
         let mut table = self.table.lock().await;
-        table.insert(world_id.clone(), subscriber);
+        table.insert(world_id.clone(), bicon);
+
+        tokio::spawn(async move {
+            let mut status_hist = Vec::new();
+            while let Ok(status) = stream.recv() {
+                status_hist.push(status);
+            }
+            println!("{:?}", status_hist.last());
+        });
+
         let termination_tx = self.termination_tx.clone();
         tokio::spawn(async move {
             // let pid = child.id();
@@ -108,5 +120,20 @@ impl WorldManager {
                 .unwrap();
         });
         Ok(())
+    }
+
+    async fn request(
+        &self,
+        id: String,
+        req: world_if::Request,
+    ) -> anyhow::Result<world_if::Response> {
+        let table = self.table.lock().await;
+        let bicon = &table[&id];
+        bicon.send(req)?;
+        Ok(bicon.recv()?)
+        // match bicon.recv() {
+        //     Ok(r) => r.as_result().into(),
+        //     Err(e) => ResponseError::process_io_error(e).into(),
+        // }
     }
 }

@@ -19,8 +19,8 @@ pub enum ResponseOk {
 pub enum ResponseError {
     #[error("failed to spawn item")]
     FailedToSpawn(anyhow::Error),
-    #[error("error has occured in the child process")]
-    ProcessIOError(anyhow::Error),
+    #[error("error has occured in the child process: {0}")]
+    FailedInProcess(anyhow::Error),
     #[error("abort child process")]
     Abort(anyhow::Error),
     #[error("no id found")]
@@ -36,8 +36,11 @@ impl From<ResponseError> for serde_error::Error {
 }
 
 impl ResponseError {
-    pub fn process_io_error<E: std::error::Error + Send + Sync + 'static>(error: E) -> Self {
-        Self::ProcessIOError(anyhow::Error::new(error))
+    pub fn process_any_error(error: anyhow::Error) -> Self {
+        Self::FailedInProcess(error)
+    }
+    pub fn process_std_error<E: std::error::Error + Send + Sync + 'static>(error: E) -> Self {
+        Self::FailedInProcess(anyhow::Error::new(error))
     }
 }
 

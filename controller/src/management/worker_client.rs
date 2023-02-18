@@ -25,7 +25,7 @@ impl WorkerClient {
         config: ClientConfig,
         server_info: ServerInfo,
         index: usize,
-        pool_tx: async_channel::Sender<usize>,
+        pool_tx: mpsc::Sender<usize>,
         termination_tx: mpsc::UnboundedSender<ProcessInfo>,
     ) -> Result<Self, Box<dyn Error>> {
         let connection = MyConnection::new(
@@ -113,19 +113,16 @@ impl Worker {
         worker.execute(task_id, config).await.is_ok()
     }
 
-    pub async fn terminate(&self, task_id: &TaskId) {
+    pub async fn terminate(&self, task_id: &TaskId) -> anyhow::Result<()> {
         let mut worker = self.0.write().await;
-        if let Err(e) = worker.terminate(task_id).await {
-            eprintln!("[error] {e}");
-        }
+        worker.terminate(task_id).await
     }
 }
 
-#[derive(Clone)]
 pub struct WorkerManager {
-    pool_rx: async_channel::Receiver<usize>,
+    pool_rx: mpsc::Receiver<usize>,
     workers: Arc<Vec<Worker>>,
-    peeked: Arc<RwLock<Option<Worker>>>,
+    peeked: Arc<RwLock<Vec<Worker>>>,
 }
 
 impl WorkerManager {
@@ -137,7 +134,7 @@ impl WorkerManager {
     ) -> Result<Self, Box<dyn Error>> {
         let (task_termination_tx, mut task_termination_rx) = mpsc::unbounded_channel();
         let config = quic_config::get_client_config(&cert_path)?;
-        let (pool_tx, pool_rx) = async_channel::bounded(servers.len());
+        let (pool_tx, pool_rx) = mpsc::channel(servers.len());
         let mut workers = Vec::new();
         for (i, server_info) in servers.into_iter().enumerate() {
             workers.push(Worker::new(
@@ -159,6 +156,7 @@ impl WorkerManager {
                 exit_status,
             }) = task_termination_rx.recv().await
             {
+                println!("[termination] world id: {world_id}, exit status: {exit_status}");
                 let task_id: TaskId = TaskId::try_from(world_id.as_str()).unwrap();
                 let tx = task_table.write().await.remove(&task_id).unwrap();
                 tx.send(exit_status).unwrap();
@@ -172,32 +170,43 @@ impl WorkerManager {
         })
     }
 
-    pub async fn wait(&self) {
+    pub async fn wait(&mut self) {
         let mut peeked = self.peeked.write().await;
-        if peeked.is_none() {
+        if peeked.is_empty() {
             let i = self.pool_rx.recv().await.unwrap();
-            *peeked = Some(self.workers[i].clone());
+            peeked.push(self.workers[i].clone());
         }
     }
 
-    pub async fn lease<F: FnOnce(Worker) -> Fut + Send, Fut: Future<Output = bool> + Send>(
-        self,
-        f: F,
-    ) {
-        let worker = self.get().await;
-        if f(worker.clone()).await {
-            self.set(worker).await;
-        }
-    }
-
-    async fn get(&self) -> Worker {
-        match self.peeked.write().await.take() {
+    async fn get(&mut self) -> Worker {
+        match self.peeked.write().await.pop() {
             Some(worker) => worker,
             None => self.workers[self.pool_rx.recv().await.unwrap()].clone(),
         }
     }
 
     async fn set(&self, worker: Worker) {
-        *self.peeked.write().await = Some(worker);
+        println!("[debug: worker manager] try to release worker");
+        self.peeked.write().await.push(worker);
+        println!("[debug: worker manager] released worker");
+    }
+}
+
+pub struct WorkerLease {
+    manager: Arc<RwLock<WorkerManager>>,
+}
+
+impl WorkerLease {
+    pub fn new(manager: Arc<RwLock<WorkerManager>>) -> Self {
+        Self { manager }
+    }
+    pub async fn lease<F: FnOnce(Worker) -> Fut + Send, Fut: Future<Output = bool> + Send>(
+        self,
+        f: F,
+    ) {
+        let worker = self.manager.write().await.get().await;
+        if f(worker.clone()).await {
+            self.manager.write().await.set(worker).await;
+        }
     }
 }

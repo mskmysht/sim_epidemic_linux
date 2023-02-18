@@ -18,7 +18,7 @@ use crate::{
         task::{self, TaskState},
         ResourceManager,
     },
-    management::worker_client::WorkerManager,
+    management::worker_client::{WorkerLease, WorkerManager},
 };
 
 use self::{server::ServerInfo, worker_client::Worker};
@@ -58,9 +58,12 @@ impl Job {
         match inner.state {
             JobState::Running => {
                 inner.forced_termination = true;
-                for (task_id, worker) in self.worker_table.write().await.drain() {
-                    worker.terminate(&task_id).await;
+                for (task_id, worker) in self.worker_table.read().await.iter() {
+                    if worker.terminate(task_id).await.is_err() {
+                        println!("[info] {task_id} is already terminated");
+                    }
                 }
+                self.worker_table.write().await.clear();
                 true
             }
             JobState::Created | JobState::Queued | JobState::Scheduled => {
@@ -134,16 +137,17 @@ async fn execute_task(
 
     if worker.execute(id, config).await {
         db.update_task_state(id, &TaskState::Running).await;
+        println!("[debug] {id} is running");
+        worker_table
+            .write()
+            .await
+            .insert(id.clone(), worker.clone());
+        println!("[debug] worker is registered");
     } else {
         db.update_task_state(id, &TaskState::Failed).await;
         println!("[info] task {} could not execute", id);
         return false;
     }
-
-    worker_table
-        .write()
-        .await
-        .insert(id.clone(), worker.clone());
 
     if rx.await.unwrap() {
         db.update_task_state(id, &TaskState::Succeeded).await;
@@ -153,6 +157,7 @@ async fn execute_task(
         println!("[info] task {} failured in process", id);
     }
     worker_table.write().await.remove(id);
+    println!("[debug] worker is removed");
     return true;
 }
 
@@ -164,7 +169,7 @@ struct JobQueued {
 }
 
 impl JobQueued {
-    async fn dequeue(self, worker_manager: &WorkerManager, db: &Db) {
+    async fn dequeue(self, worker_manager: &Arc<RwLock<WorkerManager>>, db: &Db) {
         let job = self.job;
 
         if job.is_foreced_termination().await {
@@ -174,7 +179,7 @@ impl JobQueued {
 
         job.update_state(JobState::Scheduled, db).await;
 
-        worker_manager.wait().await;
+        worker_manager.write().await.wait().await;
         job.update_state(JobState::Running, db).await;
 
         let mut handles = Vec::new();
@@ -182,12 +187,12 @@ impl JobQueued {
             if job.is_foreced_termination().await {
                 break;
             }
-            let worker_manager = worker_manager.clone();
+            let worker_lease = WorkerLease::new(worker_manager.clone());
             let worker_table = Arc::clone(&job.worker_table);
             let config = self.config.clone();
             let job = job.clone();
             let db = db.clone();
-            handles.push(worker_manager.lease(|worker| async move {
+            handles.push(worker_lease.lease(|worker| async move {
                 thread::sleep(Duration::from_secs(1));
                 println!("[info] received task {}", task_id);
                 if job.is_foreced_termination().await {
@@ -306,8 +311,9 @@ impl Manager {
 
         let (job_queue_tx, mut job_queue_rx) = mpsc::channel::<JobQueued>(max_job_request);
         let task_sender_table = Default::default();
-        let worker_manager =
-            WorkerManager::new(addr, cert_path, servers, Arc::clone(&task_sender_table)).await?;
+        let worker_manager = Arc::new(RwLock::new(
+            WorkerManager::new(addr, cert_path, servers, Arc::clone(&task_sender_table)).await?,
+        ));
 
         let db_clone = db.clone();
         tokio::spawn(async move {

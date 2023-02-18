@@ -2731,6 +2731,7 @@ dependencies = [
 name = "world"
 version = "0.1.0"
 dependencies = [
+ "anyhow",
  "argopt",
  "chrono",
  "csv",

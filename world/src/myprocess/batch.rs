@@ -1,6 +1,6 @@
-use world_if::{
-    batch::{Request, Response, ResponseError, ResponseOk, WorldState, WorldStatus},
-    pubsub::Publisher,
+use ipc_channel::ipc::IpcSender;
+use world_if::batch::{
+    IpcBiConnection, Request, Response, ResponseError, ResponseOk, WorldState, WorldStatus,
 };
 
 use crate::{
@@ -22,98 +22,99 @@ struct WorldStepInfo {
     steps_per_sec: f64,
 }
 
-pub struct WorldSpawner<P> {
+pub struct WorldSpawner {
     world: World,
     info: WorldStepInfo,
-    publisher: P,
+    bicon: IpcBiConnection<Response, Request>,
+    stream: IpcSender<WorldStatus>,
 }
 
-impl<P> WorldSpawner<P>
-where
-    P: Publisher<Req = Request, Res = Response, Stat = WorldStatus> + Send + 'static,
-    P::RecvErr: std::fmt::Debug,
-    P::SendErr<Response>: std::fmt::Debug,
-    P::SendErr<WorldStatus>: std::fmt::Debug,
-{
-    pub fn new(id: String, publisher: P) -> Self {
+impl WorldSpawner {
+    pub fn new(
+        id: String,
+        bicon: IpcBiConnection<Response, Request>,
+        stream: IpcSender<WorldStatus>,
+    ) -> anyhow::Result<Self> {
         let world = World::new(id, new_runtime_params(), new_world_params());
         let spawner = Self {
             world,
             info: WorldStepInfo::default(),
-            publisher,
+            bicon,
+            stream,
         };
-        spawner.send_status(WorldState::Stopped);
-        spawner
+        spawner.send_status(WorldState::Stopped)?;
+        Ok(spawner)
     }
 
     pub fn spawn(self) -> io::Result<JoinHandle<()>> {
         thread::Builder::new()
             .name(format!("world_{}", self.world.id.clone()))
-            .spawn(move || self.listen())
+            .spawn(move || self.listen().unwrap())
     }
 
     #[inline]
-    fn res_ok(&self) {
-        self.publisher
-            .send_response(ResponseOk::Success.into())
-            .unwrap();
+    fn res_ok(&self) -> anyhow::Result<()> {
+        self.bicon.send(ResponseOk::Success.into())?;
+        Ok(())
     }
 
     #[inline]
-    fn res_ok_with(&self, msg: String) {
-        self.publisher
-            .send_response(ResponseOk::SuccessWithMessage(msg).into())
-            .unwrap();
+    fn res_ok_with(&self, msg: String) -> anyhow::Result<()> {
+        self.bicon
+            .send(ResponseOk::SuccessWithMessage(msg).into())?;
+        Ok(())
     }
 
     #[inline]
-    fn res_err(&self, err: ResponseError) {
-        self.publisher.send_response(err.into()).unwrap();
+    fn res_err(&self, err: ResponseError) -> anyhow::Result<()> {
+        self.bicon.send(err.into())?;
+        Ok(())
     }
 
     #[inline]
-    fn send_status(&self, state: WorldState) {
-        self.publisher
-            .send_on_stream(WorldStatus::new(self.world.runtime_params.step, state))
-            .unwrap();
+    fn send_status(&self, state: WorldState) -> anyhow::Result<()> {
+        self.stream
+            .send(WorldStatus::new(self.world.runtime_params.step, state))?;
+        Ok(())
     }
 
     #[inline]
-    fn reset(&mut self) {
+    fn reset(&mut self) -> anyhow::Result<()> {
         self.world.reset();
         self.info = WorldStepInfo::default();
-        self.send_status(WorldState::Stopped);
-        self.res_ok();
+        self.send_status(WorldState::Stopped)?;
+        self.res_ok()
     }
 
     #[inline]
-    fn stop(&mut self) {
-        self.send_status(WorldState::Stopped);
-        self.res_ok();
+    fn stop(&mut self) -> anyhow::Result<()> {
+        self.send_status(WorldState::Stopped)?;
+        self.res_ok()
     }
 
-    fn execute(&mut self, stop_at: u32) {
+    fn execute(&mut self, stop_at: u32) -> anyhow::Result<()> {
         if self.is_ended() {
-            self.res_err(ResponseError::AlreadyEnded);
+            self.res_err(ResponseError::AlreadyEnded)?;
         }
 
         let step_to_end = stop_at * self.world.world_params.steps_per_day;
-        self.res_ok();
-        while self.step_cont(step_to_end) {
-            if let Some(msg) = self.publisher.try_recv().unwrap() {
+        self.res_ok()?;
+        while self.step_cont(step_to_end)? {
+            if let Some(msg) = self.bicon.try_recv()? {
                 match msg {
                     Request::Terminate => {
-                        self.stop();
+                        self.stop()?;
                         break;
                     }
-                    _ => self.res_err(ResponseError::AlreadyStarted),
+                    _ => self.res_err(ResponseError::AlreadyStarted)?,
                 }
             }
         }
+        Ok(())
     }
 
     #[inline]
-    fn step_cont(&mut self, step_to_end: u32) -> bool {
+    fn step_cont(&mut self, step_to_end: u32) -> anyhow::Result<bool> {
         self.inline_step();
         let (state, cont) = if self.is_ended() {
             (WorldState::Ended, false)
@@ -122,8 +123,8 @@ where
         } else {
             (WorldState::Started, true)
         };
-        self.send_status(state);
-        cont
+        self.send_status(state)?;
+        Ok(cont)
     }
 
     #[inline]
@@ -143,16 +144,17 @@ where
         self.world.get_n_infected() == 0
     }
 
-    fn listen(mut self) {
+    fn listen(mut self) -> anyhow::Result<()> {
         loop {
-            match self.publisher.recv().unwrap() {
+            match self.bicon.recv()? {
                 Request::Execute(stop_at) => {
-                    self.execute(stop_at);
+                    self.execute(stop_at)?;
                     break;
                 }
-                Request::Terminate => self.res_err(ResponseError::AlreadyStopped),
+                Request::Terminate => self.res_err(ResponseError::AlreadyStopped)?,
             }
         }
+        Ok(())
     }
 }
 
