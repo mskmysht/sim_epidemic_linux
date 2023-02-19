@@ -12,16 +12,37 @@ pub enum Request {
 }
 
 #[derive(Debug, serde::Serialize, serde::Deserialize)]
-pub struct Response<T>(std::result::Result<T, serde_error::Error>);
+pub struct Response<T>(Result<T, serde_error::Error>);
 
-impl<T, E: std::error::Error> From<std::result::Result<T, E>> for Response<T> {
-    fn from(value: std::result::Result<T, E>) -> Self {
+impl<T> Response<T> {
+    pub fn as_result(self) -> Result<T, serde_error::Error> {
+        self.0
+    }
+
+    pub fn from_ok(value: T) -> Self {
+        Self(Ok(value))
+    }
+
+    pub fn from_err<E: std::error::Error>(err: E) -> Self {
+        Self(Err(serde_error::Error::new(&err)))
+    }
+}
+
+impl<T, E: std::error::Error> From<Result<T, E>> for Response<T> {
+    fn from(value: Result<T, E>) -> Self {
         Self(value.map_err(|e| serde_error::Error::new(&e)))
     }
 }
 
 #[derive(Debug, serde::Serialize, serde::Deserialize)]
 pub struct Resource(pub usize);
+
+impl From<&JobParam> for Resource {
+    fn from(value: &JobParam) -> Self {
+        // [todo] provisional
+        Resource(1)
+    }
+}
 
 #[derive(Debug, serde::Serialize, serde::Deserialize)]
 pub enum ResponseOk {

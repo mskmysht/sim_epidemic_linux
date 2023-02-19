@@ -147,8 +147,8 @@ impl WorldSpawner {
     fn listen(mut self) -> anyhow::Result<()> {
         loop {
             match self.bicon.recv()? {
-                Request::Execute(stop_at) => {
-                    self.execute(stop_at)?;
+                Request::Execute(param) => {
+                    self.execute(param.stop_at)?;
                     break;
                 }
                 Request::Terminate => self.res_err(ResponseError::AlreadyStopped)?,

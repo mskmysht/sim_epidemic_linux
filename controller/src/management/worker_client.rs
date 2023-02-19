@@ -1,10 +1,9 @@
-use controller_if::ProcessInfo;
 use futures_util::{Future, StreamExt};
 use poem_openapi::__private::serde::Deserialize;
 use quinn::ClientConfig;
 use repl::nom::AsBytes;
-use std::{error::Error, net::SocketAddr, sync::Arc};
-use tokio::sync::{mpsc, RwLock};
+use std::{error::Error, net::SocketAddr, ops::DerefMut, sync::Arc};
+use tokio::sync::{mpsc, oneshot, RwLock};
 use tokio_util::codec::{FramedRead, LengthDelimitedCodec};
 use worker_if::batch::{Request, Resource, Response};
 
@@ -18,6 +17,7 @@ use super::{
 #[derive(Debug)]
 pub struct WorkerClient {
     connection: MyConnection,
+    resource: Resource,
 }
 
 impl WorkerClient {
@@ -26,8 +26,8 @@ impl WorkerClient {
         config: ClientConfig,
         server_info: ServerInfo,
         index: usize,
-        pool_tx: mpsc::Sender<usize>,
-        termination_tx: mpsc::UnboundedSender<ProcessInfo>,
+        // pool_tx: mpsc::Sender<usize>,
+        // termination_tx: mpsc::UnboundedSender<ProcessInfo>,
     ) -> Result<Self, Box<dyn Error>> {
         let connection = MyConnection::new(
             addr,
@@ -37,36 +37,41 @@ impl WorkerClient {
         )
         .await?;
 
-        let mut pool_stream = FramedRead::new(
-            connection.connection.accept_uni().await?,
-            LengthDelimitedCodec::new(),
-        );
-        println!("[info] accepted a worker pool stream");
+        let mut recv = connection.connection.accept_uni().await?;
+        let resource = protocol::quic::read_data::<Resource>(&mut recv).await?;
+        // let mut pool_stream = FramedRead::new(
+        //     connection.connection.accept_uni().await?,
+        //     LengthDelimitedCodec::new(),
+        // );
+        println!("[info] worker {index} has {resource:?}");
 
-        tokio::spawn(async move {
-            while let Some(frame) = pool_stream.next().await {
-                let data = frame.unwrap();
-                bincode::deserialize::<()>(data.as_bytes()).unwrap();
-                pool_tx.send(index).await.unwrap();
-            }
-        });
+        // tokio::spawn(async move {
+        //     while let Some(frame) = pool_stream.next().await {
+        //         let data = frame.unwrap();
+        //         bincode::deserialize::<()>(data.as_bytes()).unwrap();
+        //         pool_tx.send(index).await.unwrap();
+        //     }
+        // });
 
-        let mut termination_stream = FramedRead::new(
-            connection.connection.accept_uni().await?,
-            LengthDelimitedCodec::new(),
-        );
-        // dump dummy data
-        termination_stream.next().await;
-        println!("[info] accepted a worker termination stream");
-        tokio::spawn(async move {
-            while let Some(frame) = termination_stream.next().await {
-                let data = frame.unwrap();
-                let info = bincode::deserialize::<ProcessInfo>(data.as_bytes()).unwrap();
-                termination_tx.send(info).unwrap();
-            }
-        });
+        // let mut termination_stream = FramedRead::new(
+        //     connection.connection.accept_uni().await?,
+        //     LengthDelimitedCodec::new(),
+        // );
+        // // dump dummy data
+        // termination_stream.next().await;
+        // println!("[info] accepted a worker termination stream");
+        // tokio::spawn(async move {
+        //     while let Some(frame) = termination_stream.next().await {
+        //         let data = frame.unwrap();
+        //         let info = bincode::deserialize::<ProcessInfo>(data.as_bytes()).unwrap();
+        //         termination_tx.send(info).unwrap();
+        //     }
+        // });
 
-        Ok(Self { connection })
+        Ok(Self {
+            connection,
+            resource,
+        })
     }
 
     async fn request<T: for<'de> Deserialize<'de>>(
@@ -80,9 +85,22 @@ impl WorkerClient {
         &mut self,
         task_id: &TaskId,
         config: job::Config,
-    ) -> anyhow::Result<Response<()>> {
-        self.request(Request::Execute(task_id.to_string(), config.param))
-            .await
+        termination_tx: oneshot::Sender<Option<bool>>,
+    ) -> anyhow::Result<()> {
+        let (mut send, mut recv) = self.connection.connection.open_bi().await?;
+        protocol::quic::write_data(
+            &mut send,
+            &Request::Execute(task_id.to_string(), config.param),
+        )
+        .await?;
+        protocol::quic::read_data::<Response<()>>(&mut recv)
+            .await?
+            .as_result()?;
+        tokio::spawn(async move {
+            let exit_status = protocol::quic::read_data::<bool>(&mut recv).await.ok();
+            termination_tx.send(exit_status).unwrap();
+        });
+        Ok(())
     }
 
     pub async fn terminate(&mut self, task_id: &TaskId) -> anyhow::Result<Response<()>> {
@@ -98,10 +116,14 @@ impl Worker {
         Self(Arc::new(RwLock::new(client)))
     }
 
-    pub async fn execute(&self, task_id: &TaskId, config: job::Config) -> bool {
-        let mut worker = self.0.write().await;
-        worker.execute(task_id, config).await.is_ok()
+    pub async fn write(&self) -> impl DerefMut<Target = WorkerClient> + '_ {
+        self.0.write().await
     }
+
+    // pub async fn execute(&self, task_id: &TaskId, config: job::Config) -> bool {
+    //     let mut worker = self.0.write().await;
+    //     worker.execute(task_id, config).await.is_ok()
+    // }
 
     pub async fn terminate(&self, task_id: &TaskId) -> anyhow::Result<()> {
         let mut worker = self.0.write().await;
@@ -121,9 +143,9 @@ impl WorkerManager {
         addr: SocketAddr,
         cert_path: String,
         servers: Vec<ServerInfo>,
-        task_table: super::TaskSenderTableRef,
+        // task_table: super::TaskSenderTableRef,
     ) -> Result<Self, Box<dyn Error>> {
-        let (task_termination_tx, mut task_termination_rx) = mpsc::unbounded_channel();
+        // let (task_termination_tx, mut task_termination_rx) = mpsc::unbounded_channel();
         let config = quic_config::get_client_config(&cert_path)?;
         let (pool_tx, pool_rx) = mpsc::channel(servers.len());
         let mut workers = Vec::new();
@@ -134,25 +156,25 @@ impl WorkerManager {
                     config.clone(),
                     server_info,
                     i,
-                    pool_tx.clone(),
-                    task_termination_tx.clone(),
+                    // pool_tx.clone(),
+                    // task_termination_tx.clone(),
                 )
                 .await?,
             ));
         }
 
-        tokio::spawn(async move {
-            while let Some(ProcessInfo {
-                world_id,
-                exit_status,
-            }) = task_termination_rx.recv().await
-            {
-                println!("[termination] world id: {world_id}, exit status: {exit_status}");
-                let task_id: TaskId = TaskId::try_from(world_id.as_str()).unwrap();
-                let tx = task_table.write().await.remove(&task_id).unwrap();
-                tx.send(exit_status).unwrap();
-            }
-        });
+        // tokio::spawn(async move {
+        //     while let Some(ProcessInfo {
+        //         world_id,
+        //         exit_status,
+        //     }) = task_termination_rx.recv().await
+        //     {
+        //         println!("[termination] world id: {world_id}, exit status: {exit_status}");
+        //         let task_id: TaskId = TaskId::try_from(world_id.as_str()).unwrap();
+        //         let tx = task_table.write().await.remove(&task_id).unwrap();
+        //         tx.send(exit_status).unwrap();
+        //     }
+        // });
 
         Ok(Self {
             workers: Arc::new(workers),

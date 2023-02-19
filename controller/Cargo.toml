@@ -10,7 +10,6 @@ worker-if = { path = "../libs/worker-if" }
 protocol = { path = "../libs/protocol" }
 world-if = { path = "../libs/world-if" }
 quic-config = { path = "../libs/quic-config" }
-controller-if = { path = "../libs/controller-if" }
 repl = { path = "../libs/repl" }
 api = { path = "../libs/api" }
 async-trait = "0.1"

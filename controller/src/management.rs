@@ -128,33 +128,36 @@ impl Display for TaskId {
 async fn execute_task(
     id: &TaskId,
     config: job::Config,
-    rx: oneshot::Receiver<bool>,
+    // rx: oneshot::Receiver<bool>,
     worker: &Worker,
     worker_table: WorkerTableRef,
     db: &Db,
 ) -> bool {
     db.update_task_state(id, &TaskState::Assigned).await;
 
-    if worker.execute(id, config).await {
-        db.update_task_state(id, &TaskState::Running).await;
-        println!("[debug] {id} is running");
-        worker_table
-            .write()
-            .await
-            .insert(id.clone(), worker.clone());
-        println!("[debug] worker is registered");
-    } else {
+    let (tx, rx) = oneshot::channel();
+    if worker.write().await.execute(id, config, tx).await.is_err() {
         db.update_task_state(id, &TaskState::Failed).await;
         println!("[info] task {} could not execute", id);
         return false;
     }
+    db.update_task_state(id, &TaskState::Running).await;
+    println!("[debug] {id} is running");
+    worker_table
+        .write()
+        .await
+        .insert(id.clone(), worker.clone());
+    println!("[debug] worker is registered");
 
-    if rx.await.unwrap() {
-        db.update_task_state(id, &TaskState::Succeeded).await;
-        println!("[info] task {} successfully terminated", id);
-    } else {
-        db.update_task_state(id, &TaskState::Failed).await;
-        println!("[info] task {} failured in process", id);
+    match rx.await.unwrap() {
+        Some(true) => {
+            db.update_task_state(id, &TaskState::Succeeded).await;
+            println!("[info] task {} successfully terminated", id);
+        }
+        _ => {
+            db.update_task_state(id, &TaskState::Failed).await;
+            println!("[info] task {} failured in process", id);
+        }
     }
     worker_table.write().await.remove(id);
     println!("[debug] worker is removed");
@@ -164,7 +167,10 @@ async fn execute_task(
 #[derive(Debug)]
 struct JobQueued {
     job: Job,
-    task_rxs: Vec<(TaskId, oneshot::Receiver<bool>)>,
+    task_rxs: Vec<(
+        TaskId,
+        //  oneshot::Receiver<bool>
+    )>,
     config: job::Config,
 }
 
@@ -183,7 +189,11 @@ impl JobQueued {
         job.update_state(JobState::Running, db).await;
 
         let mut handles = Vec::new();
-        for (task_id, rx) in self.task_rxs {
+        for (
+            task_id,
+            //  rx
+        ) in self.task_rxs
+        {
             if job.is_foreced_termination().await {
                 break;
             }
@@ -199,7 +209,15 @@ impl JobQueued {
                     println!("[info] task {} is skipped", task_id);
                     return false;
                 }
-                execute_task(&task_id, config, rx, &worker, worker_table, &db).await
+                execute_task(
+                    &task_id,
+                    config,
+                    // rx,
+                    &worker,
+                    worker_table,
+                    &db,
+                )
+                .await
             }));
         }
         join_all(handles).await;
@@ -289,7 +307,7 @@ impl Db {
 pub struct Manager {
     job_queue_tx: mpsc::Sender<JobQueued>,
     job_table: JobTableRef,
-    task_sender_table: TaskSenderTableRef,
+    // task_sender_table: TaskSenderTableRef,
     db: Db,
 }
 
@@ -310,9 +328,13 @@ impl Manager {
         });
 
         let (job_queue_tx, mut job_queue_rx) = mpsc::channel::<JobQueued>(max_job_request);
-        let task_sender_table = Default::default();
+        // let task_sender_table = Default::default();
         let worker_manager = Arc::new(RwLock::new(
-            WorkerManager::new(addr, cert_path, servers, Arc::clone(&task_sender_table)).await?,
+            WorkerManager::new(
+                addr, cert_path, servers,
+                //  Arc::clone(&task_sender_table)
+            )
+            .await?,
         ));
 
         let db_clone = db.clone();
@@ -329,7 +351,7 @@ impl Manager {
         Ok(Self {
             job_queue_tx,
             job_table: Default::default(),
-            task_sender_table,
+            // task_sender_table,
             db,
         })
     }
@@ -340,13 +362,16 @@ impl Manager {
         let (job_id, task_ids) = self.db.insert(&state, task_count).await?;
 
         let mut task_rxs = Vec::new();
-        let mut task_sender_table = self.task_sender_table.write().await;
+        // let mut task_sender_table = self.task_sender_table.write().await;
         for task_id in task_ids {
-            let (tx, rx) = oneshot::channel();
-            task_sender_table.insert(task_id.clone(), tx);
-            task_rxs.push((task_id.clone(), rx));
+            // let (tx, rx) = oneshot::channel();
+            // task_sender_table.insert(task_id.clone(), tx);
+            task_rxs.push((
+                task_id.clone(),
+                // rx
+            ));
         }
-        drop(task_sender_table);
+        // drop(task_sender_table);
 
         let job = Job::new(job_id.clone(), config.clone(), state);
         let mut job_table = self.job_table.write().await;
