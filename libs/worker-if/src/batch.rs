@@ -1,3 +1,5 @@
+use std::ops::AddAssign;
+
 use ::world_if::batch::JobParam;
 
 pub mod world_if {
@@ -34,12 +36,20 @@ impl<T, E: std::error::Error> From<Result<T, E>> for Response<T> {
     }
 }
 
-#[derive(Debug, serde::Serialize, serde::Deserialize)]
+#[derive(
+    Debug, serde::Serialize, serde::Deserialize, PartialEq, Eq, PartialOrd, Ord, Clone, Copy,
+)]
 pub struct Resource(pub usize);
+
+impl AddAssign for Resource {
+    fn add_assign(&mut self, rhs: Self) {
+        self.0 += rhs.0;
+    }
+}
 
 impl From<&JobParam> for Resource {
     fn from(value: &JobParam) -> Self {
-        // [todo] provisional
+        // [todo] provisional implement
         Resource(1)
     }
 }
@@ -78,33 +88,3 @@ impl ResponseError {
         Self::FailedInProcess(anyhow::Error::new(error))
     }
 }
-
-/*
-#[derive(Debug, serde::Serialize, serde::Deserialize)]
-pub enum Response {
-    Ok(ResponseOk),
-    Err(serde_error::Error),
-}
-
-impl From<ResponseOk> for Response {
-    fn from(r: ResponseOk) -> Self {
-        Response::Ok(r)
-    }
-}
-
-impl From<ResponseError> for Response {
-    fn from(e: ResponseError) -> Self {
-        Response::Err(e.into())
-    }
-}
-
-impl From<std::result::Result<world_if::ResponseOk, serde_error::Error>> for Response {
-    #[inline]
-    fn from(r: std::result::Result<world_if::ResponseOk, serde_error::Error>) -> Self {
-        match r {
-            Ok(t) => ResponseOk::Custom(t).into(),
-            Err(e) => ResponseError::from(e).into(),
-        }
-    }
-}
- */

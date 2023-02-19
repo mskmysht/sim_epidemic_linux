@@ -17,16 +17,16 @@ async fn main(
     /// address to listen
     #[opt(long)]
     addr: SocketAddr,
-    /// length of world pool
+    /// resource max size
     #[opt(long)]
-    pool_len: usize,
+    max_resource: usize,
 ) -> Result<(), Box<dyn Error>> {
     let endpoint = Endpoint::server(quic_config::get_server_config(cert_path, pkey_path)?, addr)?;
     while let Some(connecting) = endpoint.accept().await {
         let connection = connecting.await.unwrap();
         let ip = connection.remote_address().to_string();
         println!("[info] Acceept {}", ip);
-        if let Err(e) = batch::run(world_path.clone(), connection, pool_len).await {
+        if let Err(e) = batch::run(world_path.clone(), connection, max_resource).await {
             println!("[info] Disconnect {} ({})", ip, e);
         }
     }

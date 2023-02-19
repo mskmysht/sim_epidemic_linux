@@ -18,7 +18,7 @@ use crate::{
         task::{self, TaskState},
         ResourceManager,
     },
-    management::worker_client::{WorkerLease, WorkerManager},
+    management::worker_client::WorkerManager,
 };
 
 use self::{server::ServerInfo, worker_client::Worker};
@@ -59,7 +59,7 @@ impl Job {
             JobState::Running => {
                 inner.forced_termination = true;
                 for (task_id, worker) in self.worker_table.read().await.iter() {
-                    if worker.terminate(task_id).await.is_err() {
+                    if worker.write().await.terminate(task_id).await.is_err() {
                         println!("[info] {task_id} is already terminated");
                     }
                 }
@@ -167,15 +167,12 @@ async fn execute_task(
 #[derive(Debug)]
 struct JobQueued {
     job: Job,
-    task_rxs: Vec<(
-        TaskId,
-        //  oneshot::Receiver<bool>
-    )>,
+    task_ids: Vec<TaskId>,
     config: job::Config,
 }
 
 impl JobQueued {
-    async fn dequeue(self, worker_manager: &Arc<RwLock<WorkerManager>>, db: &Db) {
+    async fn dequeue(self, worker_manager: &WorkerManager, db: &Db) {
         let job = self.job;
 
         if job.is_foreced_termination().await {
@@ -184,40 +181,27 @@ impl JobQueued {
         }
 
         job.update_state(JobState::Scheduled, db).await;
-
-        worker_manager.write().await.wait().await;
         job.update_state(JobState::Running, db).await;
 
         let mut handles = Vec::new();
-        for (
-            task_id,
-            //  rx
-        ) in self.task_rxs
-        {
+        for task_id in self.task_ids {
             if job.is_foreced_termination().await {
                 break;
             }
-            let worker_lease = WorkerLease::new(worker_manager.clone());
+            let worker_lease = worker_manager.lease((&self.config.param).into());
             let worker_table = Arc::clone(&job.worker_table);
             let config = self.config.clone();
             let job = job.clone();
             let db = db.clone();
-            handles.push(worker_lease.lease(|worker| async move {
-                thread::sleep(Duration::from_secs(1));
+            thread::sleep(Duration::from_secs(1));
+            handles.push(tokio::spawn(async move {
+                let worker = worker_lease.await.unwrap();
                 println!("[info] received task {}", task_id);
                 if job.is_foreced_termination().await {
                     println!("[info] task {} is skipped", task_id);
                     return false;
                 }
-                execute_task(
-                    &task_id,
-                    config,
-                    // rx,
-                    &worker,
-                    worker_table,
-                    &db,
-                )
-                .await
+                execute_task(&task_id, config, &worker, worker_table, &db).await
             }));
         }
         join_all(handles).await;
@@ -307,7 +291,6 @@ impl Db {
 pub struct Manager {
     job_queue_tx: mpsc::Sender<JobQueued>,
     job_table: JobTableRef,
-    // task_sender_table: TaskSenderTableRef,
     db: Db,
 }
 
@@ -328,14 +311,7 @@ impl Manager {
         });
 
         let (job_queue_tx, mut job_queue_rx) = mpsc::channel::<JobQueued>(max_job_request);
-        // let task_sender_table = Default::default();
-        let worker_manager = Arc::new(RwLock::new(
-            WorkerManager::new(
-                addr, cert_path, servers,
-                //  Arc::clone(&task_sender_table)
-            )
-            .await?,
-        ));
+        let worker_manager = WorkerManager::new(addr, cert_path, servers).await?;
 
         let db_clone = db.clone();
         tokio::spawn(async move {
@@ -351,7 +327,6 @@ impl Manager {
         Ok(Self {
             job_queue_tx,
             job_table: Default::default(),
-            // task_sender_table,
             db,
         })
     }
@@ -360,18 +335,6 @@ impl Manager {
         let task_count = config.iteration_count;
         let state = JobState::Created;
         let (job_id, task_ids) = self.db.insert(&state, task_count).await?;
-
-        let mut task_rxs = Vec::new();
-        // let mut task_sender_table = self.task_sender_table.write().await;
-        for task_id in task_ids {
-            // let (tx, rx) = oneshot::channel();
-            // task_sender_table.insert(task_id.clone(), tx);
-            task_rxs.push((
-                task_id.clone(),
-                // rx
-            ));
-        }
-        // drop(task_sender_table);
 
         let job = Job::new(job_id.clone(), config.clone(), state);
         let mut job_table = self.job_table.write().await;
@@ -385,7 +348,7 @@ impl Manager {
             self.job_queue_tx
                 .send(JobQueued {
                     job,
-                    task_rxs,
+                    task_ids,
                     config,
                 })
                 .await

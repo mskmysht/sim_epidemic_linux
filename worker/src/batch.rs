@@ -1,10 +1,18 @@
-use std::{collections::BTreeMap, error::Error, io, process, sync::Arc};
+use std::{
+    collections::BTreeMap,
+    error::Error,
+    io::{self},
+    process,
+    sync::Arc,
+};
 
+use futures_util::SinkExt;
 use ipc_channel::ipc::{self, IpcOneShotServer};
 use parking_lot::Mutex;
 use quinn::Connection;
 use serde::{Deserialize, Serialize};
 use shared_child::SharedChild;
+use tokio_util::codec::{FramedWrite, LengthDelimitedCodec};
 
 use worker_if::batch::{self, world_if, Resource};
 
@@ -30,41 +38,8 @@ pub async fn run(
     let mut send = connection.open_uni().await?;
     protocol::quic::write_data(&mut send, &Resource(max_resource)).await?;
 
-    // let (pool_tx, mut pool_rx) = mpsc::unbounded_channel();
-    // for _ in 0..max_resource {
-    //     pool_tx.send(()).unwrap();
-    // }
-    // let mut pool_stream =
-    //     FramedWrite::new(connection.open_uni().await?, LengthDelimitedCodec::new());
-    // tokio::spawn(async move {
-    //     while let Some(_) = pool_rx.recv().await {
-    //         pool_stream
-    //             .send(bincode::serialize(&()).unwrap().into())
-    //             .await
-    //             .unwrap();
-    //     }
-    // });
+    let manager = Arc::new(WorldManager::new(world_path));
 
-    // let mut termination_stream =
-    //     FramedWrite::new(connection.open_uni().await?, LengthDelimitedCodec::new());
-    // // send dummy data to make a peer accept
-    // termination_stream.send(vec![].into()).await.unwrap();
-
-    // let (termination_tx, mut termination_rx) = mpsc::unbounded_channel();
-    // tokio::spawn(async move {
-    //     while let Some(info) = termination_rx.recv().await {
-    //         pool_tx.send(()).unwrap();
-    //         termination_stream
-    //             .send(bincode::serialize(&info).unwrap().into())
-    //             .await
-    //             .unwrap();
-    //     }
-    // });
-
-    let manager = Arc::new(WorldManager::new(
-        world_path,
-        //  termination_tx
-    ));
     while let Ok((mut send, mut recv)) = connection.accept_bi().await {
         let manager = Arc::clone(&manager);
         tokio::spawn(async move {
@@ -76,19 +51,18 @@ pub async fn run(
                         Ok(child) => {
                             let res = batch::Response::<()>::from_ok(());
                             println!("[response] {res:?}");
-                            protocol::quic::write_data(&mut send, &res).await.unwrap();
+                            let mut stream = FramedWrite::new(send, LengthDelimitedCodec::new());
+                            stream
+                                .send(bincode::serialize(&res).unwrap().into())
+                                .await
+                                .unwrap();
                             tokio::spawn(async move {
                                 // let pid = child.id();
                                 let status = child.wait().unwrap();
-                                protocol::quic::write_data(&mut send, &status.success())
+                                stream
+                                    .send(bincode::serialize(&status.success()).unwrap().into())
                                     .await
                                     .unwrap();
-                                // termination_tx
-                                //     .send(controller_if::ProcessInfo {
-                                //         world_id,
-                                //         exit_status: status.success(),
-                                //     })
-                                //     .unwrap();
                             });
                         }
                         Err(e) => {
@@ -113,7 +87,6 @@ type BiConnection = world_if::IpcBiConnection<world_if::Request, world_if::Respo
 struct WorldManager {
     world_path: String,
     table: Mutex<BTreeMap<String, BiConnection>>,
-    // termination_tx: mpsc::UnboundedSender<ProcessInfo>,
 }
 
 #[derive(thiserror::Error, Debug)]
@@ -140,13 +113,9 @@ fn request(bicon: &BiConnection, req: world_if::Request) -> Result<world_if::Res
 }
 
 impl WorldManager {
-    fn new(
-        world_path: String,
-        // termination_tx: mpsc::UnboundedSender<ProcessInfo>
-    ) -> Self {
+    fn new(world_path: String) -> Self {
         Self {
             world_path,
-            // termination_tx,
             table: Default::default(),
         }
     }

@@ -4,7 +4,7 @@ use poem_openapi::Object;
 #[oai(rename_all = "camelCase")]
 pub struct WorldParams {
     #[oai(validator(minimum(value = "1", exclusive = false)))]
-    pub population_size: u64,
+    pub population_size: u32,
 }
 
 #[derive(Object, Clone, Debug, serde::Deserialize, serde::Serialize)]

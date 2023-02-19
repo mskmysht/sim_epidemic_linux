@@ -61,26 +61,34 @@ impl World {
             gat_spots_fixed: Vec::new(),
         };
 
-        for _ in 0..world_params.init_n_pop {
-            w.agents.push(Agent::new())
-        }
         w.reset();
         w
     }
 
     pub fn reset(&mut self) {
         //[todo] set runtime params of scenario != None
-        let n_pop = self.world_params.init_n_pop;
+        let n_pop = self.world_params.init_n_pop as usize;
         let n_dist = (self.runtime_params.dst_ob.r() * self.world_params.init_n_pop()) as usize;
-        let n_infected = (self.world_params.init_n_pop() * self.world_params.infected.r()) as u32;
+        let n_infected = (self.world_params.init_n_pop() * self.world_params.infected.r()) as usize;
         let n_recovered = {
-            let k = (self.world_params.init_n_pop() * self.world_params.recovered.r()) as u32;
+            let k = (self.world_params.init_n_pop() * self.world_params.recovered.r()) as usize;
             if n_infected + k > n_pop {
                 n_pop - n_infected
             } else {
                 k
             }
         };
+
+        let cur_len = self.agents.len();
+        if n_pop < cur_len {
+            for i in (n_pop..cur_len).rev() {
+                self.agents.swap_remove(i);
+            }
+        } else {
+            for _ in 0..(n_pop - cur_len) {
+                self.agents.push(Agent::new())
+            }
+        }
 
         self.gatherings.clear();
         self.field.clear();
@@ -90,9 +98,9 @@ impl World {
 
         let (cats, n_symptomatic) = Agent::reset_all(
             &self.agents,
-            n_pop as usize,
-            n_infected as usize,
-            n_recovered as usize,
+            n_pop,
+            n_infected,
+            n_recovered,
             n_dist,
             &self.world_params,
             &self.runtime_params,
@@ -100,8 +108,8 @@ impl World {
 
         let mut n_q_symptomatic =
             (n_symptomatic as f64 * self.world_params.q_symptomatic.r()) as u32;
-        let mut n_q_asymptomatic =
-            ((n_infected - n_symptomatic) as f64 * self.world_params.q_asymptomatic.r()) as u32;
+        let mut n_q_asymptomatic = ((n_infected as u32 - n_symptomatic) as f64
+            * self.world_params.q_asymptomatic.r()) as u32;
         for (i, t) in cats.into_iter().enumerate() {
             let agent = self.agents[i].clone();
             match t {
@@ -125,9 +133,9 @@ impl World {
         // reset test queue
         self.runtime_params.step = 0;
         self.log.reset(
-            n_pop - n_infected,
+            (n_pop - n_infected) as u32,
             n_symptomatic,
-            n_infected - n_symptomatic,
+            n_infected as u32 - n_symptomatic,
         );
         self.scenario_index = 0;
         //[todo] self.exec_scenario();

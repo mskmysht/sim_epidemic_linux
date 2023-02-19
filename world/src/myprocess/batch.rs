@@ -148,6 +148,8 @@ impl WorldSpawner {
         loop {
             match self.bicon.recv()? {
                 Request::Execute(param) => {
+                    self.world.world_params.init_n_pop = param.world_params.population_size;
+                    self.world.reset();
                     self.execute(param.stop_at)?;
                     break;
                 }
