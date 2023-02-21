@@ -1,13 +1,14 @@
 use std::fmt;
 
-pub use api::job::JobParam;
+pub use api;
 use chrono::serde::ts_seconds;
 pub use ipc_channel::ipc::{self, IpcReceiver, IpcSender};
+use ipc_channel::ipc::{IpcBytesReceiver, IpcBytesSender};
 use serde::{Deserialize, Serialize};
 
 #[derive(Debug, serde::Deserialize, serde::Serialize)]
 pub enum Request {
-    Execute(JobParam),
+    Execute,
     Terminate,
 }
 
@@ -99,38 +100,30 @@ impl fmt::Display for WorldStatus {
 }
 
 #[derive(Debug, serde::Deserialize, serde::Serialize)]
-pub struct IpcBiConnection<S, R> {
-    pub tx: IpcSender<S>,
-    pub rx: IpcReceiver<R>,
+pub struct IpcBiConnection {
+    pub tx: IpcBytesSender,
+    pub rx: IpcBytesReceiver,
 }
 
-impl<S, R> IpcBiConnection<S, R> {
-    pub fn new(tx: IpcSender<S>, rx: IpcReceiver<R>) -> Self {
+impl IpcBiConnection {
+    pub fn new(tx: IpcBytesSender, rx: IpcBytesReceiver) -> Self {
         Self { tx, rx }
     }
 
-    pub fn send(&self, data: S) -> Result<(), Box<ipc_channel::ErrorKind>>
-    where
-        S: Serialize,
-    {
-        self.tx.send(data)
+    pub fn send<T: Serialize>(&self, data: &T) -> anyhow::Result<()> {
+        self.tx.send(&bincode::serialize(data)?)?;
+        Ok(())
     }
 
-    pub fn recv(&self) -> Result<R, ipc::IpcError>
-    where
-        R: for<'da> Deserialize<'da> + Serialize,
-    {
-        self.rx.recv()
+    pub fn recv<T: for<'de> Deserialize<'de>>(&self) -> anyhow::Result<T> {
+        Ok(bincode::deserialize(&self.rx.recv()?)?)
     }
 
-    pub fn try_recv(&self) -> Result<Option<R>, ipc::IpcError>
-    where
-        R: for<'da> Deserialize<'da> + Serialize,
-    {
+    pub fn try_recv<T: for<'de> Deserialize<'de>>(&self) -> anyhow::Result<Option<T>> {
         match self.rx.try_recv() {
-            Ok(r) => Ok(Some(r)),
+            Ok(bytes) => Ok(Some(bincode::deserialize(&bytes)?)),
             Err(ipc::TryRecvError::Empty) => Ok(None),
-            Err(ipc::TryRecvError::IpcError(e)) => Err(e),
+            Err(ipc::TryRecvError::IpcError(e)) => Err(e.into()),
         }
     }
 }

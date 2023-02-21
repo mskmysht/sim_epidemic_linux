@@ -1,6 +1,6 @@
 use ipc_channel::ipc::IpcSender;
 use world_if::batch::{
-    IpcBiConnection, Request, Response, ResponseError, ResponseOk, WorldState, WorldStatus,
+    api, IpcBiConnection, Request, Response, ResponseError, ResponseOk, WorldState, WorldStatus,
 };
 
 use crate::{
@@ -24,20 +24,27 @@ struct WorldStepInfo {
 
 pub struct WorldSpawner {
     world: World,
+    param: api::job::JobParam,
     info: WorldStepInfo,
-    bicon: IpcBiConnection<Response, Request>,
+    bicon: IpcBiConnection,
     stream: IpcSender<WorldStatus>,
 }
 
 impl WorldSpawner {
     pub fn new(
         id: String,
-        bicon: IpcBiConnection<Response, Request>,
+        bicon: IpcBiConnection,
         stream: IpcSender<WorldStatus>,
     ) -> anyhow::Result<Self> {
-        let world = World::new(id, new_runtime_params(), new_world_params());
+        let param: api::job::JobParam = bicon.recv().unwrap();
+        let world = World::new(
+            id,
+            new_runtime_params(),
+            new_world_params(&param.world_params),
+        );
         let spawner = Self {
             world,
+            param,
             info: WorldStepInfo::default(),
             bicon,
             stream,
@@ -54,21 +61,18 @@ impl WorldSpawner {
 
     #[inline]
     fn res_ok(&self) -> anyhow::Result<()> {
-        self.bicon.send(ResponseOk::Success.into())?;
-        Ok(())
+        self.bicon.send(&Response::from(ResponseOk::Success))
     }
 
     #[inline]
     fn res_ok_with(&self, msg: String) -> anyhow::Result<()> {
         self.bicon
-            .send(ResponseOk::SuccessWithMessage(msg).into())?;
-        Ok(())
+            .send(&Response::from(ResponseOk::SuccessWithMessage(msg)))
     }
 
     #[inline]
     fn res_err(&self, err: ResponseError) -> anyhow::Result<()> {
-        self.bicon.send(err.into())?;
-        Ok(())
+        self.bicon.send(&Response::from(err))
     }
 
     #[inline]
@@ -92,12 +96,12 @@ impl WorldSpawner {
         self.res_ok()
     }
 
-    fn execute(&mut self, stop_at: u32) -> anyhow::Result<()> {
+    fn execute(&mut self) -> anyhow::Result<()> {
         if self.is_ended() {
             self.res_err(ResponseError::AlreadyEnded)?;
         }
 
-        let step_to_end = stop_at * self.world.world_params.steps_per_day;
+        let step_to_end = self.param.stop_at * self.world.world_params.steps_per_day;
         self.res_ok()?;
         while self.step_cont(step_to_end)? {
             if let Some(msg) = self.bicon.try_recv()? {
@@ -147,22 +151,22 @@ impl WorldSpawner {
     fn listen(mut self) -> anyhow::Result<()> {
         loop {
             match self.bicon.recv()? {
-                Request::Execute(param) => {
-                    self.world.world_params.init_n_pop = param.world_params.population_size;
+                Request::Execute => {
                     self.world.reset();
-                    self.execute(param.stop_at)?;
+                    self.execute()?;
                     break;
                 }
                 Request::Terminate => self.res_err(ResponseError::AlreadyStopped)?,
             }
         }
+        println!("<{}> stopped", self.world.id);
         Ok(())
     }
 }
 
-fn new_world_params() -> WorldParams {
+fn new_world_params(param: &api::job::WorldParams) -> WorldParams {
     WorldParams::new(
-        10000,
+        param.population_size,
         360,
         18,
         16,

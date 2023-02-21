@@ -1,6 +1,6 @@
 use std::ops::AddAssign;
 
-use ::world_if::batch::JobParam;
+use ::world_if::batch::api::job::JobParam;
 
 pub mod world_if {
     pub use world_if::batch::*;

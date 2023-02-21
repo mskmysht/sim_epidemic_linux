@@ -1,27 +1,25 @@
-use std::{
-    collections::BTreeMap,
-    error::Error,
-    io::{self},
-    process,
-    sync::Arc,
-};
+use std::{collections::BTreeMap, error::Error, io, process, sync::Arc};
 
 use futures_util::SinkExt;
-use ipc_channel::ipc::{self, IpcOneShotServer};
+use ipc_channel::ipc::IpcOneShotServer;
 use parking_lot::Mutex;
 use quinn::Connection;
 use serde::{Deserialize, Serialize};
 use shared_child::SharedChild;
 use tokio_util::codec::{FramedWrite, LengthDelimitedCodec};
 
-use worker_if::batch::{self, world_if, Resource};
+use worker_if::batch::{
+    self,
+    world_if::{self, IpcBiConnection},
+    Resource,
+};
 
 #[derive(Debug, thiserror::Error)]
 pub enum ResponseError {
     #[error("Failed to execute process")]
     FailedToExecute(#[from] IpcServerConnectionError),
     #[error("Ipc error has occured: {0}")]
-    IpcError(#[from] IpcError),
+    IpcError(#[from] anyhow::Error),
     #[error("Some error has occured in the child process: {0}")]
     FailedInProcess(#[from] world_if::Error),
     #[error("No id found")]
@@ -83,10 +81,9 @@ pub async fn run(
     Ok(())
 }
 
-type BiConnection = world_if::IpcBiConnection<world_if::Request, world_if::Response>;
 struct WorldManager {
     world_path: String,
-    table: Mutex<BTreeMap<String, BiConnection>>,
+    table: Mutex<BTreeMap<String, IpcBiConnection>>,
 }
 
 #[derive(thiserror::Error, Debug)]
@@ -99,16 +96,8 @@ pub enum IpcServerConnectionError {
     FailedToConnect(bincode::Error),
 }
 
-#[derive(thiserror::Error, Debug)]
-pub enum IpcError {
-    #[error("send error: {0}")]
-    SendError(#[from] bincode::Error),
-    #[error("receive error: {0}")]
-    RecvError(#[from] ipc::IpcError),
-}
-
-fn request(bicon: &BiConnection, req: world_if::Request) -> Result<world_if::Response, IpcError> {
-    bicon.send(req)?;
+fn request(bicon: &IpcBiConnection, req: world_if::Request) -> anyhow::Result<world_if::Response> {
+    bicon.send(&req)?;
     Ok(bicon.recv()?)
 }
 
@@ -123,13 +112,14 @@ impl WorldManager {
     async fn execute(
         &self,
         world_id: String,
-        param: world_if::JobParam,
+        param: world_if::api::job::JobParam,
     ) -> Result<SharedChild, ResponseError> {
-        let ((bicon, stream), child) = self
-            .connect_ipc_server::<(BiConnection, world_if::IpcReceiver<world_if::WorldStatus>)>(
-                &world_id,
-            )?;
+        let ((bicon, stream), child) = self.connect_ipc_server::<(
+            IpcBiConnection,
+            world_if::IpcReceiver<world_if::WorldStatus>,
+        )>(&world_id)?;
         let mut table = self.table.lock();
+        bicon.send(&param)?;
         let bicon = table.entry(world_id.clone()).or_insert(bicon);
 
         tokio::spawn(async move {
@@ -140,7 +130,7 @@ impl WorldManager {
             println!("{:?}", status_hist.last());
         });
 
-        match request(&bicon, world_if::Request::Execute(param))? {
+        match request(&bicon, world_if::Request::Execute)? {
             world_if::Response::Ok(_) => Ok(child),
             world_if::Response::Err(e) => Err(e.into()),
         }
