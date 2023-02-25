@@ -1,85 +1,62 @@
 use quinn::{ClientConfig, Connection, Endpoint};
-use std::{error::Error, net::SocketAddr, str::FromStr};
+use std::{net::SocketAddr, str::FromStr};
 
 #[derive(Debug)]
-pub struct MyConnection {
-    pub endpoint: Endpoint,
-    pub server_name: String,
-    pub connection: Connection,
-    pub name: String,
+pub struct Server {
+    addr: SocketAddr,
+    name: String,
 }
 
-impl MyConnection {
-    pub async fn new(
-        addr: SocketAddr,
+impl Server {
+    pub async fn connect(
+        self,
+        client_addr: SocketAddr,
         config: ClientConfig,
-        T2(server_addr, server_name): ServerInfo,
-        name: String,
-    ) -> Result<Self, Box<dyn Error>> {
-        let mut endpoint = Endpoint::client(addr)?;
+    ) -> anyhow::Result<Connection> {
+        let mut endpoint = Endpoint::client(client_addr)?;
         endpoint.set_default_client_config(config);
-        let connection = endpoint.connect(server_addr, &server_name)?.await?;
-        Ok(Self {
-            endpoint,
-            server_name,
-            connection,
-            name,
-        })
-    }
-
-    pub async fn connect(&mut self) -> Result<(), Box<dyn Error + Send + Sync>> {
-        self.connection = self
-            .endpoint
-            .connect(self.connection.remote_address(), &self.server_name)?
-            .await?;
-        Ok(())
+        Ok(endpoint.connect(self.addr, &self.name)?.await?)
     }
 }
-
-pub type ServerInfo = T2<SocketAddr, String>;
-
-#[derive(Debug, Eq, PartialEq)]
-pub struct T2<T, U>(pub T, pub U);
 
 #[derive(Debug, thiserror::Error)]
-pub enum ParseTupleError<E0, E1> {
-    #[error("invalid syntax of the tuple")]
-    SyntaxError,
-    #[error("invalid left argment:{0}")]
-    LeftError(E0),
-    #[error("invalid right argment: {0}")]
-    RightError(E1),
+pub enum ParseServerInfoError {
+    #[error("invalid syntax")]
+    InvalidSyntax,
+    #[error("invalid address")]
+    InvalidAddress(#[from] std::net::AddrParseError),
 }
 
-impl<T: FromStr, U: FromStr> FromStr for T2<T, U> {
-    type Err = ParseTupleError<T::Err, U::Err>;
+impl FromStr for Server {
+    type Err = ParseServerInfoError;
 
     fn from_str(s: &str) -> Result<Self, Self::Err> {
         let (ls, rs) = s
-            .strip_prefix('(')
-            .and_then(|s| s.strip_suffix(')'))
-            .and_then(|s| s.split_once(','))
-            .ok_or(ParseTupleError::SyntaxError)?;
+            .split_once('/')
+            .ok_or(ParseServerInfoError::InvalidSyntax)?;
 
-        let l = ls.trim().parse().map_err(ParseTupleError::LeftError)?;
-        let r = rs.trim().parse().map_err(ParseTupleError::RightError)?;
-        Ok(T2(l, r))
+        let addr = ls.trim().parse::<SocketAddr>()?;
+        let name = rs.trim().to_string();
+        Ok(Self { addr, name })
     }
 }
 
 #[cfg(test)]
 mod tests {
-    use super::T2;
+    use super::{ParseServerInfoError, Server};
 
     #[test]
-    fn parse_tuple_test() {
-        let s = "(hoge,fuga)";
-        assert_eq!(
-            T2("hoge".to_string(), "fuga".to_string()),
-            s.parse().unwrap()
-        );
+    fn parse_server_info_test() {
+        let addr = "192.168.1.10:8000";
+        let name = "fuga";
+        let si = format!(" {addr} / {name} ").parse::<Server>().unwrap();
+        assert_eq!(si.addr, addr.parse().unwrap());
+        assert_eq!(si.name, name.to_string());
 
-        let s = "( 10  ,  20  )";
-        assert_eq!(T2(10, 20), s.parse().unwrap());
+        let si = format!("hoge / {name} ").parse::<Server>();
+        assert!(matches!(si, Err(ParseServerInfoError::InvalidAddress(_))));
+
+        let si = format!(" {addr}, {name} ").parse::<Server>();
+        assert!(matches!(si, Err(ParseServerInfoError::InvalidSyntax)));
     }
 }

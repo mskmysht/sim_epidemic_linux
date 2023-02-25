@@ -345,10 +345,10 @@ version = "0.1.0"
 dependencies = [
  "anyhow",
  "api",
- "argopt",
  "async-channel",
  "async-trait",
  "bincode",
+ "clap 4.1.6",
  "futures-util",
  "parking_lot",
  "poem",

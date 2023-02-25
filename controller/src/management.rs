@@ -21,7 +21,7 @@ use crate::{
     management::worker_client::WorkerManager,
 };
 
-use self::{server::ServerInfo, worker_client::Worker};
+use self::worker_client::Worker;
 
 pub type WorkerTableRef = Arc<RwLock<HashMap<TaskId, Worker>>>;
 pub type TaskSenderTableRef = Arc<RwLock<HashMap<TaskId, oneshot::Sender<bool>>>>;
@@ -294,15 +294,26 @@ pub struct Manager {
     db: Db,
 }
 
+#[derive(clap::Parser)]
+pub struct Args {
+    addr: SocketAddr,
+    cert_path: String,
+    servers: Vec<String>,
+    db_username: String,
+    db_password: String,
+    max_job_request: usize,
+}
+
 impl Manager {
-    pub async fn new(
-        addr: SocketAddr,
-        cert_path: String,
-        servers: Vec<ServerInfo>,
-        max_job_request: usize,
-    ) -> Result<Self, Box<dyn Error>> {
-        let (client, connection) =
-            tokio_postgres::connect("host=localhost user=simepi password=simepi", NoTls).await?;
+    pub async fn new(args: Args) -> Result<Self, Box<dyn Error>> {
+        let (client, connection) = tokio_postgres::connect(
+            &format!(
+                "host=localhost user={} password={}",
+                args.db_username, args.db_password
+            ),
+            NoTls,
+        )
+        .await?;
         let db = Db(Arc::new(client));
         tokio::spawn(async move {
             if let Err(e) = connection.await {
@@ -310,8 +321,8 @@ impl Manager {
             }
         });
 
-        let (job_queue_tx, mut job_queue_rx) = mpsc::channel::<JobQueued>(max_job_request);
-        let worker_manager = WorkerManager::new(addr, cert_path, servers).await?;
+        let (job_queue_tx, mut job_queue_rx) = mpsc::channel::<JobQueued>(args.max_job_request);
+        let worker_manager = WorkerManager::new(args.addr, args.cert_path, args.servers).await?;
 
         let db_clone = db.clone();
         tokio::spawn(async move {

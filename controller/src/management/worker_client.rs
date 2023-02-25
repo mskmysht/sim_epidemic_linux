@@ -1,6 +1,6 @@
 use futures_util::{Future, StreamExt};
 use parking_lot::Mutex;
-use quinn::ClientConfig;
+use quinn::{ClientConfig, Connection};
 use repl::nom::AsBytes;
 use std::{
     collections::VecDeque, error::Error, net::SocketAddr, ops::DerefMut, pin::Pin, sync::Arc,
@@ -9,37 +9,31 @@ use tokio::sync::{mpsc, oneshot, RwLock};
 use tokio_util::codec::{FramedRead, LengthDelimitedCodec};
 use worker_if::batch::{Request, Resource, Response};
 
-use crate::api_server::job;
+use crate::{api_server::job, management::server::Server};
 
-use super::{
-    server::{MyConnection, ServerInfo},
-    TaskId,
-};
+use super::TaskId;
 
 #[derive(Debug)]
 pub struct WorkerClient {
-    connection: MyConnection,
+    connection: Connection,
     index: usize,
     release_tx: mpsc::UnboundedSender<(usize, Resource)>,
 }
 
 impl WorkerClient {
     pub async fn new(
-        addr: SocketAddr,
+        client_addr: SocketAddr,
         config: ClientConfig,
-        server_info: ServerInfo,
+        server_info: String,
         index: usize,
         release_tx: mpsc::UnboundedSender<(usize, Resource)>,
     ) -> Result<(Self, Resource), Box<dyn Error>> {
-        let connection = MyConnection::new(
-            addr,
-            config,
-            server_info,
-            format!("worker-{index}").to_string(),
-        )
-        .await?;
+        let connection = server_info
+            .parse::<Server>()?
+            .connect(client_addr, config)
+            .await?;
 
-        let mut recv = connection.connection.accept_uni().await?;
+        let mut recv = connection.accept_uni().await?;
         let max_resource = protocol::quic::read_data::<Resource>(&mut recv).await?;
         println!("[info] worker {index} has {max_resource:?}");
 
@@ -60,7 +54,7 @@ impl WorkerClient {
         termination_tx: oneshot::Sender<Option<bool>>,
     ) -> anyhow::Result<()> {
         let idx_resource = (self.index, (&config.param).into());
-        let (mut send, recv) = self.connection.connection.open_bi().await?;
+        let (mut send, recv) = self.connection.open_bi().await?;
         protocol::quic::write_data(
             &mut send,
             &Request::Execute(task_id.to_string(), config.param),
@@ -85,7 +79,7 @@ impl WorkerClient {
     }
 
     pub async fn terminate(&mut self, task_id: &TaskId) -> anyhow::Result<()> {
-        let (mut send, mut recv) = self.connection.connection.open_bi().await?;
+        let (mut send, mut recv) = self.connection.open_bi().await?;
         protocol::quic::write_data(&mut send, &Request::Terminate(task_id.to_string())).await?;
         protocol::quic::read_data::<Response<()>>(&mut recv)
             .await?
@@ -121,7 +115,7 @@ impl WorkerManager {
     pub async fn new(
         addr: SocketAddr,
         cert_path: String,
-        servers: Vec<ServerInfo>,
+        servers: Vec<String>,
     ) -> Result<Self, Box<dyn Error>> {
         let (release_tx, mut release_rx) = mpsc::unbounded_channel();
         let config = quic_config::get_client_config(&cert_path)?;
