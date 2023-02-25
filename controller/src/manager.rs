@@ -1,6 +1,3 @@
-pub mod server;
-pub mod worker_client;
-
 use std::{
     collections::HashMap, error::Error, fmt::Display, net::SocketAddr, sync::Arc, thread,
     time::Duration,
@@ -12,20 +9,15 @@ use tokio::sync::{mpsc, oneshot, RwLock};
 use tokio_postgres::{Client, NoTls};
 use uuid::Uuid;
 
-use crate::{
-    api_server::{
-        job::{self, JobState},
-        task::{self, TaskState},
-        ResourceManager,
-    },
-    management::worker_client::WorkerManager,
+use crate::app::{
+    job::{self, JobState},
+    task::{self, TaskState},
+    ResourceManager,
 };
 
-use self::worker_client::Worker;
+use self::worker::{TaskId, WorkerClient, WorkerManager};
 
-pub type WorkerTableRef = Arc<RwLock<HashMap<TaskId, Worker>>>;
-pub type TaskSenderTableRef = Arc<RwLock<HashMap<TaskId, oneshot::Sender<bool>>>>;
-type JobTableRef = Arc<RwLock<HashMap<JobId, Job>>>;
+type WorkerTableRef = Arc<RwLock<HashMap<TaskId, WorkerClient>>>;
 
 #[derive(Clone, Debug)]
 struct Job {
@@ -108,28 +100,10 @@ impl Display for JobId {
     }
 }
 
-#[derive(Debug, Clone, Hash, PartialEq, Eq)]
-pub struct TaskId(pub(super) Uuid);
-
-impl TryFrom<&str> for TaskId {
-    type Error = uuid::Error;
-
-    fn try_from(value: &str) -> Result<Self, Self::Error> {
-        Ok(Self(value.try_into()?))
-    }
-}
-
-impl Display for TaskId {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "{}", self.0.to_string())
-    }
-}
-
 async fn execute_task(
     id: &TaskId,
     config: job::Config,
-    // rx: oneshot::Receiver<bool>,
-    worker: &Worker,
+    worker: &WorkerClient,
     worker_table: WorkerTableRef,
     db: &Db,
 ) -> bool {
@@ -290,32 +264,23 @@ impl Db {
 
 pub struct Manager {
     job_queue_tx: mpsc::Sender<JobQueued>,
-    job_table: JobTableRef,
+    job_table: Arc<RwLock<HashMap<JobId, Job>>>,
     db: Db,
 }
 
-#[derive(clap::Parser)]
-pub struct Args {
-    #[arg(long)]
-    client_addr: SocketAddr,
-    #[arg(long)]
-    cert_path: String,
-    #[arg(long)]
-    db_username: String,
-    #[arg(long)]
-    db_password: String,
-    #[arg(long)]
-    max_job_request: usize,
-    #[arg(long)]
-    servers: Vec<String>,
-}
-
 impl Manager {
-    pub async fn new(args: Args) -> Result<Self, Box<dyn Error>> {
+    pub async fn new(
+        client_addr: SocketAddr,
+        cert_path: String,
+        db_username: String,
+        db_password: String,
+        max_job_request: usize,
+        servers: Vec<String>,
+    ) -> Result<Self, Box<dyn Error>> {
         let (client, connection) = tokio_postgres::connect(
             &format!(
                 "host=localhost user={} password={}",
-                args.db_username, args.db_password
+                db_username, db_password
             ),
             NoTls,
         )
@@ -327,9 +292,8 @@ impl Manager {
             }
         });
 
-        let (job_queue_tx, mut job_queue_rx) = mpsc::channel::<JobQueued>(args.max_job_request);
-        let worker_manager =
-            WorkerManager::new(args.client_addr, args.cert_path, args.servers).await?;
+        let (job_queue_tx, mut job_queue_rx) = mpsc::channel::<JobQueued>(max_job_request);
+        let worker_manager = WorkerManager::new(client_addr, cert_path, servers).await?;
 
         let db_clone = db.clone();
         tokio::spawn(async move {
@@ -439,6 +403,232 @@ impl ResourceManager for Manager {
 
     async fn terminate_job(&self, id: &str) -> Option<bool> {
         self.terminate_job(id).await
+    }
+}
+
+mod worker {
+    use std::{
+        collections::VecDeque, error::Error, fmt::Display, net::SocketAddr, ops::DerefMut,
+        pin::Pin, sync::Arc,
+    };
+
+    use futures_util::{Future, StreamExt};
+    use parking_lot::Mutex;
+    use quinn::{ClientConfig, Connection};
+    use repl::nom::AsBytes;
+    use tokio::sync::{mpsc, oneshot, RwLock};
+    use tokio_util::codec::{FramedRead, LengthDelimitedCodec};
+    use uuid::Uuid;
+
+    use worker_if::batch::{Request, Resource, Response};
+
+    use crate::{app::job, server::Server};
+
+    #[derive(Debug, Clone, Hash, PartialEq, Eq)]
+    pub struct TaskId(pub Uuid);
+
+    impl TryFrom<&str> for TaskId {
+        type Error = uuid::Error;
+
+        fn try_from(value: &str) -> Result<Self, Self::Error> {
+            Ok(Self(value.try_into()?))
+        }
+    }
+
+    impl Display for TaskId {
+        fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+            write!(f, "{}", self.0.to_string())
+        }
+    }
+
+    #[derive(Debug)]
+    pub struct Inner {
+        connection: Connection,
+        index: usize,
+        release_tx: mpsc::UnboundedSender<(usize, Resource)>,
+    }
+
+    impl Inner {
+        async fn new(
+            client_addr: SocketAddr,
+            config: ClientConfig,
+            server_info: String,
+            index: usize,
+            release_tx: mpsc::UnboundedSender<(usize, Resource)>,
+        ) -> Result<(Self, Resource), Box<dyn Error>> {
+            let connection = server_info
+                .parse::<Server>()?
+                .connect(client_addr, config)
+                .await?;
+
+            let mut recv = connection.accept_uni().await?;
+            let max_resource = protocol::quic::read_data::<Resource>(&mut recv).await?;
+            println!("[info] worker {index} has {max_resource:?}");
+
+            Ok((
+                Self {
+                    connection,
+                    index,
+                    release_tx,
+                },
+                max_resource,
+            ))
+        }
+
+        pub async fn execute(
+            &mut self,
+            task_id: &TaskId,
+            config: job::Config,
+            termination_tx: oneshot::Sender<Option<bool>>,
+        ) -> anyhow::Result<()> {
+            let idx_resource = (self.index, (&config.param).into());
+            let (mut send, recv) = self.connection.open_bi().await?;
+            protocol::quic::write_data(
+                &mut send,
+                &Request::Execute(task_id.to_string(), config.param),
+            )
+            .await?;
+
+            let mut stream = FramedRead::new(recv, LengthDelimitedCodec::new());
+            bincode::deserialize::<Response<()>>(stream.next().await.unwrap()?.as_bytes())?
+                .as_result()?;
+            let release_tx = self.release_tx.clone();
+            tokio::spawn(async move {
+                let exit_status = stream
+                    .next()
+                    .await
+                    .unwrap()
+                    .ok()
+                    .map(|data| bincode::deserialize::<bool>(data.as_bytes()).unwrap());
+                termination_tx.send(exit_status).unwrap();
+                release_tx.send(idx_resource).unwrap();
+            });
+            Ok(())
+        }
+
+        pub async fn terminate(&mut self, task_id: &TaskId) -> anyhow::Result<()> {
+            let (mut send, mut recv) = self.connection.open_bi().await?;
+            protocol::quic::write_data(&mut send, &Request::Terminate(task_id.to_string())).await?;
+            protocol::quic::read_data::<Response<()>>(&mut recv)
+                .await?
+                .as_result()?;
+            Ok(())
+        }
+    }
+
+    #[derive(Clone, Debug)]
+    pub struct WorkerClient(Arc<RwLock<Inner>>);
+
+    impl WorkerClient {
+        fn new(client: Inner) -> Self {
+            Self(Arc::new(RwLock::new(client)))
+        }
+
+        pub async fn write(&self) -> impl DerefMut<Target = Inner> + '_ {
+            self.0.write().await
+        }
+    }
+
+    #[derive(Debug)]
+    struct WorkerPool {
+        resource: Resource,
+        tx: oneshot::Sender<WorkerClient>,
+    }
+
+    pub struct WorkerManager {
+        queue_tx: mpsc::UnboundedSender<WorkerPool>,
+    }
+
+    impl WorkerManager {
+        pub async fn new(
+            addr: SocketAddr,
+            cert_path: String,
+            servers: Vec<String>,
+        ) -> Result<Self, Box<dyn Error>> {
+            let (release_tx, mut release_rx) = mpsc::unbounded_channel();
+            let config = quic_config::get_client_config(&cert_path)?;
+            let mut workers = Vec::new();
+            for (i, server_info) in servers.into_iter().enumerate() {
+                let (worker, max_resource) = Inner::new(
+                    addr.clone(),
+                    config.clone(),
+                    server_info,
+                    i,
+                    release_tx.clone(),
+                )
+                .await?;
+                workers.push((
+                    WorkerClient::new(worker),
+                    parking_lot::RwLock::new(max_resource),
+                ));
+            }
+
+            let workers = Arc::new(workers);
+            let queue = Arc::new(Mutex::new(VecDeque::new()));
+
+            let (queue_tx, mut queue_rx) = mpsc::unbounded_channel::<WorkerPool>();
+            {
+                let workers = Arc::clone(&workers);
+                let queue = Arc::clone(&queue);
+                tokio::spawn(async move {
+                    while let Some(pool) = queue_rx.recv().await {
+                        let mut max_res = pool.resource;
+                        let mut max_worker = None;
+                        for (w, r) in workers.iter() {
+                            let res = *r.read();
+                            if res >= max_res {
+                                max_res = res;
+                                max_worker = Some(w)
+                            }
+                        }
+                        match max_worker {
+                            Some(w) => {
+                                pool.tx.send(w.clone()).unwrap();
+                            }
+                            None => {
+                                queue.lock().push_back(pool);
+                            }
+                        }
+                    }
+                });
+            }
+
+            tokio::spawn(async move {
+                while let Some((index, released)) = release_rx.recv().await {
+                    let (worker, resource) = &workers[index];
+                    let mut resource = resource.write();
+                    *resource += released;
+                    let mut queue = queue.lock();
+                    if let Some(pool) = queue.front() {
+                        if pool.resource >= *resource {
+                            let pool = queue.pop_front().unwrap();
+                            pool.tx.send(worker.clone()).unwrap();
+                        }
+                    }
+                }
+            });
+
+            Ok(Self { queue_tx })
+        }
+
+        pub fn lease(&self, resource: Resource) -> WorkerLease {
+            let (tx, rx) = oneshot::channel();
+            self.queue_tx.send(WorkerPool { resource, tx }).unwrap();
+            WorkerLease(rx)
+        }
+    }
+
+    pub struct WorkerLease(oneshot::Receiver<WorkerClient>);
+
+    impl Future for WorkerLease {
+        type Output = Result<WorkerClient, oneshot::error::RecvError>;
+
+        fn poll(
+            mut self: std::pin::Pin<&mut Self>,
+            cx: &mut std::task::Context<'_>,
+        ) -> std::task::Poll<Self::Output> {
+            Pin::new(&mut self.0).poll(cx)
+        }
     }
 }
 

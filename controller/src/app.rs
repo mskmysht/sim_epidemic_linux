@@ -89,7 +89,7 @@ impl<M: ResourceManager + Send + Sync + 'static> Api<M> {
         }
     }
 
-    #[oai(path = "/jobs", method = "get")]
+    #[oai(tag = "ApiTags::Job", path = "/jobs", method = "get")]
     async fn get_all_jobs(&self) -> poem::Result<Json<Vec<job::Job>>> {
         Ok(Json(self.0.get_all_jobs().await))
     }
