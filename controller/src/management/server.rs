@@ -4,7 +4,7 @@ use std::{net::SocketAddr, str::FromStr};
 #[derive(Debug)]
 pub struct Server {
     addr: SocketAddr,
-    name: String,
+    domain: String,
 }
 
 impl Server {
@@ -15,7 +15,7 @@ impl Server {
     ) -> anyhow::Result<Connection> {
         let mut endpoint = Endpoint::client(client_addr)?;
         endpoint.set_default_client_config(config);
-        Ok(endpoint.connect(self.addr, &self.name)?.await?)
+        Ok(endpoint.connect(self.addr, &self.domain)?.await?)
     }
 }
 
@@ -31,13 +31,13 @@ impl FromStr for Server {
     type Err = ParseServerInfoError;
 
     fn from_str(s: &str) -> Result<Self, Self::Err> {
-        let (ls, rs) = s
-            .split_once('/')
+        let (addr, domain) = s
+            .split_once('#')
             .ok_or(ParseServerInfoError::InvalidSyntax)?;
 
-        let addr = ls.trim().parse::<SocketAddr>()?;
-        let name = rs.trim().to_string();
-        Ok(Self { addr, name })
+        let domain = domain.trim().to_string();
+        let addr = addr.trim().parse::<SocketAddr>()?;
+        Ok(Self { addr, domain })
     }
 }
 
@@ -48,15 +48,15 @@ mod tests {
     #[test]
     fn parse_server_info_test() {
         let addr = "192.168.1.10:8000";
-        let name = "fuga";
-        let si = format!(" {addr} / {name} ").parse::<Server>().unwrap();
+        let domain = "fuga";
+        let si = format!(" {addr} # {domain} ").parse::<Server>().unwrap();
         assert_eq!(si.addr, addr.parse().unwrap());
-        assert_eq!(si.name, name.to_string());
+        assert_eq!(si.domain, domain.to_string());
 
-        let si = format!("hoge / {name} ").parse::<Server>();
+        let si = format!("hoge # {domain} ").parse::<Server>();
         assert!(matches!(si, Err(ParseServerInfoError::InvalidAddress(_))));
 
-        let si = format!(" {addr}, {name} ").parse::<Server>();
+        let si = format!(" {addr}, {domain} ").parse::<Server>();
         assert!(matches!(si, Err(ParseServerInfoError::InvalidSyntax)));
     }
 }

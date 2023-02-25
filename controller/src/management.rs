@@ -296,12 +296,18 @@ pub struct Manager {
 
 #[derive(clap::Parser)]
 pub struct Args {
-    addr: SocketAddr,
+    #[arg(long)]
+    client_addr: SocketAddr,
+    #[arg(long)]
     cert_path: String,
-    servers: Vec<String>,
+    #[arg(long)]
     db_username: String,
+    #[arg(long)]
     db_password: String,
+    #[arg(long)]
     max_job_request: usize,
+    #[arg(long)]
+    servers: Vec<String>,
 }
 
 impl Manager {
@@ -322,7 +328,8 @@ impl Manager {
         });
 
         let (job_queue_tx, mut job_queue_rx) = mpsc::channel::<JobQueued>(args.max_job_request);
-        let worker_manager = WorkerManager::new(args.addr, args.cert_path, args.servers).await?;
+        let worker_manager =
+            WorkerManager::new(args.client_addr, args.cert_path, args.servers).await?;
 
         let db_clone = db.clone();
         tokio::spawn(async move {
