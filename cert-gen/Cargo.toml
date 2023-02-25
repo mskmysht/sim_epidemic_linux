@@ -8,4 +8,4 @@ edition = "2021"
 [dependencies]
 file-io = { path = "../libs/file-io" }
 rcgen = "0.10"
-argopt = "0.3"
+clap = "4.1"

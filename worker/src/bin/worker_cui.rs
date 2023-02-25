@@ -1,5 +1,6 @@
 use std::error;
 
+use clap::Parser;
 use repl::Parsable;
 use worker_if::realtime::{parse, Request, Response};
 
@@ -19,15 +20,21 @@ fn logging(response: &Response) {
     }
 }
 
-#[argopt::cmd]
-fn main(
+#[derive(Debug, clap::Parser)]
+struct Args {
     /// world binary path
-    #[opt(long)]
+    #[arg(long)]
     world_path: String,
     /// enable async
-    #[opt(short = 'a')]
+    #[arg(short = 'a')]
     is_async: bool,
-) -> Result<(), Box<dyn error::Error>> {
+}
+
+fn main() -> Result<(), Box<dyn error::Error>> {
+    let Args {
+        world_path,
+        is_async,
+    } = Args::parse();
     let managing = worker::realtime::WorldManaging::new(world_path);
     if is_async {
         let rt = tokio::runtime::Runtime::new()?;

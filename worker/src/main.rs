@@ -1,26 +1,36 @@
+use clap::Parser;
 use quinn::Endpoint;
 use std::{error::Error, net::SocketAddr};
 use worker::batch;
 
-#[argopt::cmd]
-#[tokio::main]
-async fn main(
+#[derive(clap::Parser)]
+struct Args {
     /// path of certificate file
-    #[opt(long)]
+    #[arg(long)]
     cert_path: String,
     /// path of private key file
-    #[opt(long)]
+    #[arg(long)]
     pkey_path: String,
     /// world binary path
-    #[opt(long)]
+    #[arg(long)]
     world_path: String,
     /// address to listen
-    #[opt(long)]
+    #[arg(long)]
     addr: SocketAddr,
     /// resource max size
-    #[opt(long)]
+    #[arg(long)]
     max_resource: usize,
-) -> Result<(), Box<dyn Error>> {
+}
+
+#[tokio::main]
+async fn main() -> Result<(), Box<dyn Error>> {
+    let Args {
+        cert_path,
+        pkey_path,
+        world_path,
+        addr,
+        max_resource,
+    } = Args::parse();
     let endpoint = Endpoint::server(quic_config::get_server_config(cert_path, pkey_path)?, addr)?;
     while let Some(connecting) = endpoint.accept().await {
         let connection = connecting.await.unwrap();

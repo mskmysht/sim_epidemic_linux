@@ -7,5 +7,7 @@ edition = "2021"
 
 [dependencies]
 file-io = { path = "../file-io" }
-quinn = "0.9"
+quinn = "0.9.3"
 rustls = "0.20"
+thiserror = "1.0"
+anyhow = "1.0"
