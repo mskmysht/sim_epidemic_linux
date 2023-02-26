@@ -51,7 +51,7 @@ impl Job {
             JobState::Running => {
                 inner.forced_termination = true;
                 for (task_id, worker) in self.worker_table.read().await.iter() {
-                    if worker.write().await.terminate(task_id).await.is_err() {
+                    if worker.terminate(task_id).await.is_err() {
                         println!("[info] {task_id} is already terminated");
                     }
                 }
@@ -106,14 +106,14 @@ async fn execute_task(
     worker: &WorkerClient,
     worker_table: WorkerTableRef,
     db: &Db,
-) -> bool {
+) {
     db.update_task_state(id, &TaskState::Assigned).await;
 
     let (tx, rx) = oneshot::channel();
-    if worker.write().await.execute(id, config, tx).await.is_err() {
+    if worker.execute(id, config, tx).await.is_err() {
         db.update_task_state(id, &TaskState::Failed).await;
         println!("[info] task {} could not execute", id);
-        return false;
+        return;
     }
     db.update_task_state(id, &TaskState::Running).await;
     println!("[debug] {id} is running");
@@ -135,7 +135,6 @@ async fn execute_task(
     }
     worker_table.write().await.remove(id);
     println!("[debug] worker is removed");
-    return true;
 }
 
 #[derive(Debug)]
@@ -169,17 +168,17 @@ impl JobQueued {
             let db = db.clone();
             thread::sleep(Duration::from_secs(1));
             handles.push(tokio::spawn(async move {
+                println!("[debug] waiting to receive worker");
                 let worker = worker_lease.await.unwrap();
-                println!("[info] received task {}", task_id);
+                println!("[debug] received task {}", task_id);
                 if job.is_foreced_termination().await {
                     println!("[info] task {} is skipped", task_id);
-                    return false;
+                    return;
                 }
-                execute_task(&task_id, config, &worker, worker_table, &db).await
+                execute_task(&task_id, config, &worker, worker_table, &db).await;
             }));
         }
         join_all(handles).await;
-        println!("---");
         job.update_state(JobState::Completed, db).await;
     }
 }
@@ -408,19 +407,18 @@ impl ResourceManager for Manager {
 
 mod worker {
     use std::{
-        collections::VecDeque, error::Error, fmt::Display, net::SocketAddr, ops::DerefMut,
-        pin::Pin, sync::Arc,
+        collections::VecDeque, error::Error, fmt::Display, net::SocketAddr, pin::Pin, sync::Arc,
     };
 
     use futures_util::{Future, StreamExt};
     use parking_lot::Mutex;
-    use quinn::{ClientConfig, Connection};
+    use quinn::{Connection, Endpoint};
     use repl::nom::AsBytes;
     use tokio::sync::{mpsc, oneshot, RwLock};
     use tokio_util::codec::{FramedRead, LengthDelimitedCodec};
     use uuid::Uuid;
 
-    use worker_if::batch::{Request, Resource, Response};
+    use worker_if::batch::{Cost, Request, Resource, ResourceMeasure, Response};
 
     use crate::{app::job, server::Server};
 
@@ -441,47 +439,69 @@ mod worker {
         }
     }
 
-    #[derive(Debug)]
-    pub struct Inner {
-        connection: Connection,
+    #[derive(Clone, Debug)]
+    pub struct WorkerClient {
+        inner: Arc<RwLock<Inner>>,
         index: usize,
-        release_tx: mpsc::UnboundedSender<(usize, Resource)>,
     }
 
-    impl Inner {
+    impl WorkerClient {
         async fn new(
-            client_addr: SocketAddr,
-            config: ClientConfig,
+            endpoint: &mut Endpoint,
             server_info: String,
             index: usize,
             release_tx: mpsc::UnboundedSender<(usize, Resource)>,
-        ) -> Result<(Self, Resource), Box<dyn Error>> {
-            let connection = server_info
-                .parse::<Server>()?
-                .connect(client_addr, config)
-                .await?;
+        ) -> Result<(Self, ResourceMeasure), Box<dyn Error>> {
+            let connection = server_info.parse::<Server>()?.connect(endpoint).await?;
 
             let mut recv = connection.accept_uni().await?;
-            let max_resource = protocol::quic::read_data::<Resource>(&mut recv).await?;
-            println!("[info] worker {index} has {max_resource:?}");
+            let rm = protocol::quic::read_data::<ResourceMeasure>(&mut recv).await?;
+            println!("[info] worker {index} has {rm:?}");
 
             Ok((
                 Self {
-                    connection,
+                    inner: Arc::new(RwLock::new(Inner {
+                        connection,
+                        release_tx,
+                    })),
                     index,
-                    release_tx,
                 },
-                max_resource,
+                rm,
             ))
         }
 
         pub async fn execute(
-            &mut self,
+            &self,
             task_id: &TaskId,
             config: job::Config,
             termination_tx: oneshot::Sender<Option<bool>>,
         ) -> anyhow::Result<()> {
-            let idx_resource = (self.index, (&config.param).into());
+            self.inner
+                .write()
+                .await
+                .execute(self.index, task_id, config, termination_tx)
+                .await
+        }
+
+        pub async fn terminate(&self, task_id: &TaskId) -> anyhow::Result<()> {
+            self.inner.write().await.terminate(task_id).await
+        }
+    }
+
+    #[derive(Debug)]
+    pub struct Inner {
+        connection: Connection,
+        release_tx: mpsc::UnboundedSender<(usize, Resource)>,
+    }
+
+    impl Inner {
+        async fn execute(
+            &mut self,
+            index: usize,
+            task_id: &TaskId,
+            config: job::Config,
+            termination_tx: oneshot::Sender<Option<bool>>,
+        ) -> anyhow::Result<()> {
             let (mut send, recv) = self.connection.open_bi().await?;
             protocol::quic::write_data(
                 &mut send,
@@ -490,8 +510,16 @@ mod worker {
             .await?;
 
             let mut stream = FramedRead::new(recv, LengthDelimitedCodec::new());
-            bincode::deserialize::<Response<()>>(stream.next().await.unwrap()?.as_bytes())?
-                .as_result()?;
+            let res =
+                bincode::deserialize::<Resource>(stream.next().await.unwrap()?.as_bytes()).unwrap();
+            if let Err(e) =
+                bincode::deserialize::<Response<()>>(stream.next().await.unwrap()?.as_bytes())?
+                    .as_result()
+            {
+                self.release_tx.send((index, res)).unwrap();
+                return Err(e.into());
+            }
+
             let release_tx = self.release_tx.clone();
             tokio::spawn(async move {
                 let exit_status = stream
@@ -501,12 +529,13 @@ mod worker {
                     .ok()
                     .map(|data| bincode::deserialize::<bool>(data.as_bytes()).unwrap());
                 termination_tx.send(exit_status).unwrap();
-                release_tx.send(idx_resource).unwrap();
+                release_tx.send((index, res)).unwrap();
             });
+
             Ok(())
         }
 
-        pub async fn terminate(&mut self, task_id: &TaskId) -> anyhow::Result<()> {
+        async fn terminate(&mut self, task_id: &TaskId) -> anyhow::Result<()> {
             let (mut send, mut recv) = self.connection.open_bi().await?;
             protocol::quic::write_data(&mut send, &Request::Terminate(task_id.to_string())).await?;
             protocol::quic::read_data::<Response<()>>(&mut recv)
@@ -516,23 +545,24 @@ mod worker {
         }
     }
 
-    #[derive(Clone, Debug)]
-    pub struct WorkerClient(Arc<RwLock<Inner>>);
+    #[derive(Debug)]
+    struct WorkerPool {
+        cost: Cost,
+        tx: oneshot::Sender<WorkerClient>,
+    }
 
-    impl WorkerClient {
-        fn new(client: Inner) -> Self {
-            Self(Arc::new(RwLock::new(client)))
-        }
-
-        pub async fn write(&self) -> impl DerefMut<Target = Inner> + '_ {
-            self.0.write().await
+    impl WorkerPool {
+        fn register(self, client: WorkerClient, cr: &mut Resource, res: Resource) {
+            *cr -= res;
+            self.tx.send(client).unwrap();
+            println!("[debug] sent client");
         }
     }
 
-    #[derive(Debug)]
-    struct WorkerPool {
-        resource: Resource,
-        tx: oneshot::Sender<WorkerClient>,
+    struct WorkerInfo {
+        client: WorkerClient,
+        current_resource: parking_lot::RwLock<Resource>,
+        measure: ResourceMeasure,
     }
 
     pub struct WorkerManager {
@@ -545,22 +575,20 @@ mod worker {
             cert_path: String,
             servers: Vec<String>,
         ) -> Result<Self, Box<dyn Error>> {
+            let mut endpoint = Endpoint::client(addr)?;
+            endpoint.set_default_client_config(quic_config::get_client_config(&cert_path)?);
+
             let (release_tx, mut release_rx) = mpsc::unbounded_channel();
-            let config = quic_config::get_client_config(&cert_path)?;
+
             let mut workers = Vec::new();
             for (i, server_info) in servers.into_iter().enumerate() {
-                let (worker, max_resource) = Inner::new(
-                    addr.clone(),
-                    config.clone(),
-                    server_info,
-                    i,
-                    release_tx.clone(),
-                )
-                .await?;
-                workers.push((
-                    WorkerClient::new(worker),
-                    parking_lot::RwLock::new(max_resource),
-                ));
+                let (client, measure) =
+                    WorkerClient::new(&mut endpoint, server_info, i, release_tx.clone()).await?;
+                workers.push(WorkerInfo {
+                    client,
+                    current_resource: parking_lot::RwLock::new(measure.max_resource),
+                    measure,
+                });
             }
 
             let workers = Arc::new(workers);
@@ -572,20 +600,38 @@ mod worker {
                 let queue = Arc::clone(&queue);
                 tokio::spawn(async move {
                     while let Some(pool) = queue_rx.recv().await {
-                        let mut max_res = pool.resource;
-                        let mut max_worker = None;
-                        for (w, r) in workers.iter() {
-                            let res = *r.read();
-                            if res >= max_res {
-                                max_res = res;
-                                max_worker = Some(w)
+                        let mut min_rate = 1.0;
+                        let mut info_res = None;
+                        for info in workers.iter() {
+                            let cr = info.current_resource.read();
+                            let Ok(res) = info.measure.measure(&pool.cost) else {
+                                continue;
+                            };
+                            println!("[debug] {res:?}/{cr:?}");
+                            let Some(r) = *cr - &res else {
+                                continue;
+                            };
+                            let rate = r / info.measure.max_resource;
+                            if rate <= min_rate {
+                                min_rate = rate;
+                                info_res = Some((info, res))
                             }
                         }
-                        match max_worker {
-                            Some(w) => {
-                                pool.tx.send(w.clone()).unwrap();
+                        match info_res {
+                            Some((info, res)) => {
+                                pool.register(
+                                    info.client.clone(),
+                                    &mut info.current_resource.write(),
+                                    res,
+                                );
+                                println!(
+                                    "[debug] current resource of worker {}: ({:?})",
+                                    info.client.index,
+                                    info.current_resource.read()
+                                );
                             }
                             None => {
+                                println!("[debug] queue {:?}", pool.cost);
                                 queue.lock().push_back(pool);
                             }
                         }
@@ -595,14 +641,24 @@ mod worker {
 
             tokio::spawn(async move {
                 while let Some((index, released)) = release_rx.recv().await {
-                    let (worker, resource) = &workers[index];
-                    let mut resource = resource.write();
-                    *resource += released;
+                    println!("[debug] worker {index} released {released:?}");
+
+                    let info = &workers[index];
+                    let mut cr = info.current_resource.write();
+                    *cr += released;
                     let mut queue = queue.lock();
-                    if let Some(pool) = queue.front() {
-                        if pool.resource >= *resource {
-                            let pool = queue.pop_front().unwrap();
-                            pool.tx.send(worker.clone()).unwrap();
+                    while let Some(pool) = queue.front() {
+                        match info.measure.measure(&pool.cost) {
+                            Ok(res) if res <= *cr => {
+                                let pool = queue.pop_front().unwrap();
+                                println!("[debug] pop pool {:?}", pool.cost);
+                                pool.register(info.client.clone(), &mut cr, res);
+                                println!(
+                                    "[debug] current resource of worker {}: ({:?})",
+                                    info.client.index, cr
+                                );
+                            }
+                            _ => break,
                         }
                     }
                 }
@@ -611,9 +667,9 @@ mod worker {
             Ok(Self { queue_tx })
         }
 
-        pub fn lease(&self, resource: Resource) -> WorkerLease {
+        pub fn lease(&self, cost: Cost) -> WorkerLease {
             let (tx, rx) = oneshot::channel();
-            self.queue_tx.send(WorkerPool { resource, tx }).unwrap();
+            self.queue_tx.send(WorkerPool { cost, tx }).unwrap();
             WorkerLease(rx)
         }
     }

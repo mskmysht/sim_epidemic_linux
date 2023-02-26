@@ -18,7 +18,7 @@ pub struct Args {
     db_password: String,
     #[arg(long)]
     max_job_request: usize,
-    #[arg(long)]
+    // #[arg(long)]
     servers: Vec<String>,
 }
 

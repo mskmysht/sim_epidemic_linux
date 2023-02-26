@@ -100,7 +100,7 @@ where
 mod quic {
     use std::{error::Error, net::SocketAddr};
 
-    use quinn::Connection;
+    use quinn::{Connection, Endpoint};
     use worker_if::realtime::{Request, Response};
 
     use controller::server::Server;
@@ -113,10 +113,15 @@ mod quic {
             cert_path: String,
             server_info: String,
         ) -> Result<Self, Box<dyn Error>> {
+            let mut endpoint = {
+                let mut endpoint = Endpoint::client(client_addr)?;
+                endpoint.set_default_client_config(quic_config::get_client_config(cert_path)?);
+                endpoint
+            };
             Ok(Self(
                 server_info
                     .parse::<Server>()?
-                    .connect(client_addr, quic_config::get_client_config(cert_path)?)
+                    .connect(&mut endpoint)
                     .await?,
             ))
         }

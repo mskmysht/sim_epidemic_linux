@@ -1,6 +1,6 @@
-use std::ops::AddAssign;
+use std::ops::{AddAssign, Div, Sub, SubAssign};
 
-use ::world_if::batch::api::job::JobParam;
+use ::world_if::batch::api::job;
 
 pub mod world_if {
     pub use world_if::batch::*;
@@ -9,7 +9,7 @@ pub mod world_if {
 
 #[derive(Debug, serde::Serialize, serde::Deserialize)]
 pub enum Request {
-    Execute(String, JobParam),
+    Execute(String, job::JobParam),
     Terminate(String),
 }
 
@@ -39,7 +39,7 @@ impl<T, E: std::error::Error> From<Result<T, E>> for Response<T> {
 #[derive(
     Debug, serde::Serialize, serde::Deserialize, PartialEq, Eq, PartialOrd, Ord, Clone, Copy,
 )]
-pub struct Resource(pub usize);
+pub struct Resource(pub u32);
 
 impl AddAssign for Resource {
     fn add_assign(&mut self, rhs: Self) {
@@ -47,10 +47,94 @@ impl AddAssign for Resource {
     }
 }
 
-impl From<&JobParam> for Resource {
-    fn from(value: &JobParam) -> Self {
-        // [todo] provisional implement
-        Resource(1)
+impl AddAssign<&Resource> for Resource {
+    fn add_assign(&mut self, rhs: &Self) {
+        self.0 += rhs.0;
+    }
+}
+
+impl SubAssign for Resource {
+    fn sub_assign(&mut self, rhs: Self) {
+        self.0 -= rhs.0;
+    }
+}
+
+impl Sub for Resource {
+    type Output = Option<Self>;
+
+    fn sub(self, rhs: Self) -> Self::Output {
+        self.0.checked_sub(rhs.0).map(Self)
+    }
+}
+
+impl Sub<&Resource> for Resource {
+    type Output = Option<Self>;
+
+    fn sub(self, rhs: &Self) -> Self::Output {
+        self.0.checked_sub(rhs.0).map(Self)
+    }
+}
+
+impl Div for Resource {
+    type Output = f64;
+
+    fn div(self, rhs: Self) -> Self::Output {
+        self.0 as f64 / rhs.0 as f64
+    }
+}
+
+#[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
+pub struct Cost(u64);
+
+impl From<&job::JobParam> for Cost {
+    fn from(value: &job::JobParam) -> Self {
+        (&value.world_params).into()
+    }
+}
+
+impl From<&job::WorldParams> for Cost {
+    fn from(value: &job::WorldParams) -> Self {
+        Self((value.population_size as u64).pow(2))
+    }
+}
+
+impl From<job::WorldParams> for Cost {
+    fn from(value: job::WorldParams) -> Self {
+        Self((value.population_size as u64).pow(2))
+    }
+}
+
+#[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
+pub struct ResourceMeasure {
+    pub max_cost: Cost,
+    pub max_resource: Resource,
+}
+
+#[derive(thiserror::Error, Debug)]
+pub enum ResourceSizeError {
+    #[error("cost exceeds the maximum resource")]
+    ExceedMaxResource,
+}
+
+impl ResourceMeasure {
+    pub fn new(max_param: job::WorldParams, max_resource: u32) -> Self {
+        Self {
+            max_cost: max_param.into(),
+            max_resource: Resource(max_resource),
+        }
+    }
+
+    pub fn measure(&self, cost: &Cost) -> Result<Resource, ResourceSizeError> {
+        if cost.0 > self.max_cost.0 {
+            return Err(ResourceSizeError::ExceedMaxResource);
+        }
+
+        let k = self.max_resource.0 as u64 * cost.0;
+        if k <= self.max_cost.0 {
+            Ok(Resource(1))
+        } else {
+            Ok(Resource((k / self.max_cost.0) as u32))
+        }
     }
 }
 

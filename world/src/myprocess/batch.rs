@@ -97,10 +97,6 @@ impl WorldSpawner {
     }
 
     fn execute(&mut self) -> anyhow::Result<()> {
-        if self.is_ended() {
-            self.res_err(ResponseError::AlreadyEnded)?;
-        }
-
         let step_to_end = self.param.stop_at * self.world.world_params.steps_per_day;
         self.res_ok()?;
         while self.step_cont(step_to_end)? {
@@ -152,7 +148,10 @@ impl WorldSpawner {
         loop {
             match self.bicon.recv()? {
                 Request::Execute => {
-                    self.world.reset();
+                    // self.world.reset();
+                    if self.is_ended() {
+                        self.res_err(ResponseError::AlreadyEnded)?;
+                    }
                     self.execute()?;
                     break;
                 }

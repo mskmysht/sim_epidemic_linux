@@ -17,9 +17,12 @@ struct Args {
     /// address to listen
     #[arg(long)]
     addr: SocketAddr,
-    /// resource max size
+    /// max population size
     #[arg(long)]
-    max_resource: usize,
+    max_population_size: u32,
+    /// max resource size
+    #[arg(long)]
+    max_resource: u32,
 }
 
 #[tokio::main]
@@ -29,6 +32,7 @@ async fn main() -> Result<(), Box<dyn Error>> {
         pkey_path,
         world_path,
         addr,
+        max_population_size,
         max_resource,
     } = Args::parse();
     let endpoint = Endpoint::server(quic_config::get_server_config(cert_path, pkey_path)?, addr)?;
@@ -36,7 +40,14 @@ async fn main() -> Result<(), Box<dyn Error>> {
         let connection = connecting.await.unwrap();
         let ip = connection.remote_address().to_string();
         println!("[info] Acceept {}", ip);
-        if let Err(e) = batch::run(world_path.clone(), connection, max_resource).await {
+        if let Err(e) = batch::run(
+            world_path.clone(),
+            connection,
+            max_population_size,
+            max_resource,
+        )
+        .await
+        {
             println!("[info] Disconnect {} ({})", ip, e);
         }
     }

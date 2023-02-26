@@ -10,12 +10,14 @@ use tokio_util::codec::{FramedWrite, LengthDelimitedCodec};
 
 use worker_if::batch::{
     self,
-    world_if::{self, IpcBiConnection},
-    Resource,
+    world_if::{self, api::job, IpcBiConnection},
+    Resource, ResourceMeasure, ResourceSizeError,
 };
 
 #[derive(Debug, thiserror::Error)]
 pub enum ResponseError {
+    #[error("Parameter cost exceeded the maximum resource")]
+    ParamSizeExceeded(#[from] ResourceSizeError),
     #[error("Failed to execute process")]
     FailedToExecute(#[from] IpcServerConnectionError),
     #[error("Ipc error has occured: {0}")]
@@ -31,25 +33,38 @@ pub enum ResponseError {
 pub async fn run(
     world_path: String,
     connection: Connection,
-    max_resource: usize,
+    max_population_size: u32,
+    max_resource: u32,
 ) -> Result<(), Box<dyn Error>> {
+    let rm = ResourceMeasure::new(
+        job::WorldParams {
+            population_size: max_population_size,
+        },
+        max_resource,
+    );
     let mut send = connection.open_uni().await?;
-    protocol::quic::write_data(&mut send, &Resource(max_resource)).await?;
+    protocol::quic::write_data(&mut send, &rm).await?;
 
     let manager = Arc::new(WorldManager::new(world_path));
 
     while let Ok((mut send, mut recv)) = connection.accept_bi().await {
         let manager = Arc::clone(&manager);
+        let rm = rm.clone();
         tokio::spawn(async move {
             let req: batch::Request = protocol::quic::read_data(&mut recv).await.unwrap();
             println!("[request] {req:?}");
             match req {
                 batch::Request::Execute(id, param) => {
-                    match manager.execute(id, param).await {
+                    let res = rm.measure(&(&param).into()).unwrap();
+                    let mut stream = FramedWrite::new(send, LengthDelimitedCodec::new());
+                    stream
+                        .send(bincode::serialize(&res).unwrap().into())
+                        .await
+                        .unwrap();
+                    match manager.execute(id, &param).await {
                         Ok(child) => {
-                            let res = batch::Response::<()>::from_ok(());
+                            let res = batch::Response::<_>::from_ok(());
                             println!("[response] {res:?}");
-                            let mut stream = FramedWrite::new(send, LengthDelimitedCodec::new());
                             stream
                                 .send(bincode::serialize(&res).unwrap().into())
                                 .await
@@ -64,9 +79,12 @@ pub async fn run(
                             });
                         }
                         Err(e) => {
-                            let res = batch::Response::<()>::from_err(e);
+                            let res = batch::Response::<Resource>::from_err(e);
                             println!("[response] {res:?}");
-                            protocol::quic::write_data(&mut send, &res).await.unwrap();
+                            stream
+                                .send(bincode::serialize(&res).unwrap().into())
+                                .await
+                                .unwrap();
                         }
                     }
                 }
@@ -112,14 +130,14 @@ impl WorldManager {
     async fn execute(
         &self,
         world_id: String,
-        param: world_if::api::job::JobParam,
+        param: &world_if::api::job::JobParam,
     ) -> Result<SharedChild, ResponseError> {
         let ((bicon, stream), child) = self.connect_ipc_server::<(
             IpcBiConnection,
             world_if::IpcReceiver<world_if::WorldStatus>,
         )>(&world_id)?;
         let mut table = self.table.lock();
-        bicon.send(&param)?;
+        bicon.send(param)?;
         let bicon = table.entry(world_id.clone()).or_insert(bicon);
 
         tokio::spawn(async move {

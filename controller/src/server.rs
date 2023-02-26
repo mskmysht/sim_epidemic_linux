@@ -1,4 +1,4 @@
-use quinn::{ClientConfig, Connection, Endpoint};
+use quinn::{Connection, Endpoint};
 use std::{net::SocketAddr, str::FromStr};
 
 #[derive(Debug)]
@@ -8,13 +8,7 @@ pub struct Server {
 }
 
 impl Server {
-    pub async fn connect(
-        self,
-        client_addr: SocketAddr,
-        config: ClientConfig,
-    ) -> anyhow::Result<Connection> {
-        let mut endpoint = Endpoint::client(client_addr)?;
-        endpoint.set_default_client_config(config);
+    pub async fn connect(self, endpoint: &mut Endpoint) -> anyhow::Result<Connection> {
         Ok(endpoint.connect(self.addr, &self.domain)?.await?)
     }
 }
