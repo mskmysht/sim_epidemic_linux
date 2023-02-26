@@ -341,13 +341,7 @@ impl Manager {
 
     async fn make_job(&self, job: &Job) -> job::Job {
         let job_id = &job.id;
-        let tasks = self
-            .db
-            .get_tasks(job_id)
-            .await
-            .into_iter()
-            .map(|task| (task.id.clone(), task))
-            .collect();
+        let tasks = self.db.get_tasks(job_id).await;
         let job = job.inner.read().await;
         job::Job {
             id: job_id.to_string(),

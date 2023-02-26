@@ -1,5 +1,3 @@
-use std::collections::BTreeMap;
-
 use api::job::{JobParam, WorldParams};
 use poem_openapi::{types::Example, Enum, Object};
 use tokio_postgres::types::{FromSql, ToSql};
@@ -41,21 +39,22 @@ pub enum JobState {
     Completed,
 }
 
+/// Job
 #[derive(Object, Clone, Debug)]
 #[oai(rename_all = "camelCase")]
 pub struct Job {
-    /// A system generated unique ID (in ULID format) for the Job.
+    /// Job ID automatically generated in ULID format.
     pub id: String,
     /// Job configuration.
     pub config: Config,
     /// Job state.
     pub state: JobState,
     // Tasks in the Job.
-    pub tasks: BTreeMap<String, Task>,
+    pub tasks: Vec<Task>,
 }
 
 impl Job {
-    pub fn new(id: String, config: Config, state: JobState, tasks: BTreeMap<String, Task>) -> Self {
+    pub fn new(id: String, config: Config, state: JobState, tasks: Vec<Task>) -> Self {
         Self {
             id,
             config,
