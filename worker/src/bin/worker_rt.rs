@@ -1,52 +1,49 @@
+use clap::Parser;
 use quinn::Endpoint;
-use std::{
-    error::Error,
-    net::{Ipv4Addr, SocketAddr, SocketAddrV4, TcpListener},
-};
+use std::net::{Ipv4Addr, SocketAddr, SocketAddrV4, TcpListener};
+use worker::realtime::WorldManaging;
 
-type DynResult<T> = Result<T, Box<dyn Error>>;
-
-#[argopt::cmd_group(commands = [start_tcp, start])]
-fn main() -> DynResult<()> {}
-
-#[argopt::subcmd]
-fn start_tcp(
-    /// world binary path
-    #[opt(long)]
-    world_path: String,
-) -> DynResult<()> {
-    run_tcp(world_path)
+#[derive(clap::Parser)]
+enum Command {
+    QUIC(QuicArgs),
+    TCP(TcpArgs),
 }
 
-#[argopt::subcmd]
-fn start(
+fn main() -> anyhow::Result<()> {
+    match Command::parse() {
+        Command::QUIC(QuicArgs {
+            cert_path,
+            pkey_path,
+            world_path,
+            addr,
+        }) => {
+            let endpoint =
+                Endpoint::server(quic_config::get_server_config(cert_path, pkey_path)?, addr)?;
+            let managing = worker::realtime::WorldManaging::new(world_path);
+            let rt = tokio::runtime::Runtime::new()?;
+            rt.block_on(run_quic(endpoint, managing))
+        }
+        Command::TCP(TcpArgs { world_path }) => run_tcp(world_path),
+    }
+}
+
+#[derive(clap::Args)]
+struct QuicArgs {
     /// path of certificate file
-    #[opt(long)]
+    #[arg(long)]
     cert_path: String,
     /// path of private key file
-    #[opt(long)]
+    #[arg(long)]
     pkey_path: String,
     /// world binary path
-    #[opt(long)]
+    #[arg(long)]
     world_path: String,
     /// address to listen
-    #[opt(long)]
+    #[arg(long)]
     addr: SocketAddr,
-) -> DynResult<()> {
-    let rt = tokio::runtime::Runtime::new()?;
-    rt.block_on(run(cert_path, pkey_path, world_path, addr))
 }
 
-async fn run(
-    cert_path: String,
-    pkey_path: String,
-    world_path: String,
-    addr: SocketAddr,
-) -> DynResult<()> {
-    let endpoint = Endpoint::server(quic_config::get_server_config(cert_path, pkey_path)?, addr)?;
-
-    let managing = worker::realtime::WorldManaging::new(world_path);
-
+async fn run_quic(endpoint: Endpoint, managing: WorldManaging) -> anyhow::Result<()> {
     while let Some(connecting) = endpoint.accept().await {
         let connection = connecting.await?;
         let ip = connection.remote_address().to_string();
@@ -71,11 +68,17 @@ async fn run(
             }
         }
     }
-
     Ok(())
 }
 
-fn run_tcp(world_path: String) -> DynResult<()> {
+#[derive(clap::Args)]
+struct TcpArgs {
+    /// world binary path
+    #[arg(long)]
+    world_path: String,
+}
+
+fn run_tcp(world_path: String) -> anyhow::Result<()> {
     let listener = TcpListener::bind(SocketAddrV4::new(Ipv4Addr::UNSPECIFIED, 8080))?;
 
     let managing = worker::realtime::WorldManaging::new(world_path);

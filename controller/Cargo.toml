@@ -10,11 +10,10 @@ worker-if = { path = "../libs/worker-if" }
 protocol = { path = "../libs/protocol" }
 world-if = { path = "../libs/world-if" }
 quic-config = { path = "../libs/quic-config" }
-controller-if = { path = "../libs/controller-if" }
 repl = { path = "../libs/repl" }
 api = { path = "../libs/api" }
 async-trait = "0.1"
-argopt = "0.3"
+clap = { version = "4.1", features = ["derive"] }
 quinn = "0.9"
 rustls = "0.20"
 tokio = { version = "1.25", features = ["full"] }

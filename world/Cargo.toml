@@ -10,7 +10,7 @@ table = { path = "../libs/table" }
 enum_map = { path = "../libs/enum_map" }
 world-if = { path = "../libs/world-if" }
 ipc-channel = "0.16"
-argopt = "0.3"
+clap = { version = "4.1", features = ["derive"] }
 rayon = "1.5"
 chrono = { version = "0.4", features = ["serde"] }
 csv = "1.1"
@@ -21,3 +21,4 @@ parking_lot = "0.12"
 repl = { path = "../libs/repl" }
 protocol = { path = "../libs/protocol" }
 thiserror = "1.0"
+anyhow = "1.0"

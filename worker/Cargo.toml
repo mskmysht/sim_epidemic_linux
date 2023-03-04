@@ -10,10 +10,9 @@ edition = "2018"
 worker-if = { path = "../libs/worker-if" }
 protocol = { path = "../libs/protocol" }
 quic-config = { path = "../libs/quic-config" }
-controller-if = { path = "../libs/controller-if" }
 repl = { path = "../libs/repl" }
 ipc-channel = "0.16"
-argopt = "0.3"
+clap = { version = "4.1", features = ["derive"] }
 rand = { version = "0.8", features = ["alloc"] }
 rand_distr = "0.4"
 serde = { version = "1.0", features = ["derive"] }
@@ -26,5 +25,7 @@ rustls = "0.20"
 rcgen = "0.10"
 futures-util = "0.3"
 anyhow = "1.0"
+thiserror = "1.0"
+serde-error = "0.1"
 shared_child = "1.0"
 bincode = "1.3"

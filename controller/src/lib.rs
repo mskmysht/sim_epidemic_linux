@@ -1,7 +1,6 @@
-pub mod api_server;
-pub mod management;
-pub mod repl_handler;
-mod types;
+pub mod app;
+pub mod manager;
+pub mod server;
 
 #[cfg(test)]
 mod tests {
@@ -10,7 +9,7 @@ mod tests {
     use tokio::runtime::Runtime;
     use tokio_postgres::NoTls;
 
-    use crate::api_server::job::JobState;
+    use crate::app::job::JobState;
 
     #[test]
     fn connect_db_test() {

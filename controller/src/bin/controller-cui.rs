@@ -1,26 +1,35 @@
-use controller::{
-    management::server::ServerInfo,
-    repl_handler::{logging, quic, tcp, WorkerParser},
-};
+use clap::Parser;
 use repl::Parsable;
 use std::{
     error::Error,
     net::{SocketAddr, TcpStream},
 };
 
-#[argopt::cmd_group(commands = [start_tcp, start])]
-fn main() -> Result<(), Box<dyn Error>> {}
+#[derive(clap::Parser)]
+enum Command {
+    QUIC(QuicArgs),
+    TCP(TcpArgs),
+}
 
-#[argopt::subcmd]
-fn start(
+fn main() -> Result<(), Box<dyn Error>> {
+    let cmd = Command::parse();
+    match cmd {
+        Command::QUIC(args) => start_quic(args),
+        Command::TCP(args) => start_tcp(args),
+    }
+}
+
+#[derive(clap::Args)]
+struct QuicArgs {
     addr: SocketAddr,
     cert_path: String,
-    server_info: ServerInfo,
-    name: String,
-) -> Result<(), Box<dyn Error>> {
+    server_info: String,
+}
+
+fn start_quic(args: QuicArgs) -> Result<(), Box<dyn Error>> {
     let rt = tokio::runtime::Runtime::new()?;
     rt.block_on(async move {
-        let mut handler = quic::MyHandler::new(addr, cert_path, server_info, name).await?;
+        let mut handler = quic::MyHandler::new(args.addr, args.cert_path, args.server_info).await?;
         loop {
             match WorkerParser::recv_input() {
                 repl::Command::Quit => break,
@@ -35,9 +44,14 @@ fn start(
     })
 }
 
-#[argopt::subcmd]
-fn start_tcp(container1: SocketAddr, /*, container2: Ipv4Addr */) -> Result<(), Box<dyn Error>> {
-    if let Ok(stream) = TcpStream::connect(container1) {
+#[derive(clap::Args)]
+struct TcpArgs {
+    container1: SocketAddr,
+    /*, container2: Ipv4Addr */
+}
+
+fn start_tcp(args: TcpArgs) -> Result<(), Box<dyn Error>> {
+    if let Ok(stream) = TcpStream::connect(args.container1) {
         println!("Connected to the server!");
         let mut handler = tcp::MyHandler(stream, "container-1");
         loop {
@@ -54,4 +68,90 @@ fn start_tcp(container1: SocketAddr, /*, container2: Ipv4Addr */) -> Result<(), 
         println!("Couldn't connect to server...");
     }
     Ok(())
+}
+
+use std::fmt::Debug;
+
+use worker_if::realtime::{parse, Request};
+
+struct WorkerParser;
+impl repl::Parsable for WorkerParser {
+    type Parsed = Request;
+    fn parse(buf: &str) -> repl::nom::IResult<&str, Self::Parsed> {
+        parse::request(buf)
+    }
+}
+
+fn logging<T, E>(ret: Result<T, E>)
+where
+    T: Debug,
+    E: Debug,
+{
+    match ret {
+        Ok(res) => {
+            println!("{res:?}");
+        }
+        Err(e) => {
+            eprintln!("[error] {e:?}");
+        }
+    }
+}
+
+mod quic {
+    use std::{error::Error, net::SocketAddr};
+
+    use quinn::{Connection, Endpoint};
+    use worker_if::realtime::{Request, Response};
+
+    use controller::server::Server;
+
+    pub struct MyHandler(Connection);
+
+    impl MyHandler {
+        pub async fn new(
+            client_addr: SocketAddr,
+            cert_path: String,
+            server_info: String,
+        ) -> Result<Self, Box<dyn Error>> {
+            let mut endpoint = {
+                let mut endpoint = Endpoint::client(client_addr)?;
+                endpoint.set_default_client_config(quic_config::get_client_config(cert_path)?);
+                endpoint
+            };
+            Ok(Self(
+                server_info
+                    .parse::<Server>()?
+                    .connect(&mut endpoint)
+                    .await?,
+            ))
+        }
+
+        pub async fn callback(
+            &mut self,
+            req: Request,
+        ) -> Result<Response, Box<dyn Error + Send + Sync>> {
+            let (mut send, mut recv) = self.0.open_bi().await?;
+            let n = protocol::quic::write_data(&mut send, &req).await?;
+            eprintln!("[info] sent {n} bytes data");
+            let res = protocol::quic::read_data(&mut recv).await?;
+            Ok(res)
+        }
+    }
+}
+
+mod tcp {
+    use std::{io, net::TcpStream};
+
+    use worker_if::realtime::{Request, Response};
+
+    pub struct MyHandler<'a>(pub TcpStream, pub &'a str);
+
+    impl<'a> MyHandler<'a> {
+        pub fn callback(&mut self, req: Request) -> io::Result<Response> {
+            let n = protocol::write_data(&mut self.0, &req)?;
+            eprintln!("[info] sent {n} bytes data");
+            let res = protocol::read_data(&mut self.0)?;
+            Ok(res)
+        }
+    }
 }

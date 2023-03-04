@@ -206,6 +206,7 @@ where
                 Request::Stop => self.res_err(ResponseError::AlreadyStopped),
             }
         }
+        println!("<{}> stopped", self.world.id);
     }
 }
 

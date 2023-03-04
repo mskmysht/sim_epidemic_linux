@@ -11,6 +11,7 @@ pub enum TaskState {
     Succeeded,
 }
 
+/// Task
 #[derive(Object, Clone, Debug)]
 #[oai(rename_all = "camelCase")]
 pub struct Task {

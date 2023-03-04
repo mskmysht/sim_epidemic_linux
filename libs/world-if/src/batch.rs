@@ -1,20 +1,23 @@
 use std::fmt;
 
+pub use api;
 use chrono::serde::ts_seconds;
-use ipc_channel::ipc::{self, IpcReceiver, IpcSender};
-
-use crate::pubsub::{Publisher, Subscriber};
+pub use ipc_channel::ipc::{self, IpcReceiver, IpcSender};
+use ipc_channel::ipc::{IpcBytesReceiver, IpcBytesSender};
+use serde::{Deserialize, Serialize};
 
 #[derive(Debug, serde::Deserialize, serde::Serialize)]
 pub enum Request {
-    Execute(u32),
+    Execute,
     Terminate,
 }
+
+pub type Error = serde_error::Error;
 
 #[derive(Debug, serde::Deserialize, serde::Serialize)]
 pub enum Response {
     Ok(ResponseOk),
-    Err(serde_error::Error),
+    Err(Error),
 }
 
 impl Response {
@@ -97,98 +100,30 @@ impl fmt::Display for WorldStatus {
 }
 
 #[derive(Debug, serde::Deserialize, serde::Serialize)]
-pub struct IpcSubscriber {
-    req_tx: IpcSender<Request>,
-    res_rx: IpcReceiver<Response>,
-    stream: IpcReceiver<WorldStatus>,
+pub struct IpcBiConnection {
+    pub tx: IpcBytesSender,
+    pub rx: IpcBytesReceiver,
 }
 
-impl IpcSubscriber {
-    pub fn new(
-        req_tx: IpcSender<Request>,
-        res_rx: IpcReceiver<Response>,
-        stream: IpcReceiver<WorldStatus>,
-    ) -> Self {
-        Self {
-            stream,
-            req_tx,
-            res_rx,
-        }
-    }
-}
-
-impl Subscriber for IpcSubscriber {
-    type Req = Request;
-    type Res = Response;
-    type Stat = WorldStatus;
-    type RecvErr = ipc::IpcError;
-    type SendErr = ipc_channel::Error;
-
-    fn recv_status(&self) -> Result<WorldStatus, Self::RecvErr> {
-        self.stream.recv()
+impl IpcBiConnection {
+    pub fn new(tx: IpcBytesSender, rx: IpcBytesReceiver) -> Self {
+        Self { tx, rx }
     }
 
-    fn try_recv_status(&self) -> Result<Option<WorldStatus>, Self::RecvErr> {
-        match self.stream.try_recv() {
-            Ok(s) => Ok(Some(s)),
+    pub fn send<T: Serialize>(&self, data: &T) -> anyhow::Result<()> {
+        self.tx.send(&bincode::serialize(data)?)?;
+        Ok(())
+    }
+
+    pub fn recv<T: for<'de> Deserialize<'de>>(&self) -> anyhow::Result<T> {
+        Ok(bincode::deserialize(&self.rx.recv()?)?)
+    }
+
+    pub fn try_recv<T: for<'de> Deserialize<'de>>(&self) -> anyhow::Result<Option<T>> {
+        match self.rx.try_recv() {
+            Ok(bytes) => Ok(Some(bincode::deserialize(&bytes)?)),
             Err(ipc::TryRecvError::Empty) => Ok(None),
-            Err(ipc::TryRecvError::IpcError(e)) => Err(e),
+            Err(ipc::TryRecvError::IpcError(e)) => Err(e.into()),
         }
-    }
-
-    fn send(&self, req: Request) -> Result<(), Self::SendErr> {
-        self.req_tx.send(req)
-    }
-
-    fn recv(&self) -> Result<Response, Self::RecvErr> {
-        self.res_rx.recv()
-    }
-}
-
-pub struct IpcPublisher {
-    stream_tx: IpcSender<WorldStatus>,
-    req_rx: IpcReceiver<Request>,
-    res_tx: IpcSender<Response>,
-}
-
-impl IpcPublisher {
-    pub fn new(
-        stream_tx: IpcSender<WorldStatus>,
-        req_rx: IpcReceiver<Request>,
-        res_tx: IpcSender<Response>,
-    ) -> Self {
-        Self {
-            stream_tx,
-            req_rx,
-            res_tx,
-        }
-    }
-}
-
-impl Publisher for IpcPublisher {
-    type Req = Request;
-    type Res = Response;
-    type Stat = WorldStatus;
-    type SendErr<T> = ipc_channel::Error;
-    type RecvErr = ipc::IpcError;
-
-    fn recv(&self) -> Result<Request, Self::RecvErr> {
-        self.req_rx.recv()
-    }
-
-    fn try_recv(&self) -> Result<Option<Request>, Self::RecvErr> {
-        match self.req_rx.try_recv() {
-            Ok(r) => Ok(Some(r)),
-            Err(ipc::TryRecvError::Empty) => Ok(None),
-            Err(ipc::TryRecvError::IpcError(e)) => Err(e),
-        }
-    }
-
-    fn send_response(&self, data: Response) -> Result<(), Self::SendErr<Response>> {
-        self.res_tx.send(data)
-    }
-
-    fn send_on_stream(&self, data: WorldStatus) -> Result<(), Self::SendErr<WorldStatus>> {
-        self.stream_tx.send(data)
     }
 }

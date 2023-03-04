@@ -1,5 +1,6 @@
 use bytes::Buf;
-use quinn::{ReadExactError, RecvStream, SendStream, WriteError};
+use quinn::{Connection, ReadExactError, RecvStream, SendStream, WriteError};
+use serde::{Deserialize, Serialize};
 
 pub async fn write_data<T>(send: &mut SendStream, value: &T) -> Result<usize, WriteError>
 where
@@ -28,4 +29,14 @@ where
     }
 
     Ok(super::deserialize(&data).expect("Failed to deserialize"))
+}
+
+pub async fn request<T, U>(connection: &Connection, data: T) -> anyhow::Result<U>
+where
+    T: Serialize,
+    U: for<'de> Deserialize<'de>,
+{
+    let (mut send, mut recv) = connection.open_bi().await?;
+    write_data(&mut send, &data).await?;
+    Ok(read_data(&mut recv).await?)
 }
