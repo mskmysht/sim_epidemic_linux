@@ -148,10 +148,6 @@ impl WorldSpawner {
         loop {
             match self.bicon.recv()? {
                 Request::Execute => {
-                    // self.world.reset();
-                    if self.is_ended() {
-                        self.res_err(ResponseError::AlreadyEnded)?;
-                    }
                     self.execute()?;
                     break;
                 }

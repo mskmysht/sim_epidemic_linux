@@ -11,7 +11,7 @@ use tokio_util::codec::{FramedWrite, LengthDelimitedCodec};
 use worker_if::batch::{
     self,
     world_if::{self, api::job, IpcBiConnection},
-    Resource, ResourceMeasure, ResourceSizeError,
+    ResourceMeasure, ResourceSizeError,
 };
 
 #[derive(Debug, thiserror::Error)]
@@ -36,56 +36,47 @@ pub async fn run(
     max_population_size: u32,
     max_resource: u32,
 ) -> Result<(), Box<dyn Error>> {
-    let rm = ResourceMeasure::new(
-        job::WorldParams {
-            population_size: max_population_size,
-        },
-        max_resource,
-    );
     let mut send = connection.open_uni().await?;
-    protocol::quic::write_data(&mut send, &rm).await?;
+    protocol::quic::write_data(
+        &mut send,
+        &ResourceMeasure::new(
+            job::WorldParams {
+                population_size: max_population_size,
+            },
+            max_resource,
+        ),
+    )
+    .await?;
 
     let manager = Arc::new(WorldManager::new(world_path));
 
     while let Ok((mut send, mut recv)) = connection.accept_bi().await {
         let manager = Arc::clone(&manager);
-        let rm = rm.clone();
         tokio::spawn(async move {
             let req: batch::Request = protocol::quic::read_data(&mut recv).await.unwrap();
             println!("[request] {req:?}");
             match req {
                 batch::Request::Execute(id, param) => {
-                    let res = rm.measure(&(&param).into()).unwrap();
                     let mut stream = FramedWrite::new(send, LengthDelimitedCodec::new());
+                    let (res, child) = match manager.execute(id, &param).await {
+                        Ok(child) => (batch::Response::<()>::from_ok(()), Some(child)),
+                        Err(e) => (batch::Response::<()>::from_err(e), None),
+                    };
+                    println!("[response] {res:?}");
                     stream
                         .send(bincode::serialize(&res).unwrap().into())
                         .await
                         .unwrap();
-                    match manager.execute(id, &param).await {
-                        Ok(child) => {
-                            let res = batch::Response::<_>::from_ok(());
-                            println!("[response] {res:?}");
+
+                    if let Some(child) = child {
+                        tokio::spawn(async move {
+                            // let pid = child.id();
+                            let status = child.wait().unwrap();
                             stream
-                                .send(bincode::serialize(&res).unwrap().into())
+                                .send(bincode::serialize(&status.success()).unwrap().into())
                                 .await
                                 .unwrap();
-                            tokio::spawn(async move {
-                                // let pid = child.id();
-                                let status = child.wait().unwrap();
-                                stream
-                                    .send(bincode::serialize(&status.success()).unwrap().into())
-                                    .await
-                                    .unwrap();
-                            });
-                        }
-                        Err(e) => {
-                            let res = batch::Response::<Resource>::from_err(e);
-                            println!("[response] {res:?}");
-                            stream
-                                .send(bincode::serialize(&res).unwrap().into())
-                                .await
-                                .unwrap();
-                        }
+                        });
                     }
                 }
                 batch::Request::Terminate(id) => {
