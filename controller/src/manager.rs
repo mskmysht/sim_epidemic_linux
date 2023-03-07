@@ -1,11 +1,9 @@
-use std::{
-    collections::HashMap, error::Error, fmt::Display, net::SocketAddr, sync::Arc, thread,
-    time::Duration,
-};
+use std::{collections::HashMap, error::Error, fmt::Display, net::SocketAddr, sync::Arc};
 
 use async_trait::async_trait;
 use futures_util::future::join_all;
-use tokio::sync::{mpsc, oneshot, RwLock};
+use poem_openapi::types::ToJSON;
+use tokio::sync::{mpsc, RwLock};
 use tokio_postgres::{Client, NoTls};
 use uuid::Uuid;
 
@@ -15,74 +13,8 @@ use crate::app::{
     ResourceManager,
 };
 
-use self::worker::{TaskId, WorkerClient, WorkerManager};
+use self::worker::{TaskId, WorkerManager};
 
-type WorkerTableRef = Arc<RwLock<HashMap<TaskId, WorkerClient>>>;
-
-#[derive(Clone, Debug)]
-struct Job {
-    id: JobId,
-    inner: Arc<RwLock<JobInner>>,
-    worker_table: WorkerTableRef,
-}
-
-impl Job {
-    fn new(id: JobId, config: job::Config, state: JobState) -> Self {
-        Self {
-            worker_table: Default::default(),
-            id,
-            inner: Arc::new(RwLock::new(JobInner::new(config, state))),
-        }
-    }
-
-    async fn is_foreced_termination(&self) -> bool {
-        self.inner.read().await.forced_termination
-    }
-
-    async fn update_state(&self, state: JobState, db: &Db) {
-        db.update_job_state(&self.id, &state).await;
-        let mut job = self.inner.write().await;
-        job.state = state;
-    }
-
-    async fn force_to_terminate(&self) -> bool {
-        let mut inner = self.inner.write().await;
-        match inner.state {
-            JobState::Running => {
-                inner.forced_termination = true;
-                for (task_id, worker) in self.worker_table.read().await.iter() {
-                    if worker.terminate(task_id).await.is_err() {
-                        println!("[info] {task_id} is already terminated");
-                    }
-                }
-                self.worker_table.write().await.clear();
-                true
-            }
-            JobState::Created | JobState::Queued | JobState::Scheduled => {
-                inner.forced_termination = true;
-                true
-            }
-            JobState::Completed => false,
-        }
-    }
-}
-
-#[derive(Debug)]
-struct JobInner {
-    config: job::Config,
-    state: job::JobState,
-    forced_termination: bool,
-}
-
-impl JobInner {
-    fn new(config: job::Config, state: JobState) -> Self {
-        Self {
-            config,
-            state,
-            forced_termination: false,
-        }
-    }
-}
 #[derive(PartialEq, Eq, Clone, Debug, Hash)]
 struct JobId(Uuid);
 
@@ -100,86 +32,94 @@ impl Display for JobId {
     }
 }
 
-async fn execute_task(
-    id: &TaskId,
-    config: job::Config,
-    worker: &WorkerClient,
-    worker_table: WorkerTableRef,
-    db: &Db,
-) {
-    db.update_task_state(id, &TaskState::Assigned).await;
-
-    let (tx, rx) = oneshot::channel();
-    if worker.execute(id, config, tx).await.is_err() {
-        db.update_task_state(id, &TaskState::Failed).await;
-        println!("[info] task {} could not execute", id);
-        return;
-    }
-    db.update_task_state(id, &TaskState::Running).await;
-    println!("[debug] {id} is running");
-    worker_table
-        .write()
-        .await
-        .insert(id.clone(), worker.clone());
-    println!("[debug] worker is registered");
-
-    match rx.await.unwrap() {
-        Some(true) => {
-            db.update_task_state(id, &TaskState::Succeeded).await;
-            println!("[info] task {} successfully terminated", id);
-        }
-        _ => {
-            db.update_task_state(id, &TaskState::Failed).await;
-            println!("[info] task {} failured in process", id);
-        }
-    }
-    worker_table.write().await.remove(id);
-    println!("[debug] worker is removed");
+fn termination_channel() -> (TerminationSender, TerminationReceiver) {
+    let (tx, rx) = async_channel::bounded(1);
+    (
+        TerminationSender(tx),
+        TerminationReceiver(rx, Default::default()),
+    )
 }
 
 #[derive(Debug)]
-struct JobQueued {
-    job: Job,
+struct TerminationSender(async_channel::Sender<()>);
+
+impl TerminationSender {
+    async fn send(self) -> bool {
+        self.0.send(()).await.is_ok()
+    }
+}
+
+#[derive(Clone, Debug)]
+struct TerminationReceiver(async_channel::Receiver<()>, Arc<parking_lot::Mutex<bool>>);
+
+impl TerminationReceiver {
+    fn try_recv(&self) -> bool {
+        self.0.try_recv().is_ok()
+    }
+
+    async fn recv(self) -> bool {
+        match self.0.recv().await {
+            Ok(_) => {
+                *self.1.lock() = true;
+                true
+            }
+            Err(_) => *self.1.lock(),
+        }
+    }
+}
+
+#[derive(Debug)]
+struct Job {
+    id: JobId,
+    rx: TerminationReceiver,
     task_ids: Vec<TaskId>,
     config: job::Config,
 }
 
-impl JobQueued {
-    async fn dequeue(self, worker_manager: &WorkerManager, db: &Db) {
-        let job = self.job;
-
-        if job.is_foreced_termination().await {
-            job.update_state(JobState::Completed, db).await;
-            return;
-        }
-
-        job.update_state(JobState::Scheduled, db).await;
-        job.update_state(JobState::Running, db).await;
-
+impl Job {
+    async fn consume(self, worker_manager: &WorkerManager, db: &Db) {
+        let workings = Default::default();
         let mut handles = Vec::new();
         for task_id in self.task_ids {
-            if job.is_foreced_termination().await {
-                break;
-            }
-            let worker_lease = worker_manager.lease((&self.config.param).into());
-            let worker_table = Arc::clone(&job.worker_table);
-            let config = self.config.clone();
-            let job = job.clone();
-            let db = db.clone();
-            thread::sleep(Duration::from_secs(1));
-            handles.push(tokio::spawn(async move {
-                println!("[debug] waiting to receive worker");
-                let worker = worker_lease.await.unwrap();
-                println!("[debug] received task {}", task_id);
-                if job.is_foreced_termination().await {
-                    println!("[info] task {} is skipped", task_id);
-                    return;
+            let lease = worker_manager.lease((&self.config.param).into());
+            let rx = self.rx.clone();
+            let lease2 = lease.clone();
+            let id = task_id.clone();
+            tokio::spawn(async move {
+                if rx.recv().await {
+                    println!("[debug] catched termination signal at {}", id);
+                    if lease2.close() {
+                        println!("[info] {} lease is canceled", id);
+                    }
                 }
-                execute_task(&task_id, config, &worker, worker_table, &db).await;
+            });
+
+            let workings = Arc::clone(&workings);
+            let config = self.config.clone();
+            let db = db.clone();
+            handles.push(tokio::spawn(async move {
+                println!("[debug] received task {}", task_id);
+                println!("[debug] waiting to receive worker");
+                let Ok(worker) = lease.recv().await else {
+                    println!("[debug] {} is skipped", task_id);
+                    return;
+                };
+                worker.execute(&task_id, config, &db, workings).await;
             }));
         }
+
+        tokio::spawn(async move {
+            if self.rx.recv().await {
+                for (task_id, client) in workings.read().await.iter() {
+                    if client.terminate(task_id).await.is_err() {
+                        println!("[info] task {} is already terminated", self.id);
+                    }
+                }
+                println!("[debug] {} is released", self.id);
+            }
+            println!("[debug] job {} termination has ended", self.id);
+        });
         join_all(handles).await;
-        job.update_state(JobState::Completed, db).await;
     }
 }
 
@@ -187,18 +127,22 @@ impl JobQueued {
 struct Db(Arc<Client>);
 
 impl Db {
-    async fn insert(
+    async fn insert_job(
         &self,
-        state: &JobState,
-        task_count: u64,
+        config: &job::Config,
     ) -> Result<(JobId, Vec<TaskId>), tokio_postgres::Error> {
+        let state = if config.iteration_count == 0 {
+            JobState::Completed
+        } else {
+            JobState::Queued
+        };
         let rows = self
             .0
             .query(
                 "
-                INSERT INTO job (id, state) VALUES (DEFAULT, $1) RETURNING id
+                INSERT INTO job (id, state, config) VALUES (DEFAULT, $1, $2) RETURNING id
                 ",
-                &[&state],
+                &[&state, &config.to_json().unwrap()],
             )
             .await?;
         let job_id = JobId(rows[0].get(0));
@@ -212,7 +156,7 @@ impl Db {
             .await?;
 
         let mut task_ids = Vec::new();
-        for _ in 0..task_count {
+        for _ in 0..config.iteration_count {
             let rows = self
                 .0
                 .query(&statement, &[&job_id.0, &TaskState::default()])
@@ -259,11 +203,55 @@ impl Db {
         }
         tasks
     }
+
+    async fn get_job(&self, id: &JobId) -> job::Job {
+        let rs = self
+            .0
+            .query("SELECT state, config FROM job WHERE id = $1", &[&id.0])
+            .await
+            .unwrap();
+        let r = &rs[0];
+        let state: job::JobState = r.get(0);
+        let config_json: postgres_types::Json<serde_json::Value> = r.get(1);
+        let config: job::Config =
+            poem_openapi::types::ParseFromJSON::parse_from_json(Some(config_json.0)).unwrap();
+
+        job::Job {
+            id: id.to_string(),
+            state,
+            config,
+            tasks: self.get_tasks(id).await,
+        }
+    }
+
+    async fn get_jobs(&self) -> Vec<job::Job> {
+        let mut jobs = Vec::new();
+        for r in self.0.query("SELECT * FROM job", &[]).await.unwrap() {
+            let id: Uuid = r.get(0);
+            let state: job::JobState = r.get(1);
+            let config_json: postgres_types::Json<serde_json::Value> = r.get(2);
+            let config: job::Config =
+                poem_openapi::types::ParseFromJSON::parse_from_json(Some(config_json.0)).unwrap();
+            jobs.push(job::Job {
+                id: id.to_string(),
+                state,
+                config,
+                tasks: self.get_tasks(&JobId(id)).await,
+            })
+        }
+        jobs
+    }
+
+    async fn delete_jobs(&self) -> anyhow::Result<()> {
+        self.0.execute("DELETE FROM task", &[]).await?;
+        self.0.execute("DELETE FROM job", &[]).await?;
+        Ok(())
+    }
 }
 
 pub struct Manager {
-    job_queue_tx: mpsc::Sender<JobQueued>,
-    job_table: Arc<RwLock<HashMap<JobId, Job>>>,
+    job_queue_tx: mpsc::Sender<Job>,
+    job_terminations: Arc<RwLock<HashMap<JobId, TerminationSender>>>,
     db: Db,
 }
 
@@ -284,51 +272,57 @@ impl Manager {
             NoTls,
         )
         .await?;
-        let db = Db(Arc::new(client));
+
         tokio::spawn(async move {
             if let Err(e) = connection.await {
                 println!("[error] Postresql database connection error: {e}");
             }
         });
 
-        let (job_queue_tx, mut job_queue_rx) = mpsc::channel::<JobQueued>(max_job_request);
+        let (job_queue_tx, mut job_queue_rx) = mpsc::channel::<Job>(max_job_request);
         let worker_manager = WorkerManager::new(client_addr, cert_path, servers).await?;
 
-        let db_clone = db.clone();
+        let manager = Self {
+            job_queue_tx,
+            job_terminations: Default::default(),
+            db: Db(Arc::new(client)),
+        };
+
+        let job_terminations = Arc::clone(&manager.job_terminations);
+        let db = manager.db.clone();
         tokio::spawn(async move {
-            while let Some(job_queued) = job_queue_rx.recv().await {
-                let id = job_queued.job.id.clone();
+            while let Some(job) = job_queue_rx.recv().await {
+                let id = job.id.clone();
+
                 println!("[info] received job {}", id);
-                job_queued.dequeue(&worker_manager, &db_clone).await;
+                if !job.rx.try_recv() {
+                    db.update_job_state(&id, &JobState::Running).await;
+                    job.consume(&worker_manager, &db).await;
+                }
+                job_terminations.write().await.remove(&id);
+                db.update_job_state(&id, &JobState::Completed).await;
                 println!("[info] job {} terminated", id);
             }
         });
 
         println!("[info] created job manager");
-        Ok(Self {
-            job_queue_tx,
-            job_table: Default::default(),
-            db,
-        })
+        Ok(manager)
     }
 
     async fn create_job(&self, config: job::Config) -> Result<String, tokio_postgres::Error> {
-        let task_count = config.iteration_count;
-        let state = JobState::Created;
-        let (job_id, task_ids) = self.db.insert(&state, task_count).await?;
+        let (job_id, task_ids) = self.db.insert_job(&config).await?;
 
-        let job = Job::new(job_id.clone(), config.clone(), state);
-        let mut job_table = self.job_table.write().await;
-        job_table.insert(job_id.clone(), job.clone());
-        drop(job_table);
+        if config.iteration_count > 0 {
+            let (tx, rx) = termination_channel();
+            self.job_terminations
+                .write()
+                .await
+                .insert(job_id.clone(), tx);
 
-        if task_count == 0 {
-            job.update_state(JobState::Completed, &self.db).await;
-        } else {
-            job.update_state(JobState::Queued, &self.db).await;
             self.job_queue_tx
-                .send(JobQueued {
-                    job,
+                .send(Job {
+                    id: job_id.clone(),
+                    rx,
                     task_ids,
                     config,
                 })
@@ -339,38 +333,24 @@ impl Manager {
         Ok(job_id.to_string())
     }
 
-    async fn make_job(&self, job: &Job) -> job::Job {
-        let job_id = &job.id;
-        let tasks = self.db.get_tasks(job_id).await;
-        let job = job.inner.read().await;
-        job::Job {
-            id: job_id.to_string(),
-            config: job.config.clone(),
-            state: job.state.clone(),
-            tasks,
-        }
-    }
-
     async fn get_job(&self, id: &str) -> Option<job::Job> {
         let id = id.try_into().ok()?;
-        let job_table = self.job_table.read().await;
-        let job = job_table.get(&id)?;
-        Some(self.make_job(job).await)
+        Some(self.db.get_job(&id).await)
     }
 
     async fn get_all_jobs(&self) -> Vec<job::Job> {
-        let mut jobs = Vec::new();
-        let job_table = self.job_table.read().await;
-        for job in job_table.values() {
-            jobs.push(self.make_job(job).await)
-        }
-        jobs
+        self.db.get_jobs().await
     }
+
+    async fn delete_all_jobs(&self) -> bool {
+        self.db.delete_jobs().await.is_ok()
+    }
+
     async fn terminate_job(&self, id: &str) -> Option<bool> {
         let id = id.try_into().ok()?;
-        let table = self.job_table.read().await;
-        let job = table.get(&id)?;
-        Some(job.force_to_terminate().await)
+        let mut table = self.job_terminations.write().await;
+        let tx = table.remove(&id)?;
+        Some(tx.send().await)
     }
 }
 
@@ -394,30 +374,34 @@ impl ResourceManager for Manager {
         self.get_all_jobs().await
     }
 
+    async fn delete_all_jobs(&self) -> bool {
+        self.delete_all_jobs().await
+    }
+
     async fn terminate_job(&self, id: &str) -> Option<bool> {
         self.terminate_job(id).await
     }
 }
 
 mod worker {
-    use std::{
-        collections::VecDeque, error::Error, fmt::Display, net::SocketAddr, pin::Pin, sync::Arc,
-    };
+    use std::{collections::HashMap, error::Error, fmt::Display, net::SocketAddr, sync::Arc};
 
-    use futures_util::{Future, StreamExt};
-    use parking_lot::Mutex;
+    use futures_util::StreamExt;
     use quinn::{Connection, Endpoint};
     use repl::nom::AsBytes;
-    use tokio::sync::{mpsc, oneshot, RwLock};
+    use tokio::sync::{mpsc, oneshot, OwnedSemaphorePermit, RwLock, Semaphore};
     use tokio_util::codec::{FramedRead, LengthDelimitedCodec};
     use uuid::Uuid;
 
-    use worker_if::batch::{Cost, Request, Resource, ResourceMeasure, Response};
+    use worker_if::batch::{Cost, Request, ResourceMeasure, Response};
 
-    use crate::{app::job, server::Server};
+    use crate::{
+        app::{job, task::TaskState},
+        server::Server,
+    };
 
     #[derive(Debug, Clone, Hash, PartialEq, Eq)]
-    pub struct TaskId(pub Uuid);
+    pub(super) struct TaskId(pub Uuid);
 
     impl TryFrom<&str> for TaskId {
         type Error = uuid::Error;
@@ -434,8 +418,10 @@ mod worker {
     }
 
     #[derive(Clone, Debug)]
-    pub struct WorkerClient {
-        inner: Arc<RwLock<Inner>>,
+    pub(super) struct WorkerClient {
+        connection: Arc<Connection>,
+        semaphore: Arc<Semaphore>,
+        measure: ResourceMeasure,
         index: usize,
     }
 
@@ -444,58 +430,36 @@ mod worker {
             endpoint: &mut Endpoint,
             server_info: String,
             index: usize,
-            release_tx: mpsc::UnboundedSender<(usize, Resource)>,
-        ) -> Result<(Self, ResourceMeasure), Box<dyn Error>> {
+            // release_tx: mpsc::UnboundedSender<(usize, Resource)>,
+        ) -> Result<Self, Box<dyn Error>> {
             let connection = server_info.parse::<Server>()?.connect(endpoint).await?;
 
             let mut recv = connection.accept_uni().await?;
-            let rm = protocol::quic::read_data::<ResourceMeasure>(&mut recv).await?;
-            println!("[info] worker {index} has {rm:?}");
+            let measure = protocol::quic::read_data::<ResourceMeasure>(&mut recv).await?;
+            println!("[info] worker {index} has {measure:?}");
 
-            Ok((
-                Self {
-                    inner: Arc::new(RwLock::new(Inner {
-                        connection,
-                        release_tx,
-                    })),
-                    index,
-                },
-                rm,
-            ))
+            Ok(Self {
+                connection: Arc::new(connection),
+                semaphore: Arc::new(Semaphore::new(measure.max_resource as usize)),
+                measure,
+                index,
+            })
+        }
+
+        fn available(&self) -> u32 {
+            self.semaphore.available_permits() as u32
+        }
+
+        async fn acquire(self, n: u32) -> WorkerClientPermitted {
+            let permit = self.semaphore.clone().acquire_many_owned(n).await.unwrap();
+            WorkerClientPermitted(self, permit)
         }
 
         pub async fn execute(
             &self,
             task_id: &TaskId,
             config: job::Config,
-            termination_tx: oneshot::Sender<Option<bool>>,
-        ) -> anyhow::Result<()> {
-            self.inner
-                .write()
-                .await
-                .execute(self.index, task_id, config, termination_tx)
-                .await
-        }
-
-        pub async fn terminate(&self, task_id: &TaskId) -> anyhow::Result<()> {
-            self.inner.write().await.terminate(task_id).await
-        }
-    }
-
-    #[derive(Debug)]
-    pub struct Inner {
-        connection: Connection,
-        release_tx: mpsc::UnboundedSender<(usize, Resource)>,
-    }
-
-    impl Inner {
-        async fn execute(
-            &mut self,
-            index: usize,
-            task_id: &TaskId,
-            config: job::Config,
-            termination_tx: oneshot::Sender<Option<bool>>,
-        ) -> anyhow::Result<()> {
+        ) -> anyhow::Result<oneshot::Receiver<Option<bool>>> {
             let (mut send, recv) = self.connection.open_bi().await?;
             protocol::quic::write_data(
                 &mut send,
@@ -504,17 +468,14 @@ mod worker {
             .await?;
 
             let mut stream = FramedRead::new(recv, LengthDelimitedCodec::new());
-            let res =
-                bincode::deserialize::<Resource>(stream.next().await.unwrap()?.as_bytes()).unwrap();
             if let Err(e) =
                 bincode::deserialize::<Response<()>>(stream.next().await.unwrap()?.as_bytes())?
                     .as_result()
             {
-                self.release_tx.send((index, res)).unwrap();
                 return Err(e.into());
             }
 
-            let release_tx = self.release_tx.clone();
+            let (tx, rx) = oneshot::channel();
             tokio::spawn(async move {
                 let exit_status = stream
                     .next()
@@ -522,14 +483,13 @@ mod worker {
                     .unwrap()
                     .ok()
                     .map(|data| bincode::deserialize::<bool>(data.as_bytes()).unwrap());
-                termination_tx.send(exit_status).unwrap();
-                release_tx.send((index, res)).unwrap();
+                tx.send(exit_status).unwrap();
             });
 
-            Ok(())
+            Ok(rx)
         }
 
-        async fn terminate(&mut self, task_id: &TaskId) -> anyhow::Result<()> {
+        pub async fn terminate(&self, task_id: &TaskId) -> anyhow::Result<()> {
             let (mut send, mut recv) = self.connection.open_bi().await?;
             protocol::quic::write_data(&mut send, &Request::Terminate(task_id.to_string())).await?;
             protocol::quic::read_data::<Response<()>>(&mut recv)
@@ -540,30 +500,79 @@ mod worker {
     }
 
     #[derive(Debug)]
-    struct WorkerPool {
-        cost: Cost,
-        tx: oneshot::Sender<WorkerClient>,
-    }
+    pub(super) struct WorkerClientPermitted(WorkerClient, OwnedSemaphorePermit);
 
-    impl WorkerPool {
-        fn register(self, client: WorkerClient, cr: &mut Resource, res: Resource) {
-            *cr -= res;
-            self.tx.send(client).unwrap();
-            println!("[debug] sent client");
+    impl WorkerClientPermitted {
+        pub async fn execute(
+            self,
+            task_id: &TaskId,
+            config: job::Config,
+            db: &super::Db,
+            workings: Arc<RwLock<HashMap<TaskId, WorkerClient>>>,
+        ) {
+            println!("[debug] executing...");
+            db.update_task_state(&task_id, &TaskState::Assigned).await;
+
+            let Ok(rx) = self.0.execute(&task_id, config).await else {
+                    db.update_task_state(&task_id, &TaskState::Failed).await;
+                    println!("[info] task {} could not execute", task_id);
+                    return;
+                };
+            db.update_task_state(&task_id, &TaskState::Running).await;
+
+            println!("[debug] {} is running", task_id);
+            workings.write().await.insert(task_id.clone(), self.0);
+            println!("[debug] worker is registered");
+
+            let result = rx.await.unwrap();
+            drop(self.1);
+
+            match result {
+                Some(true) => {
+                    db.update_task_state(&task_id, &TaskState::Succeeded).await;
+                    println!("[info] task {} successfully terminated", task_id);
+                }
+                _ => {
+                    db.update_task_state(&task_id, &TaskState::Failed).await;
+                    println!("[info] task {} failured in process", task_id);
+                }
+            }
+            workings.write().await.remove(&task_id);
         }
     }
 
-    struct WorkerInfo {
-        client: WorkerClient,
-        current_resource: parking_lot::RwLock<Resource>,
-        measure: ResourceMeasure,
-    }
-
-    pub struct WorkerManager {
-        queue_tx: mpsc::UnboundedSender<WorkerPool>,
+    pub(super) struct WorkerManager {
+        // workers: Arc<Vec<WorkerClient>>,
+        queue_tx: mpsc::Sender<(async_channel::Sender<WorkerClientPermitted>, Cost)>,
     }
 
     impl WorkerManager {
+        fn find_optimal_worker(
+            workers: &[WorkerClient],
+            cost: &Cost,
+        ) -> Result<(WorkerClient, u32), Vec<(WorkerClient, u32)>> {
+            let mut best = -1.0;
+            let mut info_res = None;
+            let mut lackings = Vec::new();
+            for client in workers {
+                let cr = client.available();
+                let Ok(res) = client.measure.measure(cost) else {
+                    continue;
+                };
+                println!("[debug] {res:?}/{cr:?}");
+                let Some(r) = cr.checked_sub(res) else {
+                    lackings.push((client.clone(), res));
+                    continue;
+                };
+                let remaining = r as f32 / client.measure.max_resource as f32;
+                if remaining > best {
+                    best = remaining;
+                    info_res = Some((client.clone(), res))
+                }
+            }
+            info_res.ok_or(lackings)
+        }
+
         pub async fn new(
             addr: SocketAddr,
             cert_path: String,
@@ -572,112 +581,78 @@ mod worker {
             let mut endpoint = Endpoint::client(addr)?;
             endpoint.set_default_client_config(quic_config::get_client_config(&cert_path)?);
 
-            let (release_tx, mut release_rx) = mpsc::unbounded_channel();
-
             let mut workers = Vec::new();
             for (i, server_info) in servers.into_iter().enumerate() {
-                let (client, measure) =
-                    WorkerClient::new(&mut endpoint, server_info, i, release_tx.clone()).await?;
-                workers.push(WorkerInfo {
-                    client,
-                    current_resource: parking_lot::RwLock::new(measure.max_resource),
-                    measure,
-                });
+                workers.push(WorkerClient::new(&mut endpoint, server_info, i).await?);
             }
 
-            let workers = Arc::new(workers);
-            let queue = Arc::new(Mutex::new(VecDeque::new()));
-
-            let (queue_tx, mut queue_rx) = mpsc::unbounded_channel::<WorkerPool>();
-            {
-                let workers = Arc::clone(&workers);
-                let queue = Arc::clone(&queue);
-                tokio::spawn(async move {
-                    while let Some(pool) = queue_rx.recv().await {
-                        let mut min_rate = 1.0;
-                        let mut info_res = None;
-                        for info in workers.iter() {
-                            let cr = info.current_resource.read();
-                            let Ok(res) = info.measure.measure(&pool.cost) else {
-                                continue;
-                            };
-                            println!("[debug] {res:?}/{cr:?}");
-                            let Some(r) = *cr - &res else {
-                                continue;
-                            };
-                            let rate = r / info.measure.max_resource;
-                            if rate <= min_rate {
-                                min_rate = rate;
-                                info_res = Some((info, res))
-                            }
-                        }
-                        match info_res {
-                            Some((info, res)) => {
-                                pool.register(
-                                    info.client.clone(),
-                                    &mut info.current_resource.write(),
-                                    res,
-                                );
-                                println!(
-                                    "[debug] current resource of worker {}: ({:?})",
-                                    info.client.index,
-                                    info.current_resource.read()
-                                );
-                            }
-                            None => {
-                                println!("[debug] queue {:?}", pool.cost);
-                                queue.lock().push_back(pool);
-                            }
-                        }
-                    }
-                });
-            }
-
+            let (queue_tx, mut queue_rx): (mpsc::Sender<(async_channel::Sender<_>, _)>, _) =
+                mpsc::channel(1);
             tokio::spawn(async move {
-                while let Some((index, released)) = release_rx.recv().await {
-                    println!("[debug] worker {index} released {released:?}");
-
-                    let info = &workers[index];
-                    let mut cr = info.current_resource.write();
-                    *cr += released;
-                    let mut queue = queue.lock();
-                    while let Some(pool) = queue.front() {
-                        match info.measure.measure(&pool.cost) {
-                            Ok(res) if res <= *cr => {
-                                let pool = queue.pop_front().unwrap();
-                                println!("[debug] pop pool {:?}", pool.cost);
-                                pool.register(info.client.clone(), &mut cr, res);
-                                println!(
-                                    "[debug] current resource of worker {}: ({:?})",
-                                    info.client.index, cr
-                                );
+                while let Some((tx, cost)) = queue_rx.recv().await {
+                    match Self::find_optimal_worker(&workers, &cost) {
+                        Ok((client, res)) => {
+                            println!(
+                                "[debug] current resource of worker {}: ({:?})",
+                                client.index, client.semaphore
+                            );
+                            if !tx.is_closed() {
+                                tx.send(client.acquire(res).await).await.unwrap();
                             }
-                            _ => break,
+                        }
+                        Err(lackings) => {
+                            println!("[debug] lacking...");
+                            let (lackings_tx, mut lackings_rx) = mpsc::channel(1);
+                            let mut handles = Vec::new();
+                            for (client, res) in lackings {
+                                let tx = lackings_tx.clone();
+                                let client = client.clone();
+                                handles.push(tokio::spawn(async move {
+                                    println!("[debug] temporally acqurired");
+                                    if !tx.is_closed() {
+                                        tx.send(client.acquire(res).await).await.unwrap();
+                                    }
+                                }));
+                            }
+                            tokio::spawn(async move {
+                                if let Some(permit) = lackings_rx.recv().await {
+                                    for handle in handles {
+                                        handle.abort();
+                                    }
+                                    println!("[debug] acqurired and aborted");
+                                    if !tx.is_closed() {
+                                        tx.send(permit).await.unwrap();
+                                    }
+                                    println!("[debug] sent");
+                                }
+                            });
                         }
                     }
                 }
             });
-
             Ok(Self { queue_tx })
         }
 
         pub fn lease(&self, cost: Cost) -> WorkerLease {
-            let (tx, rx) = oneshot::channel();
-            self.queue_tx.send(WorkerPool { cost, tx }).unwrap();
+            let (tx, rx) = async_channel::bounded(1);
+            let queue = self.queue_tx.clone();
+            tokio::spawn(async move {
+                queue.send((tx, cost)).await.unwrap();
+            });
             WorkerLease(rx)
         }
     }
 
-    pub struct WorkerLease(oneshot::Receiver<WorkerClient>);
+    #[derive(Clone)]
+    pub(super) struct WorkerLease(async_channel::Receiver<WorkerClientPermitted>);
 
-    impl Future for WorkerLease {
-        type Output = Result<WorkerClient, oneshot::error::RecvError>;
+    impl WorkerLease {
+        pub fn close(&self) -> bool {
+            self.0.close()
+        }
 
-        fn poll(
-            mut self: std::pin::Pin<&mut Self>,
-            cx: &mut std::task::Context<'_>,
-        ) -> std::task::Poll<Self::Output> {
-            Pin::new(&mut self.0).poll(cx)
+        pub fn recv(&self) -> async_channel::Recv<'_, WorkerClientPermitted> {
+            self.0.recv()
         }
     }
 }
@@ -686,37 +661,130 @@ mod worker {
 mod tests {
     use std::sync::Arc;
 
-    use tokio::sync::Mutex;
+    use futures_util::future::join_all;
+    use poem_openapi::types::ToJSON;
+    use tokio::{
+        runtime::Runtime,
+        sync::{mpsc, Semaphore},
+    };
+    use tokio_postgres::{types::Json, NoTls};
+
+    use super::termination_channel;
 
     #[test]
-    fn test_nest() {
-        let rt = tokio::runtime::Runtime::new().unwrap();
-        rt.block_on(nest_async());
-    }
-
-    struct Hoge;
-    impl Hoge {
-        async fn run(&self, i: usize) -> usize {
-            i + 1
-        }
-    }
-
-    async fn nest_async() {
-        let arr = Arc::new(Mutex::new([0usize; 5]));
-        let hoge = Hoge;
-        let (tx, mut rx) = tokio::sync::mpsc::channel(10);
-        tokio::spawn(async move {
-            while let Some(i) = rx.recv().await {
-                let mut arr = arr.lock().await;
-                let v = &mut arr[i];
-                *v = hoge.run(i).await;
-                println!("{}: {:?}", i, arr);
+    fn test_notify() {
+        let rt = Runtime::new().unwrap();
+        rt.block_on(async {
+            let mut handles = Vec::new();
+            let (tx, rx) = termination_channel();
+            for i in 0..5 {
+                let rx = rx.clone();
+                handles.push(tokio::spawn(async move {
+                    if rx.recv().await {
+                        println!("received signal at {i}");
+                    }
+                }));
             }
-            println!("{:?}", arr.lock().await);
-        });
 
-        for i in 0..5 {
-            tx.send(i).await.unwrap();
-        }
+            tx.send().await;
+            join_all(handles).await;
+        });
+    }
+
+    #[test]
+    fn test_semaphores() {
+        let rt = Runtime::new().unwrap();
+        rt.block_on(async {
+            let semaphores = [1, 1, 2, 2, 1].map(|n| Arc::new(Semaphore::new(n)));
+
+            println!(
+                "{:?}",
+                semaphores
+                    .iter()
+                    .map(|s| s.available_permits())
+                    .collect::<Vec<_>>()
+            );
+
+            let mut handles = Vec::new();
+            let (tx, mut rx) = mpsc::channel(1);
+            for (i, semaphore) in semaphores.iter().enumerate() {
+                let semaphore = semaphore.clone();
+                let tx = tx.clone();
+                handles.push(tokio::spawn(async move {
+                    let permit = semaphore.acquire_many_owned(2).await.unwrap();
+                    println!("temporally acquired from semphore-{i}");
+                    tx.send((i, permit)).await.unwrap();
+                }));
+            }
+
+            let semaphores2 = semaphores.clone();
+            tokio::spawn(async move {
+                if let Some((i, permit)) = rx.recv().await {
+                    for handle in handles {
+                        handle.abort();
+                    }
+                    println!("acquired 2 permits from semaphore-{i}");
+                    println!(
+                        "{:?}",
+                        semaphores2
+                            .iter()
+                            .map(|s| s.available_permits())
+                            .collect::<Vec<_>>()
+                    );
+                    drop(permit);
+                }
+            });
+
+            let mut handles2 = Vec::new();
+            for (i, semaphore) in semaphores.iter().enumerate() {
+                let semaphore = semaphore.clone();
+                handles2.push(tokio::spawn(async move {
+                    let permit = semaphore.acquire_owned().await.unwrap();
+                    println!("aquired a permit from semaphore-{i}");
+                    drop(permit);
+                }));
+            }
+
+            join_all(handles2).await;
+        });
+    }
+
+    #[derive(poem_openapi::Object, Debug, PartialEq)]
+    struct JsonTest {
+        hoge: u32,
+    }
+
+    #[test]
+    fn test_jsonb_db() {
+        let rt = tokio::runtime::Runtime::new().unwrap();
+        rt.block_on(async {
+            let (client, connection) =
+                tokio_postgres::connect("host=localhost user=simepi password=simepi", NoTls)
+                    .await
+                    .unwrap();
+            tokio::spawn(async move {
+                if let Err(e) = connection.await {
+                    println!("[error] Postresql database connection error: {e}");
+                }
+            });
+            let test = JsonTest { hoge: 100 };
+            client
+                .execute(
+                    "INSERT INTO test VALUES (10, $1)",
+                    &[&(test).to_json().unwrap()],
+                )
+                .await
+                .unwrap();
+
+            let rs = client
+                .query("select * from test where id = 10", &[])
+                .await
+                .unwrap();
+            let Json(colj): Json<serde_json::Value> = rs[0].get(1);
+            let test2: JsonTest =
+                poem_openapi::types::ParseFromJSON::parse_from_json(Some(colj)).unwrap();
+            println!("{:?}", test2);
+            assert_eq!(test, test2);
+        })
     }
 }

@@ -36,52 +36,52 @@ impl<T, E: std::error::Error> From<Result<T, E>> for Response<T> {
     }
 }
 
-#[derive(
-    Debug, serde::Serialize, serde::Deserialize, PartialEq, Eq, PartialOrd, Ord, Clone, Copy,
-)]
-pub struct Resource(pub u32);
+// #[derive(
+//     Debug, serde::Serialize, serde::Deserialize, PartialEq, Eq, PartialOrd, Ord, Clone, Copy,
+// )]
+// pub struct Resource(pub u32);
 
-impl AddAssign for Resource {
-    fn add_assign(&mut self, rhs: Self) {
-        self.0 += rhs.0;
-    }
-}
+// impl AddAssign for Resource {
+//     fn add_assign(&mut self, rhs: Self) {
+//         self.0 += rhs.0;
+//     }
+// }
 
-impl AddAssign<&Resource> for Resource {
-    fn add_assign(&mut self, rhs: &Self) {
-        self.0 += rhs.0;
-    }
-}
+// impl AddAssign<&Resource> for Resource {
+//     fn add_assign(&mut self, rhs: &Self) {
+//         self.0 += rhs.0;
+//     }
+// }
 
-impl SubAssign for Resource {
-    fn sub_assign(&mut self, rhs: Self) {
-        self.0 -= rhs.0;
-    }
-}
+// impl SubAssign for Resource {
+//     fn sub_assign(&mut self, rhs: Self) {
+//         self.0 -= rhs.0;
+//     }
+// }
 
-impl Sub for Resource {
-    type Output = Option<Self>;
+// impl Sub for Resource {
+//     type Output = Option<Self>;
 
-    fn sub(self, rhs: Self) -> Self::Output {
-        self.0.checked_sub(rhs.0).map(Self)
-    }
-}
+//     fn sub(self, rhs: Self) -> Self::Output {
+//         self.0.checked_sub(rhs.0).map(Self)
+//     }
+// }
 
-impl Sub<&Resource> for Resource {
-    type Output = Option<Self>;
+// impl Sub<&Resource> for Resource {
+//     type Output = Option<Self>;
 
-    fn sub(self, rhs: &Self) -> Self::Output {
-        self.0.checked_sub(rhs.0).map(Self)
-    }
-}
+//     fn sub(self, rhs: &Self) -> Self::Output {
+//         self.0.checked_sub(rhs.0).map(Self)
+//     }
+// }
 
-impl Div for Resource {
-    type Output = f64;
+// impl Div for Resource {
+//     type Output = f64;
 
-    fn div(self, rhs: Self) -> Self::Output {
-        self.0 as f64 / rhs.0 as f64
-    }
-}
+//     fn div(self, rhs: Self) -> Self::Output {
+//         self.0 as f64 / rhs.0 as f64
+//     }
+// }
 
 #[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
 pub struct Cost(u64);
@@ -107,7 +107,7 @@ impl From<job::WorldParams> for Cost {
 #[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
 pub struct ResourceMeasure {
     pub max_cost: Cost,
-    pub max_resource: Resource,
+    pub max_resource: u32,
 }
 
 #[derive(thiserror::Error, Debug)]
@@ -120,20 +120,20 @@ impl ResourceMeasure {
     pub fn new(max_param: job::WorldParams, max_resource: u32) -> Self {
         Self {
             max_cost: max_param.into(),
-            max_resource: Resource(max_resource),
+            max_resource,
         }
     }
 
-    pub fn measure(&self, cost: &Cost) -> Result<Resource, ResourceSizeError> {
+    pub fn measure(&self, cost: &Cost) -> Result<u32, ResourceSizeError> {
         if cost.0 > self.max_cost.0 {
             return Err(ResourceSizeError::ExceedMaxResource);
         }
 
-        let k = self.max_resource.0 as u64 * cost.0;
+        let k = self.max_resource as u64 * cost.0;
         if k <= self.max_cost.0 {
-            Ok(Resource(1))
+            Ok(1)
         } else {
-            Ok(Resource((k / self.max_cost.0) as u32))
+            Ok((k / self.max_cost.0) as u32)
         }
     }
 }

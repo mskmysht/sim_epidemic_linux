@@ -43,11 +43,20 @@ enum TerminateResponse {
     NotFound(PlainText<String>),
 }
 
+#[derive(ApiResponse)]
+enum DeleteResponse {
+    #[oai(status = 202)]
+    Accepted,
+    #[oai(status = 500)]
+    InternalError,
+}
+
 #[async_trait]
 pub trait ResourceManager {
     async fn create_job(&self, config: job::Config) -> Option<String>;
     async fn get_job(&self, id: &str) -> Option<job::Job>;
     async fn get_all_jobs(&self) -> Vec<job::Job>;
+    async fn delete_all_jobs(&self) -> bool;
     async fn terminate_job(&self, id: &str) -> Option<bool>;
 }
 
@@ -92,5 +101,14 @@ impl<M: ResourceManager + Send + Sync + 'static> Api<M> {
     #[oai(tag = "ApiTags::Job", path = "/jobs", method = "get")]
     async fn get_all_jobs(&self) -> poem::Result<Json<Vec<job::Job>>> {
         Ok(Json(self.0.get_all_jobs().await))
+    }
+
+    #[oai(tag = "ApiTags::Job", path = "/jobs", method = "delete")]
+    async fn delete_all_jobs(&self) -> poem::Result<DeleteResponse> {
+        if self.0.delete_all_jobs().await {
+            Ok(DeleteResponse::Accepted)
+        } else {
+            Ok(DeleteResponse::InternalError)
+        }
     }
 }
