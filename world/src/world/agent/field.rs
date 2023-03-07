@@ -8,7 +8,7 @@ use super::{
     Agent, AgentHealth, Body, Location, LocationLabel, WarpParam,
 };
 use crate::{
-    log::{LocalStepLog, MyLog},
+    stat::{LocalStepLog, Stat},
     util::{
         math::{Percentage, Point},
         random::{self, DistInfo},
@@ -166,7 +166,7 @@ impl Field {
         &mut self,
         warps: &mut Warps,
         test_queue: &mut TestQueue,
-        log: &mut MyLog,
+        log: &mut Stat,
         pfs: &ParamsForStep,
     ) {
         self.interact(&pfs);

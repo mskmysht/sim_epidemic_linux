@@ -3,7 +3,7 @@ use super::{
     DaysTo, HealthState,
 };
 use crate::{
-    log::{HistgramType, LocalStepLog},
+    stat::{HistgramType, LocalStepLog},
     util::random,
 };
 

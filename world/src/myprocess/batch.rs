@@ -99,7 +99,7 @@ impl WorldSpawner {
     fn execute(&mut self) -> anyhow::Result<()> {
         let step_to_end = self.param.stop_at * self.world.world_params.steps_per_day;
         self.res_ok()?;
-        while self.step_cont(step_to_end)? {
+        while self.step(step_to_end)? {
             if let Some(msg) = self.bicon.try_recv()? {
                 match msg {
                     Request::Terminate => {
@@ -110,25 +110,12 @@ impl WorldSpawner {
                 }
             }
         }
+        // self.world.stat
         Ok(())
     }
 
     #[inline]
-    fn step_cont(&mut self, step_to_end: u32) -> anyhow::Result<bool> {
-        self.inline_step();
-        let (state, cont) = if self.is_ended() {
-            (WorldState::Ended, false)
-        } else if self.world.runtime_params.step > step_to_end {
-            (WorldState::Stopped, false)
-        } else {
-            (WorldState::Started, true)
-        };
-        self.send_status(state)?;
-        Ok(cont)
-    }
-
-    #[inline]
-    fn inline_step(&mut self) {
+    fn step(&mut self, step_to_end: u32) -> anyhow::Result<bool> {
         self.world.step();
         let new_time = util::get_uptime();
         let time_passed = new_time - self.info.prev_time;
@@ -137,11 +124,16 @@ impl WorldSpawner {
                 ((1.0 / time_passed).min(30.0) - self.info.steps_per_sec) * 0.2;
         }
         self.info.prev_time = new_time;
-    }
 
-    #[inline]
-    fn is_ended(&self) -> bool {
-        self.world.get_n_infected() == 0
+        let (state, cont) = if self.world.is_ended() {
+            (WorldState::Ended, false)
+        } else if self.world.runtime_params.step > step_to_end {
+            (WorldState::Stopped, false)
+        } else {
+            (WorldState::Started, true)
+        };
+        self.send_status(state)?;
+        Ok(cont)
     }
 
     fn listen(mut self) -> anyhow::Result<()> {

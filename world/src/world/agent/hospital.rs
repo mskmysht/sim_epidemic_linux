@@ -1,6 +1,6 @@
 use super::{warp::Warps, Agent, Location, LocationLabel, ParamsForStep, WarpParam};
 use crate::{
-    log::{LocalStepLog, MyLog},
+    stat::{LocalStepLog, Stat},
     util::{math::Point, DrainMap},
 };
 
@@ -45,7 +45,7 @@ impl Hospital {
         self.0.push(HospitalAgent::new(agent, back_to));
     }
 
-    pub fn step(&mut self, warps: &mut Warps, log: &mut MyLog, pfs: &ParamsForStep) {
+    pub fn step(&mut self, warps: &mut Warps, log: &mut Stat, pfs: &ParamsForStep) {
         let tmp = self.0.drain_map_mut(|ha| ha.step(pfs));
 
         for (llog, opt) in tmp.into_iter() {

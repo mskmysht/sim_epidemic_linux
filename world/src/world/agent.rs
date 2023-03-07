@@ -12,7 +12,7 @@ use super::{
     testing::{TestReason, TestResult, Testee},
 };
 use crate::{
-    log::LocalStepLog,
+    stat::LocalStepLog,
     util::{
         math::{Percentage, Point},
         random::{self, modified_prob, DistInfo},

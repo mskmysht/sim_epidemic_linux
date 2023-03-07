@@ -15,7 +15,7 @@ use self::{
     commons::{HealthType, ParamsForStep, RuntimeParams, VaccineInfo, VariantInfo, WorldParams},
     testing::TestQueue,
 };
-use crate::{log::MyLog, util::math::Point};
+use crate::{stat::Stat, util::math::Point};
 
 pub struct World {
     pub id: String,
@@ -27,9 +27,8 @@ pub struct World {
     hospital: Hospital,
     cemetery: Cemetery,
     test_queue: TestQueue,
-    // is_finished: bool,
     //[todo] predicate_to_stop: bool,
-    pub log: MyLog,
+    pub stat: Stat,
     scenario_index: i32,
     //[todo] scenario: Vec<i32>,
     gatherings: Gatherings,
@@ -48,7 +47,7 @@ impl World {
             world_params,
             agents: Vec::with_capacity(world_params.init_n_pop as usize),
             // is_finished: false,
-            log: MyLog::default(),
+            stat: Stat::default(),
             scenario_index: 0,
             gatherings: Gatherings::new(),
             variant_info: VariantInfo::default_list(),
@@ -132,15 +131,13 @@ impl World {
 
         // reset test queue
         self.runtime_params.step = 0;
-        self.log.reset(
+        self.stat.reset(
             (n_pop - n_infected) as u32,
             n_symptomatic,
             n_infected as u32 - n_symptomatic,
         );
         self.scenario_index = 0;
         //[todo] self.exec_scenario();
-
-        // self.is_finished = false;
     }
 
     pub fn step(&mut self) {
@@ -167,8 +164,8 @@ impl World {
         }
 
         self.field
-            .step(&mut self.warps, &mut self.test_queue, &mut self.log, &pfs);
-        self.hospital.step(&mut self.warps, &mut self.log, &pfs);
+            .step(&mut self.warps, &mut self.test_queue, &mut self.stat, &pfs);
+        self.hospital.step(&mut self.warps, &mut self.stat, &pfs);
         self.warps.step(
             &mut self.field,
             &mut self.hospital,
@@ -177,7 +174,7 @@ impl World {
             &pfs,
         );
 
-        self.log.push();
+        self.stat.push();
         self.runtime_params.step += 1;
         // [todo] self.predicate_to_stop
         //    if loop_mode == LoopMode::LoopEndByCondition
@@ -188,12 +185,13 @@ impl World {
         //    }
     }
 
-    pub fn get_n_infected(&self) -> u32 {
-        self.log.n_infected()
+    #[inline]
+    pub fn is_ended(&self) -> bool {
+        self.stat.n_infected() == 0
     }
 
     pub fn export(&self, dir: &str) -> io::Result<()> {
-        self.log.write(
+        self.stat.write(
             &format!("{}_{}", self.id, Local::now().format("%F_%H-%M-%S")),
             dir,
         )

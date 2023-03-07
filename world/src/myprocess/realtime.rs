@@ -88,11 +88,11 @@ where
 
     #[inline]
     fn step(&mut self) {
-        if self.is_ended() {
+        if self.world.is_ended() {
             self.res_err(ResponseError::AlreadyEnded);
         } else {
             self.inline_step();
-            let state = if self.is_ended() {
+            let state = if self.world.is_ended() {
                 WorldState::Ended
             } else {
                 WorldState::Stopped
@@ -111,7 +111,7 @@ where
 
     #[inline]
     fn debug(&self) {
-        self.res_ok_with(format!("{}\n{:?}", self.world.log, self.info));
+        self.res_ok_with(format!("{}\n{:?}", self.world.stat, self.info));
     }
 
     #[inline]
@@ -123,7 +123,7 @@ where
     }
 
     fn start(&mut self, stop_at: u32) -> bool {
-        if self.is_ended() {
+        if self.world.is_ended() {
             self.res_err(ResponseError::AlreadyEnded);
             return false;
         }
@@ -157,7 +157,7 @@ where
     #[inline]
     fn step_cont(&mut self, step_to_end: u32) -> bool {
         self.inline_step();
-        let (state, cont) = if self.is_ended() {
+        let (state, cont) = if self.world.is_ended() {
             (WorldState::Ended, false)
         } else if self.world.runtime_params.step > step_to_end {
             (WorldState::Stopped, false)
@@ -178,11 +178,6 @@ where
                 ((1.0 / time_passed).min(30.0) - self.info.steps_per_sec) * 0.2;
         }
         self.info.prev_time = new_time;
-    }
-
-    #[inline]
-    fn is_ended(&self) -> bool {
-        self.world.get_n_infected() == 0
     }
 
     fn listen(mut self) {
