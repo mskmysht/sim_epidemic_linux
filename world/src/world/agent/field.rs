@@ -8,7 +8,7 @@ use super::{
     Agent, AgentHealth, Body, Location, LocationLabel, WarpParam,
 };
 use crate::{
-    stat::{LocalStepLog, Stat},
+    stat::{HealthCount, HealthDiff, HistInfo, InfectionCntInfo, Stat},
     util::{
         math::{Percentage, Point},
         random::{self, DistInfo},
@@ -75,7 +75,9 @@ impl LocationLabel for FieldAgent {
 struct FieldStepInfo {
     contacted_testees: Option<Vec<Testee>>,
     testee: Option<Testee>,
-    log: LocalStepLog,
+    infct_info: Option<InfectionCntInfo>,
+    hist_info: Option<HistInfo>,
+    health_diff: Option<HealthDiff>,
 }
 
 enum Transfer {
@@ -98,18 +100,23 @@ impl FieldAgent {
 
         let temp = std::mem::replace(&mut self.temp, TempParam::default());
         agent.contacts.append(temp.new_contacts, pfs.rp.step);
-        agent.log.update_n_infects(temp.new_n_infects, &mut fsi.log);
+        agent
+            .log
+            .update_n_infects(temp.new_n_infects, &mut fsi.infct_info);
 
         let transfer = 'block: {
             let agent = agent.deref_mut();
-            if let Some(w) = agent.check_quarantine(&mut fsi.contacted_testees, pfs) {
+            if let Some((w, testees)) = agent.check_quarantine(pfs) {
+                fsi.contacted_testees = Some(testees);
                 break 'block Some(Transfer::Extra(w));
             }
-            if let Some(w) = agent.field_step(
+            fsi.testee = agent.reserve_test_in_field(self.agent.clone(), pfs);
+            if let Some(w) = agent.health.field_step(
                 temp.infected,
-                self.agent.clone(),
-                &mut fsi.testee,
-                &mut fsi.log,
+                agent.activeness,
+                agent.age,
+                &mut fsi.hist_info,
+                &mut fsi.health_diff,
                 pfs,
             ) {
                 break 'block Some(Transfer::Extra(w));
@@ -166,7 +173,8 @@ impl Field {
         &mut self,
         warps: &mut Warps,
         test_queue: &mut TestQueue,
-        log: &mut Stat,
+        stat: &mut Stat,
+        health_count: &mut HealthCount,
         pfs: &ParamsForStep,
     ) {
         self.interact(&pfs);
@@ -178,7 +186,15 @@ impl Field {
             .collect::<Vec<_>>();
 
         for (fsi, opt) in tmp.into_iter().flatten() {
-            log.apply(fsi.log);
+            if let Some(hist) = fsi.hist_info {
+                stat.hists.push(hist);
+            }
+            if let Some(infct) = fsi.infct_info {
+                stat.infcts.push(infct);
+            }
+            if let Some(hd) = fsi.health_diff {
+                health_count.apply_difference(hd);
+            }
             if let Some(testees) = fsi.contacted_testees {
                 test_queue.extend(testees);
             }

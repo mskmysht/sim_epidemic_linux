@@ -36,7 +36,8 @@ impl WarpAgent {
         let mut agent = self.agent.write();
         let mut wsi = WarpStepInfo::default();
         if let WarpMode::Inside = self.param.mode {
-            if let Some(w) = agent.check_quarantine(&mut wsi.contacted_testees, pfs) {
+            if let Some((w, testees)) = agent.check_quarantine(pfs) {
+                wsi.contacted_testees = Some(testees);
                 self.param = w;
             }
         }

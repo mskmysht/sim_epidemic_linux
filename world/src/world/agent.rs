@@ -12,7 +12,7 @@ use super::{
     testing::{TestReason, TestResult, Testee},
 };
 use crate::{
-    stat::LocalStepLog,
+    stat::{HealthDiff, HistInfo, InfectionCntInfo},
     util::{
         math::{Percentage, Point},
         random::{self, modified_prob, DistInfo},
@@ -300,7 +300,8 @@ impl AgentHealth {
         infected: Option<(f64, usize)>,
         activeness: f64,
         age: f64,
-        log: &mut LocalStepLog,
+        hist_info: &mut Option<HistInfo>,
+        health_diff: &mut Option<HealthDiff>,
         pfs: &ParamsForStep,
     ) -> Option<WarpParam> {
         let from_hd = (&self.state).into();
@@ -319,7 +320,7 @@ impl AgentHealth {
                     &mut self.days_to,
                     inf_mode,
                     &self.vaccine_state.param,
-                    log,
+                    hist_info,
                     pfs,
                 ),
                 HealthState::Recovered(rp) => rp.step(&mut self.days_to, activeness, age, pfs),
@@ -343,14 +344,15 @@ impl AgentHealth {
                 _ => {}
             }
         };
-        log.set_health(from_hd, (&self.state).into());
+        *health_diff = Some(HealthDiff::new(from_hd, (&self.state).into()));
         warp
     }
 
     fn hospital_step(
         &mut self,
         back_to: Point,
-        log: &mut LocalStepLog,
+        hist_info: &mut Option<HistInfo>,
+        health_diff: &mut Option<HealthDiff>,
         pfs: &ParamsForStep,
     ) -> Option<WarpParam> {
         let from_hd = (&self.state).into();
@@ -363,7 +365,7 @@ impl AgentHealth {
             &mut self.days_to,
             inf_mode,
             &self.vaccine_state.param,
-            log,
+            hist_info,
             pfs,
         ) {
             warp = match std::mem::replace(&mut self.state, new_state) {
@@ -372,7 +374,7 @@ impl AgentHealth {
             };
         };
 
-        log.set_health(from_hd, (&self.state).into());
+        *health_diff = Some(HealthDiff::new(from_hd, (&self.state).into()));
         warp
     }
 }
@@ -530,11 +532,11 @@ impl AgentLog {
         *self = AgentLog::default();
     }
 
-    fn update_n_infects(&mut self, new_n_infects: u32, log: &mut LocalStepLog) {
+    fn update_n_infects(&mut self, new_n_infects: u32, infct_info: &mut Option<InfectionCntInfo>) {
         if new_n_infects > 0 {
             let prev_n_infects = self.n_infects;
             self.n_infects += new_n_infects;
-            log.set_infect(prev_n_infects, self.n_infects);
+            *infct_info = Some(InfectionCntInfo::new(prev_n_infects, self.n_infects));
         }
     }
 }
@@ -794,40 +796,27 @@ impl InnerAgent {
         Some(Testee::new(agent, reason, pfs.rp.step))
     }
 
-    fn check_quarantine(
-        &mut self,
-        contacted_testees: &mut Option<Vec<Testee>>,
-        pfs: &ParamsForStep,
-    ) -> Option<WarpParam> {
+    fn check_quarantine(&mut self, pfs: &ParamsForStep) -> Option<(WarpParam, Vec<Testee>)> {
         //[todo] prms.rp.trc_ope != TrcTst
         if matches!(self.testing.read_result(), Some(TestResult::Positive)) {
-            *contacted_testees = Some(self.contacts.drain_testees(pfs));
-            Some(WarpParam::hospital(self.get_back_to(), pfs.wp))
+            Some((
+                WarpParam::hospital(self.get_back_to(), pfs.wp),
+                self.contacts.drain_testees(pfs),
+            ))
         } else {
             None
         }
     }
 
-    fn field_step(
-        &mut self,
-        infected: Option<(f64, usize)>,
-        agent: Agent,
-        testee: &mut Option<Testee>,
-        log: &mut LocalStepLog,
-        pfs: &ParamsForStep,
-    ) -> Option<WarpParam> {
-        *testee = self.reserve_test_in_field(agent, pfs);
-        self.health
-            .field_step(infected, self.activeness, self.age, log, pfs)
-    }
-
     fn hospital_step(
         &mut self,
         back_to: Point,
-        log: &mut LocalStepLog,
+        hist_info: &mut Option<HistInfo>,
+        health_diff: &mut Option<HealthDiff>,
         pfs: &ParamsForStep,
     ) -> Option<WarpParam> {
-        self.health.hospital_step(back_to, log, pfs)
+        self.health
+            .hospital_step(back_to, hist_info, health_diff, pfs)
     }
 
     fn replace_gathering(

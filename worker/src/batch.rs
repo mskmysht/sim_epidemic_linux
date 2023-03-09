@@ -31,7 +31,7 @@ pub enum ResponseError {
 }
 
 pub async fn run(
-    world_path: String,
+    manager: Arc<WorldManager>,
     connection: Connection,
     max_population_size: u32,
     max_resource: u32,
@@ -47,8 +47,6 @@ pub async fn run(
         ),
     )
     .await?;
-
-    let manager = Arc::new(WorldManager::new(world_path));
 
     while let Ok((mut send, mut recv)) = connection.accept_bi().await {
         let manager = Arc::clone(&manager);
@@ -90,8 +88,9 @@ pub async fn run(
     Ok(())
 }
 
-struct WorldManager {
+pub struct WorldManager {
     world_path: String,
+    stat_dir: String,
     table: Mutex<BTreeMap<String, IpcBiConnection>>,
 }
 
@@ -111,11 +110,12 @@ fn request(bicon: &IpcBiConnection, req: world_if::Request) -> anyhow::Result<wo
 }
 
 impl WorldManager {
-    fn new(world_path: String) -> Self {
-        Self {
+    pub fn new(world_path: String, stat_dir: String) -> Arc<Self> {
+        Arc::new(Self {
             world_path,
+            stat_dir,
             table: Default::default(),
-        }
+        })
     }
 
     async fn execute(
@@ -163,7 +163,14 @@ impl WorldManager {
         let (server, server_name) =
             IpcOneShotServer::<T>::new().map_err(IpcServerConnectionError::IpcServer)?;
         let mut command = process::Command::new(&self.world_path);
-        command.args(["--world-id", world_id, "--server-name", &server_name]);
+        command.args([
+            "--world-id",
+            world_id,
+            "--server-name",
+            &server_name,
+            "--stat-dir",
+            &self.stat_dir,
+        ]);
         let child = shared_child::SharedChild::spawn(&mut command)
             .map_err(IpcServerConnectionError::ChildProcess)?;
         let (_, value) = server

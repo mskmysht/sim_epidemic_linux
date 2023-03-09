@@ -5,7 +5,7 @@ pub(super) mod testing;
 
 use chrono::Local;
 use enum_map::EnumMap;
-use std::io;
+use std::{io, mem};
 
 use self::{
     agent::{
@@ -15,7 +15,10 @@ use self::{
     commons::{HealthType, ParamsForStep, RuntimeParams, VaccineInfo, VariantInfo, WorldParams},
     testing::TestQueue,
 };
-use crate::{stat::Stat, util::math::Point};
+use crate::{
+    stat::{HealthCount, Stat},
+    util::math::Point,
+};
 
 pub struct World {
     pub id: String,
@@ -28,6 +31,7 @@ pub struct World {
     cemetery: Cemetery,
     test_queue: TestQueue,
     //[todo] predicate_to_stop: bool,
+    health_count: HealthCount,
     pub stat: Stat,
     scenario_index: i32,
     //[todo] scenario: Vec<i32>,
@@ -46,7 +50,7 @@ impl World {
             runtime_params,
             world_params,
             agents: Vec::with_capacity(world_params.init_n_pop as usize),
-            // is_finished: false,
+            health_count: Default::default(),
             stat: Stat::default(),
             scenario_index: 0,
             gatherings: Gatherings::new(),
@@ -131,11 +135,10 @@ impl World {
 
         // reset test queue
         self.runtime_params.step = 0;
-        self.stat.reset(
-            (n_pop - n_infected) as u32,
-            n_symptomatic,
-            n_infected as u32 - n_symptomatic,
-        );
+        self.health_count[&HealthType::Susceptible] = (n_pop - n_infected) as u32;
+        self.health_count[&HealthType::Symptomatic] = n_symptomatic;
+        self.health_count[&HealthType::Symptomatic] = n_infected as u32 - n_symptomatic;
+        self.stat.reset();
         self.scenario_index = 0;
         //[todo] self.exec_scenario();
     }
@@ -163,9 +166,19 @@ impl World {
             );
         }
 
-        self.field
-            .step(&mut self.warps, &mut self.test_queue, &mut self.stat, &pfs);
-        self.hospital.step(&mut self.warps, &mut self.stat, &pfs);
+        self.field.step(
+            &mut self.warps,
+            &mut self.test_queue,
+            &mut self.stat,
+            &mut self.health_count,
+            &pfs,
+        );
+        self.hospital.step(
+            &mut self.warps,
+            &mut self.stat,
+            &mut self.health_count,
+            &pfs,
+        );
         self.warps.step(
             &mut self.field,
             &mut self.hospital,
@@ -174,7 +187,9 @@ impl World {
             &pfs,
         );
 
-        self.stat.push();
+        self.stat
+            .health_counts
+            .push(mem::take(&mut self.health_count));
         self.runtime_params.step += 1;
         // [todo] self.predicate_to_stop
         //    if loop_mode == LoopMode::LoopEndByCondition

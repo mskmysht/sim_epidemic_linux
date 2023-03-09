@@ -3,7 +3,7 @@ use super::{
     DaysTo, HealthState,
 };
 use crate::{
-    stat::{HistgramType, LocalStepLog},
+    stat::{HistInfo, HistgramType},
     util::random,
 };
 
@@ -90,7 +90,7 @@ impl InfectionParam {
         days_to: &mut DaysTo,
         inf_mode: &mut InfMode,
         vp: &Option<VaccinationParam>,
-        log: &mut LocalStepLog,
+        hist_info: &mut Option<HistInfo>,
         pfs: &ParamsForStep,
     ) -> Option<HealthState> {
         fn new_recover(
@@ -112,7 +112,7 @@ impl InfectionParam {
             if self.severity <= 0.0 {
                 if inf_mode == &InfMode::Sym {
                     // SET_HIST(hist_recov, days_diseased);
-                    log.set_hist(HistgramType::HistRecov, self.days_diseased);
+                    *hist_info = Some(HistInfo::new(HistgramType::HistRecov, self.days_diseased));
                 }
                 return Some(HealthState::Recovered(new_recover(
                     days_to,
@@ -156,7 +156,7 @@ impl InfectionParam {
         // died
         if self.severity >= 1.0 {
             // SET_HIST(hist_death, days_diseased)
-            log.set_hist(HistgramType::HistDeath, self.days_diseased);
+            *hist_info = Some(HistInfo::new(HistgramType::HistDeath, self.days_diseased));
             return Some(HealthState::Died);
         }
 
@@ -166,7 +166,7 @@ impl InfectionParam {
 
         if inf_mode == &InfMode::Asym {
             // SET_HIST(hist_incub, days_infected)
-            log.set_hist(HistgramType::HistIncub, self.days_infected);
+            *hist_info = Some(HistInfo::new(HistgramType::HistIncub, self.days_infected));
             *inf_mode = InfMode::Sym;
         }
 

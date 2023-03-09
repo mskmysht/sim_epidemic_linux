@@ -1,6 +1,10 @@
 use crate::world::commons::HealthType;
 
-use std::{collections::VecDeque, fmt::Display, io};
+use std::{
+    fmt::Display,
+    io,
+    ops::{Index, IndexMut},
+};
 
 use enum_map::{macros, Enum, EnumMap};
 
@@ -25,38 +29,21 @@ pub enum HistgramType {
 }
 
 pub struct HistInfo {
-    pub mode: HistgramType,
-    pub days: f64,
+    mode: HistgramType,
+    days: f64,
 }
 
-#[derive(Default)]
-pub struct LocalStepLog {
-    hist: Option<HistInfo>,
-    infct: Option<InfectionCntInfo>,
-    health: Option<HealthDiff>,
-}
-
-impl LocalStepLog {
-    pub fn set_infect(&mut self, prev_n_infects: u32, curr_n_infects: u32) {
-        self.infct = Some(InfectionCntInfo::new(prev_n_infects, curr_n_infects))
-    }
-
-    pub fn set_hist(&mut self, mode: HistgramType, days: f64) {
-        self.hist = Some(HistInfo { mode, days })
-    }
-
-    pub fn set_health(&mut self, from: HealthType, to: HealthType) {
-        if from != to {
-            self.health = Some(HealthDiff { from, to })
-        }
+impl HistInfo {
+    pub fn new(mode: HistgramType, days: f64) -> Self {
+        Self { mode, days }
     }
 }
 
 #[derive(Default)]
 pub struct Stat {
-    hists: Vec<HistInfo>,
-    health_counts: VecDeque<HealthStat>,
-    infcts: Vec<InfectionCntInfo>,
+    pub hists: Vec<HistInfo>,
+    pub infcts: Vec<InfectionCntInfo>,
+    pub health_counts: Vec<HealthCount>,
 }
 
 impl Display for Stat {
@@ -72,33 +59,12 @@ impl Display for Stat {
 }
 
 impl Stat {
-    pub fn reset(&mut self, n_susceptible: u32, n_symptomatic: u32, n_asymptomatic: u32) {
-        let mut cnt = EnumMap::default();
-        cnt[&HealthType::Susceptible] = n_susceptible;
-        cnt[&HealthType::Symptomatic] = n_symptomatic;
-        cnt[&HealthType::Asymptomatic] = n_asymptomatic;
+    pub fn reset(&mut self) {
         self.health_counts.clear();
-        self.health_counts.push_front(HealthStat(cnt));
     }
 
     pub fn n_infected(&self) -> u32 {
         self.health_counts[0].n_infected()
-    }
-
-    pub fn apply(&mut self, local: LocalStepLog) {
-        if let Some(h) = local.hist {
-            self.hists.push(h);
-        }
-        if let Some(hd) = local.health {
-            self.health_counts[0].apply_difference(hd);
-        }
-        if let Some(i) = local.infct {
-            self.infcts.push(i);
-        }
-    }
-
-    pub fn push(&mut self) {
-        self.health_counts.push_front(self.health_counts[0].clone());
     }
 
     pub fn write(&self, name: &str, dir: &str) -> io::Result<()> {
@@ -127,16 +93,36 @@ pub struct HealthDiff {
     to: HealthType,
 }
 
-#[derive(Clone, Default, Debug)]
-pub struct HealthStat(EnumMap<HealthType, u32>);
+impl HealthDiff {
+    pub fn new(from: HealthType, to: HealthType) -> Self {
+        Self { from, to }
+    }
+}
 
-impl HealthStat {
-    fn apply_difference(&mut self, hd: HealthDiff) {
+#[derive(Clone, Default, Debug)]
+pub struct HealthCount(EnumMap<HealthType, u32>);
+
+impl HealthCount {
+    pub fn apply_difference(&mut self, hd: HealthDiff) {
         self.0[&hd.from] -= 1;
         self.0[&hd.to] += 1;
     }
 
     fn n_infected(&self) -> u32 {
         self.0[&HealthType::Symptomatic] + self.0[&HealthType::Asymptomatic]
+    }
+}
+
+impl<'a> Index<&'a HealthType> for HealthCount {
+    type Output = u32;
+
+    fn index(&self, index: &'a HealthType) -> &Self::Output {
+        &self.0[index]
+    }
+}
+
+impl<'a> IndexMut<&'a HealthType> for HealthCount {
+    fn index_mut(&mut self, index: &HealthType) -> &mut Self::Output {
+        &mut self.0[index]
     }
 }

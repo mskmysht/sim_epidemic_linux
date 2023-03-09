@@ -28,6 +28,7 @@ pub struct WorldSpawner {
     info: WorldStepInfo,
     bicon: IpcBiConnection,
     stream: IpcSender<WorldStatus>,
+    stat_dir: String,
 }
 
 impl WorldSpawner {
@@ -35,6 +36,7 @@ impl WorldSpawner {
         id: String,
         bicon: IpcBiConnection,
         stream: IpcSender<WorldStatus>,
+        stat_dir: String,
     ) -> anyhow::Result<Self> {
         let param: api::job::JobParam = bicon.recv().unwrap();
         let world = World::new(
@@ -48,6 +50,7 @@ impl WorldSpawner {
             info: WorldStepInfo::default(),
             bicon,
             stream,
+            stat_dir,
         };
         spawner.send_status(WorldState::Stopped)?;
         Ok(spawner)
