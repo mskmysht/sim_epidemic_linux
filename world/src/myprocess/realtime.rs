@@ -35,8 +35,12 @@ where
     P::SendErr<Response>: std::fmt::Debug,
     P::SendErr<WorldStatus>: std::fmt::Debug,
 {
-    pub fn new(id: String, publisher: P) -> Self {
-        let world = World::new(id, new_runtime_params(), new_world_params());
+    pub fn new(id: String, publisher: P, init_n_pop: u32, infected: f64) -> Self {
+        let world = World::new(
+            id,
+            new_runtime_params(),
+            new_world_params(init_n_pop, infected),
+        );
         let spawner = Self {
             world,
             info: WorldStepInfo::default(),
@@ -74,7 +78,11 @@ where
     #[inline]
     fn send_status(&self, state: WorldState) {
         self.publisher
-            .send_on_stream(WorldStatus::new(self.world.runtime_params.step, state))
+            .send_on_stream(WorldStatus::new(
+                self.world.runtime_params.step,
+                state,
+                format!("{:?}", self.world.health_count),
+            ))
             .unwrap();
     }
 
@@ -88,11 +96,11 @@ where
 
     #[inline]
     fn step(&mut self) {
-        if self.is_ended() {
+        if self.world.is_ended() {
             self.res_err(ResponseError::AlreadyEnded);
         } else {
             self.inline_step();
-            let state = if self.is_ended() {
+            let state = if self.world.is_ended() {
                 WorldState::Ended
             } else {
                 WorldState::Stopped
@@ -111,11 +119,11 @@ where
 
     #[inline]
     fn debug(&self) {
-        self.res_ok_with(format!("{}\n{:?}", self.world.log, self.info));
+        self.res_ok_with(format!("{:?}\n{:?}", self.world.health_count, self.info));
     }
 
     #[inline]
-    fn export(&self, dir: String) {
+    fn export(&mut self, dir: String) {
         match self.world.export(&dir) {
             Ok(_) => self.res_ok_with(format!("{} was successfully exported", dir)),
             Err(_) => self.res_err(ResponseError::FileExportFailed),
@@ -123,7 +131,7 @@ where
     }
 
     fn start(&mut self, stop_at: u32) -> bool {
-        if self.is_ended() {
+        if self.world.is_ended() {
             self.res_err(ResponseError::AlreadyEnded);
             return false;
         }
@@ -157,7 +165,7 @@ where
     #[inline]
     fn step_cont(&mut self, step_to_end: u32) -> bool {
         self.inline_step();
-        let (state, cont) = if self.is_ended() {
+        let (state, cont) = if self.world.is_ended() {
             (WorldState::Ended, false)
         } else if self.world.runtime_params.step > step_to_end {
             (WorldState::Stopped, false)
@@ -180,14 +188,9 @@ where
         self.info.prev_time = new_time;
     }
 
-    #[inline]
-    fn is_ended(&self) -> bool {
-        self.world.get_n_infected() == 0
-    }
-
     fn listen(mut self) {
-        loop {
-            match self.publisher.recv().unwrap() {
+        while let Ok(req) = self.publisher.recv() {
+            match req {
                 Request::Delete => {
                     self.res_ok();
                     break;
@@ -198,7 +201,6 @@ where
                     if self.start(stop_at) {
                         break;
                     }
-                    debug_assert!(false, "force to invoke panic");
                 }
                 #[cfg(debug_assertions)]
                 Request::Debug => self.debug(),
@@ -210,13 +212,13 @@ where
     }
 }
 
-fn new_world_params() -> WorldParams {
+fn new_world_params(init_n_pop: u32, infected: f64) -> WorldParams {
     WorldParams::new(
-        10000,
+        init_n_pop,
         360,
         18,
         16,
-        0.05.into(),
+        infected.into(),
         0.0.into(),
         20.0.into(),
         50.0.into(),

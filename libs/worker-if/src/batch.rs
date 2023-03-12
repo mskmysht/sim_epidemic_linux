@@ -11,6 +11,7 @@ pub mod world_if {
 pub enum Request {
     Execute(String, job::JobParam),
     Terminate(String),
+    ReadStatistics(String),
 }
 
 #[derive(Debug, serde::Serialize, serde::Deserialize)]

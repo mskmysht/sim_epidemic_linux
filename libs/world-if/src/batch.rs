@@ -75,15 +75,17 @@ pub enum WorldState {
 pub struct WorldStatus {
     step: u32,
     state: WorldState,
+    custom: String,
     #[serde(with = "ts_seconds")]
     time_stamp: chrono::DateTime<chrono::Utc>,
 }
 
 impl WorldStatus {
-    pub fn new(step: u32, state: WorldState) -> Self {
+    pub fn new(step: u32, state: WorldState, custom: String) -> Self {
         Self {
             step,
             state,
+            custom,
             time_stamp: chrono::Utc::now(),
         }
     }

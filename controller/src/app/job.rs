@@ -20,7 +20,8 @@ impl Example for Config {
             param: JobParam {
                 stop_at: 10,
                 world_params: WorldParams {
-                    population_size: 100,
+                    population_size: 1000,
+                    infected: 1.0,
                 },
             },
             iteration_count: 3,

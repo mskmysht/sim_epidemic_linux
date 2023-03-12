@@ -22,6 +22,8 @@ fn main() {
     let spawner = myprocess::realtime::WorldSpawner::new(
         args.world_id.clone(),
         realtime::IpcPublisher::new(stream_tx, req_rx, res_tx),
+        10000,
+        0.05,
     );
     let handle = spawner.spawn().unwrap();
     handle.join().unwrap();

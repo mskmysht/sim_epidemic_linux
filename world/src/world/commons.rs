@@ -87,7 +87,7 @@ pub struct RuntimeParams {
     //[todo] pub vcn_p_rate: f64,
 }
 
-#[derive(Eq, Hash, Enum, Clone, Copy, PartialEq, Debug)]
+#[derive(Eq, Hash, Enum, Clone, Copy, PartialEq, Debug, strum::Display)]
 pub enum HealthType {
     Susceptible,
     Asymptomatic,

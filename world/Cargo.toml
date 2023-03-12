@@ -22,3 +22,5 @@ repl = { path = "../libs/repl" }
 protocol = { path = "../libs/protocol" }
 thiserror = "1.0"
 anyhow = "1.0"
+arrow2 = { version = "0.16", features = ["io_ipc", "io_ipc_compression"] }
+strum = { version = "0.24", features = ["derive"] }
