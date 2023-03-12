@@ -1,10 +1,11 @@
 use poem_openapi::Object;
 
-#[derive(Object, Clone, Debug, serde::Deserialize, serde::Serialize)]
+#[derive(Object, Clone, Debug, serde::Deserialize, serde::Serialize, Default)]
 #[oai(rename_all = "camelCase")]
 pub struct WorldParams {
     #[oai(validator(minimum(value = "1", exclusive = false)))]
     pub population_size: u32,
+    pub infected: f64,
 }
 
 #[derive(Object, Clone, Debug, serde::Deserialize, serde::Serialize)]

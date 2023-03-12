@@ -79,9 +79,22 @@ impl WorldSpawner {
     }
 
     #[inline]
+    fn send_status_with(&self, state: WorldState, custom: String) -> anyhow::Result<()> {
+        self.stream.send(WorldStatus::new(
+            self.world.runtime_params.step,
+            state,
+            custom,
+        ))?;
+        Ok(())
+    }
+
+    #[inline]
     fn send_status(&self, state: WorldState) -> anyhow::Result<()> {
-        self.stream
-            .send(WorldStatus::new(self.world.runtime_params.step, state))?;
+        self.stream.send(WorldStatus::new(
+            self.world.runtime_params.step,
+            state,
+            String::new(),
+        ))?;
         Ok(())
     }
 
@@ -113,8 +126,7 @@ impl WorldSpawner {
                 }
             }
         }
-        // self.world.stat
-        Ok(())
+        self.world.export(&self.stat_dir)
     }
 
     #[inline]
@@ -135,7 +147,7 @@ impl WorldSpawner {
         } else {
             (WorldState::Started, true)
         };
-        self.send_status(state)?;
+        self.send_status_with(state, format!("{:?}", self.world.health_count))?;
         Ok(cont)
     }
 
@@ -160,7 +172,7 @@ fn new_world_params(param: &api::job::WorldParams) -> WorldParams {
         360,
         18,
         16,
-        0.05.into(),
+        param.infected.into(),
         0.0.into(),
         20.0.into(),
         50.0.into(),

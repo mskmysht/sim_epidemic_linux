@@ -1,14 +1,18 @@
 use crate::world::commons::HealthType;
 
 use std::{
-    fmt::Display,
-    io,
+    fs::File,
     ops::{Index, IndexMut},
+    path::Path,
 };
 
+use arrow2::{
+    array::{MutableArray, UInt32Vec},
+    chunk::Chunk,
+    datatypes::{DataType, Field, Schema},
+    io::ipc::write::{Compression, FileWriter, WriteOptions},
+};
 use enum_map::{macros, Enum, EnumMap};
-
-use csv::Writer;
 
 pub struct InfectionCntInfo {
     pub org_v: u32,
@@ -43,47 +47,14 @@ impl HistInfo {
 pub struct Stat {
     pub hists: Vec<HistInfo>,
     pub infcts: Vec<InfectionCntInfo>,
-    pub health_counts: Vec<HealthCount>,
-}
-
-impl Display for Stat {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        writeln!(
-            f,
-            "[{}], {:?}",
-            self.health_counts.len(),
-            self.health_counts[0].0
-        )?;
-        write!(f, "infcts: {}", self.infcts.len())
-    }
+    pub health_stat: HealthStat,
 }
 
 impl Stat {
     pub fn reset(&mut self) {
-        self.health_counts.clear();
-    }
-
-    pub fn n_infected(&self) -> u32 {
-        self.health_counts[0].n_infected()
-    }
-
-    pub fn write(&self, name: &str, dir: &str) -> io::Result<()> {
-        use std::path;
-        let p = path::Path::new(dir);
-        let p = p.join(format!("{}_log.csv", name));
-        let mut wtr = Writer::from_path(p)?;
-        for ht in <HealthType as Enum>::ALL.iter() {
-            wtr.write_field(format!("{:?}", ht))?;
-        }
-        wtr.write_record(None::<&[u8]>)?;
-        for cnt in self.health_counts.iter().rev() {
-            for (_, v) in cnt.0.iter() {
-                wtr.write_field(format!("{}", v))?;
-            }
-            wtr.write_record(None::<&[u8]>)?;
-        }
-        wtr.flush()?;
-        Ok(())
+        self.hists.clear();
+        self.infcts.clear();
+        self.health_stat = HealthStat::default();
     }
 }
 
@@ -108,7 +79,7 @@ impl HealthCount {
         self.0[&hd.to] += 1;
     }
 
-    fn n_infected(&self) -> u32 {
+    pub fn n_infected(&self) -> u32 {
         self.0[&HealthType::Symptomatic] + self.0[&HealthType::Asymptomatic]
     }
 }
@@ -124,5 +95,37 @@ impl<'a> Index<&'a HealthType> for HealthCount {
 impl<'a> IndexMut<&'a HealthType> for HealthCount {
     fn index_mut(&mut self, index: &HealthType) -> &mut Self::Output {
         &mut self.0[index]
+    }
+}
+
+#[derive(Default, Debug)]
+pub struct HealthStat(EnumMap<HealthType, UInt32Vec>);
+
+impl HealthStat {
+    pub fn push(&mut self, count: HealthCount) {
+        for health in &HealthType::ALL {
+            self.0[health].push(Some(count[health]));
+        }
+    }
+
+    pub fn export(&mut self, path: &Path) -> anyhow::Result<()> {
+        let schema = Schema::from(
+            HealthType::ALL
+                .into_iter()
+                .map(|h| Field::new(h.to_string(), DataType::UInt32, false))
+                .collect::<Vec<_>>(),
+        );
+        let chunk = Chunk::try_new(self.0.iter_value_mut().map(|v| v.as_box()).collect())?;
+        let mut writer = FileWriter::try_new(
+            File::create(path)?,
+            schema,
+            None,
+            WriteOptions {
+                compression: Some(Compression::ZSTD),
+            },
+        )?;
+        writer.write(&chunk, None)?;
+        writer.finish()?;
+        Ok(())
     }
 }

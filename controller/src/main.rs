@@ -44,8 +44,8 @@ async fn main() -> Result<(), std::io::Error> {
         )
         .await
         .expect("Cannot connect servers.")),
-        "Hello World",
-        "1.0",
+        "SimEpidemic for Linux",
+        env!("CARGO_PKG_VERSION"),
     )
     .server("/");
     let spec = api_service.spec_endpoint();
@@ -53,7 +53,7 @@ async fn main() -> Result<(), std::io::Error> {
         .nest("/", api_service)
         .nest("/spec.json", spec)
         .at("/doc", make_sync(|_| Html(include_str!("index.html"))));
-    Server::new(TcpListener::bind("0.0.0.0:8080"))
+    Server::new(TcpListener::bind("127.0.0.1:8080"))
         .run(endpoint)
         .await
 }

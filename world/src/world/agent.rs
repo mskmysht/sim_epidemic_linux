@@ -344,7 +344,10 @@ impl AgentHealth {
                 _ => {}
             }
         };
-        *health_diff = Some(HealthDiff::new(from_hd, (&self.state).into()));
+        let to_hd = (&self.state).into();
+        if from_hd != to_hd {
+            *health_diff = Some(HealthDiff::new(from_hd, to_hd));
+        }
         warp
     }
 
@@ -374,7 +377,10 @@ impl AgentHealth {
             };
         };
 
-        *health_diff = Some(HealthDiff::new(from_hd, (&self.state).into()));
+        let to_hd = (&self.state).into();
+        if from_hd != to_hd {
+            *health_diff = Some(HealthDiff::new(from_hd, to_hd));
+        }
         warp
     }
 }

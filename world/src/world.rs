@@ -3,9 +3,8 @@ pub(super) mod commons;
 mod contact;
 pub(super) mod testing;
 
-use chrono::Local;
 use enum_map::EnumMap;
-use std::{io, mem};
+use std::path::Path;
 
 use self::{
     agent::{
@@ -31,8 +30,8 @@ pub struct World {
     cemetery: Cemetery,
     test_queue: TestQueue,
     //[todo] predicate_to_stop: bool,
-    health_count: HealthCount,
-    pub stat: Stat,
+    pub health_count: HealthCount,
+    stat: Stat,
     scenario_index: i32,
     //[todo] scenario: Vec<i32>,
     gatherings: Gatherings,
@@ -137,7 +136,7 @@ impl World {
         self.runtime_params.step = 0;
         self.health_count[&HealthType::Susceptible] = (n_pop - n_infected) as u32;
         self.health_count[&HealthType::Symptomatic] = n_symptomatic;
-        self.health_count[&HealthType::Symptomatic] = n_infected as u32 - n_symptomatic;
+        self.health_count[&HealthType::Asymptomatic] = n_infected as u32 - n_symptomatic;
         self.stat.reset();
         self.scenario_index = 0;
         //[todo] self.exec_scenario();
@@ -187,9 +186,7 @@ impl World {
             &pfs,
         );
 
-        self.stat
-            .health_counts
-            .push(mem::take(&mut self.health_count));
+        self.stat.health_stat.push(self.health_count.clone());
         self.runtime_params.step += 1;
         // [todo] self.predicate_to_stop
         //    if loop_mode == LoopMode::LoopEndByCondition
@@ -202,14 +199,14 @@ impl World {
 
     #[inline]
     pub fn is_ended(&self) -> bool {
-        self.stat.n_infected() == 0
+        self.health_count.n_infected() == 0
     }
 
-    pub fn export(&self, dir: &str) -> io::Result<()> {
-        self.stat.write(
-            &format!("{}_{}", self.id, Local::now().format("%F_%H-%M-%S")),
-            dir,
-        )
+    pub fn export(&mut self, dir: &str) -> anyhow::Result<()> {
+        let path = Path::new(dir);
+        self.stat
+            .health_stat
+            .export(&path.join(&self.id).with_extension("arrow"))
     }
 }
 

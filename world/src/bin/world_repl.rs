@@ -1,5 +1,6 @@
 use std::{sync::mpsc, thread};
 
+use clap::Parser;
 use repl::Parsable;
 use world::myprocess::realtime;
 use world_if::{
@@ -124,13 +125,22 @@ impl Parsable for WorldParser {
     }
 }
 
+#[derive(clap::Parser)]
+struct Args {
+    init_n_pop: u32,
+    infected: f64,
+}
+
 fn main() {
+    let args = Args::parse();
     let (req_tx, req_rx) = mpsc::channel();
     let (res_tx, res_rx) = mpsc::channel();
     let (stream_tx, stream_rx) = mpsc::channel();
     let spawner = realtime::WorldSpawner::new(
         "test".to_string(),
         MpscPublisher::new(stream_tx, req_rx, res_tx),
+        args.init_n_pop,
+        args.infected,
     );
     let handle = spawner.spawn().unwrap();
     let input = thread::spawn(move || {

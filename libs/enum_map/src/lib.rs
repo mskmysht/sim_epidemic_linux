@@ -33,6 +33,18 @@ impl<K: Enum, V> EnumMap<K, V> {
     pub fn iter(&self) -> impl Iterator<Item = (K, &V)> {
         self.arr.iter().enumerate().map(|(i, v)| (K::index(i), v))
     }
+
+    pub fn iter_value(&self) -> impl Iterator<Item = &V> {
+        self.arr.iter()
+    }
+
+    pub fn iter_value_mut(&mut self) -> impl Iterator<Item = &mut V> {
+        self.arr.iter_mut()
+    }
+
+    pub fn into_vec(self) -> Vec<V> {
+        self.arr
+    }
 }
 
 impl<K: Enum + Debug, V: Debug> Debug for EnumMap<K, V> {

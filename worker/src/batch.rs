@@ -1,5 +1,9 @@
-use std::{collections::BTreeMap, error::Error, io, process, sync::Arc};
+use std::{collections::BTreeMap, error::Error, fs::File, io, path::Path, process, sync::Arc};
 
+use arrow2::io::{
+    csv::write::{self, SerializeOptions},
+    ipc::read,
+};
 use futures_util::SinkExt;
 use ipc_channel::ipc::IpcOneShotServer;
 use parking_lot::Mutex;
@@ -30,6 +34,14 @@ pub enum ResponseError {
     // Abort(anyhow::Error),
 }
 
+#[derive(Debug, thiserror::Error)]
+pub enum ReadStatisticsError {
+    #[error("IO error has occured")]
+    IO(#[from] std::io::Error),
+    #[error("IPC error has occured")]
+    IPC(#[from] arrow2::error::Error),
+}
+
 pub async fn run(
     manager: Arc<WorldManager>,
     connection: Connection,
@@ -42,6 +54,7 @@ pub async fn run(
         &ResourceMeasure::new(
             job::WorldParams {
                 population_size: max_population_size,
+                ..Default::default()
             },
             max_resource,
         ),
@@ -81,6 +94,14 @@ pub async fn run(
                     let res: batch::Response<_> = manager.terminate(id).await.into();
                     println!("[response] {res:?}");
                     protocol::quic::write_data(&mut send, &res).await.unwrap();
+                }
+                batch::Request::ReadStatistics(id) => {
+                    let res = batch::Response::from(manager.read_statistics(id).await);
+                    let mut stream = FramedWrite::new(send, LengthDelimitedCodec::new());
+                    stream
+                        .send(bincode::serialize(&res).unwrap().into())
+                        .await
+                        .unwrap();
                 }
             };
         });
@@ -156,6 +177,30 @@ impl WorldManager {
         }
     }
 
+    async fn read_statistics(&self, world_id: String) -> Result<Vec<u8>, ReadStatisticsError> {
+        let path = Path::new(&self.stat_dir)
+            .join(&world_id)
+            .with_extension("arrow");
+
+        let mut file = File::open(path)?;
+        let metadata = read::read_file_metadata(&mut file)?;
+        let schema = metadata.schema.clone();
+        let mut reader = read::FileReader::new(file, metadata, None, None);
+        let chunk = reader.next().unwrap()?;
+        let mut buf = Vec::new();
+        write::write_header(
+            &mut buf,
+            &schema
+                .fields
+                .into_iter()
+                .map(|f| f.name)
+                .collect::<Vec<_>>(),
+            &SerializeOptions::default(),
+        )?;
+        write::write_chunk(&mut buf, &chunk, &SerializeOptions::default())?;
+        Ok(buf)
+    }
+
     fn connect_ipc_server<T: for<'de> Deserialize<'de> + Serialize>(
         &self,
         world_id: &str,
@@ -177,5 +222,27 @@ impl WorldManager {
             .accept()
             .map_err(IpcServerConnectionError::FailedToConnect)?;
         Ok((value, child))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::{fs::File, path::Path};
+
+    use arrow2::io::ipc::read;
+
+    #[test]
+    fn test_read_arrow() -> anyhow::Result<()> {
+        let name = "0a863868-ec66-44e7-9b3c-a04180a8abce";
+        let path = Path::new("../dump").join(name).with_extension("arrow");
+        let mut file = File::open(path)?;
+        let metadata = read::read_file_metadata(&mut file)?;
+        let schema = metadata.schema.clone();
+        println!("{:?}", schema);
+
+        let mut reader = read::FileReader::new(file, metadata, None, None);
+        let chunk = reader.next().unwrap()?;
+        println!("{:?}", chunk);
+        Ok(())
     }
 }

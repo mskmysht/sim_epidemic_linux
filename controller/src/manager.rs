@@ -166,6 +166,16 @@ impl Db {
         Ok((job_id, task_ids))
     }
 
+    async fn update_task_succeeded(&self, task_id: &TaskId, worker_index: usize) {
+        self.0
+            .execute(
+                "UPDATE task SET worker_index = $1, state = $2 WHERE id = $3",
+                &[&(worker_index as i32), &TaskState::Succeeded, &task_id.0],
+            )
+            .await
+            .unwrap();
+    }
+
     async fn update_task_state(&self, task_id: &TaskId, state: &TaskState) {
         self.0
             .execute(
@@ -186,6 +196,21 @@ impl Db {
             .unwrap();
     }
 
+    async fn get_task(&self, task_id: &TaskId) -> Option<task::Task> {
+        let rs = self
+            .0
+            .query("SELECT id, state FROM task WHERE id = $1", &[&task_id.0])
+            .await
+            .unwrap();
+        let r = rs.get(0)?;
+        let id: Uuid = r.get(0);
+        let state: task::TaskState = r.get(1);
+        Some(task::Task {
+            id: id.to_string(),
+            state,
+        })
+    }
+
     async fn get_tasks(&self, job_id: &JobId) -> Vec<task::Task> {
         let mut tasks = Vec::new();
         for r in self
@@ -204,29 +229,34 @@ impl Db {
         tasks
     }
 
-    async fn get_job(&self, id: &JobId) -> job::Job {
+    async fn get_job(&self, id: &JobId) -> Option<job::Job> {
         let rs = self
             .0
             .query("SELECT state, config FROM job WHERE id = $1", &[&id.0])
             .await
             .unwrap();
-        let r = &rs[0];
+        let r = rs.get(0)?;
         let state: job::JobState = r.get(0);
         let config_json: postgres_types::Json<serde_json::Value> = r.get(1);
         let config: job::Config =
             poem_openapi::types::ParseFromJSON::parse_from_json(Some(config_json.0)).unwrap();
 
-        job::Job {
+        Some(job::Job {
             id: id.to_string(),
             state,
             config,
             tasks: self.get_tasks(id).await,
-        }
+        })
     }
 
     async fn get_jobs(&self) -> Vec<job::Job> {
         let mut jobs = Vec::new();
-        for r in self.0.query("SELECT * FROM job", &[]).await.unwrap() {
+        for r in self
+            .0
+            .query("SELECT id, state, config FROM job", &[])
+            .await
+            .unwrap()
+        {
             let id: Uuid = r.get(0);
             let state: job::JobState = r.get(1);
             let config_json: postgres_types::Json<serde_json::Value> = r.get(2);
@@ -247,12 +277,24 @@ impl Db {
         self.0.execute("DELETE FROM job", &[]).await?;
         Ok(())
     }
+
+    async fn get_worker_index(&self, id: &TaskId) -> Option<usize> {
+        let rs = self
+            .0
+            .query("SELECT worker_index FROM task WHERE id = $1", &[&id.0])
+            .await
+            .unwrap();
+        let r = rs.get(0)?;
+        let i = r.get::<_, Option<i32>>(0)?;
+        Some(i as usize)
+    }
 }
 
 pub struct Manager {
     job_queue_tx: mpsc::Sender<Job>,
     job_terminations: Arc<RwLock<HashMap<JobId, TerminationSender>>>,
     db: Db,
+    worker_manager: Arc<WorkerManager>,
 }
 
 impl Manager {
@@ -280,12 +322,13 @@ impl Manager {
         });
 
         let (job_queue_tx, mut job_queue_rx) = mpsc::channel::<Job>(max_job_request);
-        let worker_manager = WorkerManager::new(client_addr, cert_path, servers).await?;
+        let worker_manager = Arc::new(WorkerManager::new(client_addr, cert_path, servers).await?);
 
         let manager = Self {
             job_queue_tx,
             job_terminations: Default::default(),
             db: Db(Arc::new(client)),
+            worker_manager: worker_manager.clone(),
         };
 
         let job_terminations = Arc::clone(&manager.job_terminations);
@@ -335,7 +378,7 @@ impl Manager {
 
     async fn get_job(&self, id: &str) -> Option<job::Job> {
         let id = id.try_into().ok()?;
-        Some(self.db.get_job(&id).await)
+        self.db.get_job(&id).await
     }
 
     async fn get_all_jobs(&self) -> Vec<job::Job> {
@@ -351,6 +394,18 @@ impl Manager {
         let mut table = self.job_terminations.write().await;
         let tx = table.remove(&id)?;
         Some(tx.send().await)
+    }
+
+    async fn get_task(&self, id: &str) -> Option<task::Task> {
+        let id = id.try_into().ok()?;
+        self.db.get_task(&id).await
+    }
+
+    async fn get_statistics(&self, id: &str) -> Option<Vec<u8>> {
+        let id = id.try_into().ok()?;
+        let worker_index = self.db.get_worker_index(&id).await?;
+        let client = self.worker_manager.get_worker(worker_index);
+        client.get_statistics(&id).await.ok()
     }
 }
 
@@ -380,6 +435,14 @@ impl ResourceManager for Manager {
 
     async fn terminate_job(&self, id: &str) -> Option<bool> {
         self.terminate_job(id).await
+    }
+
+    async fn get_task(&self, id: &str) -> Option<task::Task> {
+        self.get_task(id).await
+    }
+
+    async fn get_statistics(&self, id: &str) -> Option<Vec<u8>> {
+        self.get_statistics(id).await
     }
 }
 
@@ -497,6 +560,25 @@ mod worker {
                 .as_result()?;
             Ok(())
         }
+
+        pub async fn get_statistics(&self, task_id: &TaskId) -> anyhow::Result<Vec<u8>> {
+            println!("[debug] get stat");
+            let (mut send, recv) = self.connection.open_bi().await?;
+            protocol::quic::write_data(&mut send, &Request::ReadStatistics(task_id.to_string()))
+                .await?;
+            let mut stream = FramedRead::new(recv, LengthDelimitedCodec::new());
+            match bincode::deserialize::<Response<Vec<u8>>>(
+                stream.next().await.unwrap()?.as_bytes(),
+            )?
+            .as_result()
+            {
+                Ok(buf) => Ok(buf),
+                Err(e) => {
+                    eprintln!("[error] {:?}", e);
+                    Err(e.into())
+                }
+            }
+        }
     }
 
     #[derive(Debug)]
@@ -521,6 +603,7 @@ mod worker {
             db.update_task_state(&task_id, &TaskState::Running).await;
 
             println!("[debug] {} is running", task_id);
+            let worker_index = self.0.index;
             workings.write().await.insert(task_id.clone(), self.0);
             println!("[debug] worker is registered");
 
@@ -529,7 +612,7 @@ mod worker {
 
             match result {
                 Some(true) => {
-                    db.update_task_state(&task_id, &TaskState::Succeeded).await;
+                    db.update_task_succeeded(&task_id, worker_index).await;
                     println!("[info] task {} successfully terminated", task_id);
                 }
                 _ => {
@@ -542,7 +625,7 @@ mod worker {
     }
 
     pub(super) struct WorkerManager {
-        // workers: Arc<Vec<WorkerClient>>,
+        workers: Vec<WorkerClient>,
         queue_tx: mpsc::Sender<(async_channel::Sender<WorkerClientPermitted>, Cost)>,
     }
 
@@ -581,13 +664,15 @@ mod worker {
             let mut endpoint = Endpoint::client(addr)?;
             endpoint.set_default_client_config(quic_config::get_client_config(&cert_path)?);
 
-            let mut workers = Vec::new();
+            let mut _workers = Vec::new();
             for (i, server_info) in servers.into_iter().enumerate() {
-                workers.push(WorkerClient::new(&mut endpoint, server_info, i).await?);
+                _workers.push(WorkerClient::new(&mut endpoint, server_info, i).await?);
             }
 
             let (queue_tx, mut queue_rx): (mpsc::Sender<(async_channel::Sender<_>, _)>, _) =
                 mpsc::channel(1);
+
+            let workers = _workers.clone();
             tokio::spawn(async move {
                 while let Some((tx, cost)) = queue_rx.recv().await {
                     match Self::find_optimal_worker(&workers, &cost) {
@@ -630,7 +715,14 @@ mod worker {
                     }
                 }
             });
-            Ok(Self { queue_tx })
+            Ok(Self {
+                queue_tx,
+                workers: _workers,
+            })
+        }
+
+        pub fn get_worker(&self, index: usize) -> &WorkerClient {
+            &self.workers[index]
         }
 
         pub fn lease(&self, cost: Cost) -> WorkerLease {
