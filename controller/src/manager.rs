@@ -1,4 +1,10 @@
-use std::{collections::HashMap, error::Error, fmt::Display, net::IpAddr, sync::Arc};
+use std::{
+    collections::HashMap,
+    error::Error,
+    fmt::{Debug, Display},
+    net::IpAddr,
+    sync::Arc,
+};
 
 use async_trait::async_trait;
 use futures_util::future::join_all;
@@ -16,7 +22,7 @@ use crate::app::{
 use self::worker::{ServerConfig, TaskId, WorkerManager};
 
 #[derive(PartialEq, Eq, Clone, Debug, Hash)]
-struct JobId(Uuid);
+pub struct JobId(Uuid);
 
 impl TryFrom<&str> for JobId {
     type Error = uuid::Error;
@@ -196,19 +202,21 @@ impl Db {
             .unwrap();
     }
 
-    async fn get_task(&self, task_id: &TaskId) -> Option<task::Task> {
+    async fn get_task(
+        &self,
+        task_id: &TaskId,
+    ) -> Result<Option<task::Task>, tokio_postgres::Error> {
         let rs = self
             .0
             .query("SELECT id, state FROM task WHERE id = $1", &[&task_id.0])
-            .await
-            .unwrap();
-        let r = rs.get(0)?;
+            .await?;
+        let Some(r) = rs.get(0) else { return Ok(None) };
         let id: Uuid = r.get(0);
         let state: task::TaskState = r.get(1);
-        Some(task::Task {
+        Ok(Some(task::Task {
             id: id.to_string(),
             state,
-        })
+        }))
     }
 
     async fn get_tasks(&self, job_id: &JobId) -> Vec<task::Task> {
@@ -229,39 +237,40 @@ impl Db {
         tasks
     }
 
-    async fn get_job(&self, id: &JobId) -> Option<job::Job> {
+    async fn get_job(&self, id: &JobId) -> anyhow::Result<Option<job::Job>> {
         let rs = self
             .0
             .query("SELECT state, config FROM job WHERE id = $1", &[&id.0])
-            .await
-            .unwrap();
-        let r = rs.get(0)?;
+            .await?;
+        let Some(r) = rs.get(0) else { return Ok(None) };
         let state: job::JobState = r.get(0);
         let config_json: postgres_types::Json<serde_json::Value> = r.get(1);
         let config: job::Config =
-            poem_openapi::types::ParseFromJSON::parse_from_json(Some(config_json.0)).unwrap();
+            poem_openapi::types::ParseFromJSON::parse_from_json(Some(config_json.0))
+                .map_err(|e| anyhow::anyhow!(format!("{e:?}")))?;
 
-        Some(job::Job {
+        Ok(Some(job::Job {
             id: id.to_string(),
             state,
             config,
             tasks: self.get_tasks(id).await,
-        })
+        }))
     }
 
-    async fn get_jobs(&self) -> Vec<job::Job> {
+    async fn get_jobs(&self) -> anyhow::Result<Vec<job::Job>> {
         let mut jobs = Vec::new();
         for r in self
             .0
             .query("SELECT id, state, config FROM job", &[])
-            .await
-            .unwrap()
+            .await?
         {
             let id: Uuid = r.get(0);
             let state: job::JobState = r.get(1);
             let config_json: postgres_types::Json<serde_json::Value> = r.get(2);
             let config: job::Config =
-                poem_openapi::types::ParseFromJSON::parse_from_json(Some(config_json.0)).unwrap();
+                poem_openapi::types::ParseFromJSON::parse_from_json(Some(config_json.0))
+                    .map_err(|e| anyhow::anyhow!(format!("{e:?}")))?;
+
             jobs.push(job::Job {
                 id: id.to_string(),
                 state,
@@ -269,24 +278,50 @@ impl Db {
                 tasks: self.get_tasks(&JobId(id)).await,
             })
         }
-        jobs
+        Ok(jobs)
     }
 
-    async fn delete_jobs(&self) -> anyhow::Result<()> {
-        self.0.execute("DELETE FROM task", &[]).await?;
-        self.0.execute("DELETE FROM job", &[]).await?;
+    async fn get_all_tasks_with_stats(
+        &self,
+        id: &JobId,
+    ) -> Result<Vec<(TaskId, usize)>, tokio_postgres::Error> {
+        let mut v = Vec::new();
+        for r in self
+            .0
+            .query(
+                "SELECT id, worker_index FROM task WHERE job_id = $1 AND worker_index IS NOT NULL",
+                &[&id.0],
+            )
+            .await?
+        {
+            let task_id: Uuid = r.get(0);
+            let worker_index: i32 = r.get(1);
+            v.push((TaskId(task_id), worker_index as usize));
+        }
+        Ok(v)
+    }
+
+    async fn delete_job(&self, id: &JobId) -> Result<(), tokio_postgres::Error> {
+        self.0
+            .execute("DELETE FROM task WHERE job_id = $1", &[&id.0])
+            .await?;
+        self.0
+            .execute("DELETE FROM job WHERE id = $1", &[&id.0])
+            .await?;
         Ok(())
     }
 
-    async fn get_worker_index(&self, id: &TaskId) -> Option<usize> {
+    async fn get_worker_index(&self, id: &TaskId) -> Result<Option<usize>, tokio_postgres::Error> {
         let rs = self
             .0
-            .query("SELECT worker_index FROM task WHERE id = $1", &[&id.0])
-            .await
-            .unwrap();
-        let r = rs.get(0)?;
-        let i = r.get::<_, Option<i32>>(0)?;
-        Some(i as usize)
+            .query(
+                "SELECT worker_index FROM task WHERE id = $1 AND worker_index IS NOT NULL",
+                &[&id.0],
+            )
+            .await?;
+        let Some(r) = rs.get(0) else {return Ok(None)};
+        let i = r.get::<_, i32>(0);
+        Ok(Some(i as usize))
     }
 }
 
@@ -379,37 +414,47 @@ impl Manager {
         Ok(job_id.to_string())
     }
 
-    async fn get_job(&self, id: &str) -> Option<job::Job> {
-        let id = id.try_into().ok()?;
-        self.db.get_job(&id).await
+    async fn delete_job(&self, id: &JobId) -> anyhow::Result<()> {
+        let mut task_ids_map = vec![Vec::new(); self.worker_manager.get_worker_count()];
+        for (task_id, worker_index) in self.db.get_all_tasks_with_stats(&id).await? {
+            task_ids_map[worker_index].push(task_id);
+        }
+        for (worker_index, task_ids) in task_ids_map.into_iter().enumerate() {
+            let worker = self.worker_manager.get_worker(worker_index);
+            match worker.remove_statistics(&task_ids).await {
+                Ok(failed) => {
+                    for id in failed {
+                        eprintln!("[error] failed to remove {id}");
+                    }
+                }
+                Err(e) => eprintln!("[error] {e}"),
+            }
+        }
+        self.db.delete_job(&id).await?;
+        Ok(())
     }
 
-    async fn get_all_jobs(&self) -> Vec<job::Job> {
-        self.db.get_jobs().await
-    }
-
-    async fn delete_all_jobs(&self) -> bool {
-        self.db.delete_jobs().await.is_ok()
-    }
-
-    async fn terminate_job(&self, id: &str) -> Option<bool> {
-        let id = id.try_into().ok()?;
+    async fn terminate_job(&self, id: &JobId) -> Option<bool> {
         let mut table = self.job_terminations.write().await;
         let tx = table.remove(&id)?;
         Some(tx.send().await)
     }
 
-    async fn get_task(&self, id: &str) -> Option<task::Task> {
-        let id = id.try_into().ok()?;
-        self.db.get_task(&id).await
-    }
-
-    async fn get_statistics(&self, id: &str) -> Option<Vec<u8>> {
-        let id = id.try_into().ok()?;
-        let worker_index = self.db.get_worker_index(&id).await?;
+    async fn get_statistics(&self, id: &TaskId) -> anyhow::Result<Option<Vec<u8>>> {
+        let Some(worker_index) = self.db.get_worker_index(&id).await? else {
+            return Ok(None);
+        };
         let client = self.worker_manager.get_worker(worker_index);
-        client.get_statistics(&id).await.ok()
+        Ok(Some(client.get_statistics(&id).await?))
     }
+}
+
+#[derive(thiserror::Error, Debug)]
+pub enum JobDeleteError {
+    #[error("job not found")]
+    NotFound(#[from] uuid::Error),
+    #[error("internal error")]
+    InternalError(#[from] anyhow::Error),
 }
 
 #[async_trait]
@@ -424,28 +469,34 @@ impl ResourceManager for Manager {
         }
     }
 
-    async fn get_job(&self, id: &str) -> Option<job::Job> {
-        self.get_job(id).await
+    async fn get_job(&self, id: &str) -> anyhow::Result<Option<job::Job>> {
+        let id = JobId::try_from(id)?;
+        self.db.get_job(&id).await
     }
 
-    async fn get_all_jobs(&self) -> Vec<job::Job> {
-        self.get_all_jobs().await
+    async fn get_all_jobs(&self) -> anyhow::Result<Vec<job::Job>> {
+        self.db.get_jobs().await
     }
 
-    async fn delete_all_jobs(&self) -> bool {
-        self.delete_all_jobs().await
+    async fn delete_job(&self, id: &str) -> Result<(), JobDeleteError> {
+        let id = JobId::try_from(id)?;
+        self.delete_job(&id).await?;
+        Ok(())
     }
 
-    async fn terminate_job(&self, id: &str) -> Option<bool> {
-        self.terminate_job(id).await
+    async fn terminate_job(&self, id: &str) -> anyhow::Result<Option<bool>> {
+        let id = id.try_into()?;
+        Ok(self.terminate_job(&id).await)
     }
 
-    async fn get_task(&self, id: &str) -> Option<task::Task> {
-        self.get_task(id).await
+    async fn get_task(&self, id: &str) -> anyhow::Result<Option<task::Task>> {
+        let id = TaskId::try_from(id)?;
+        Ok(self.db.get_task(&id).await?)
     }
 
-    async fn get_statistics(&self, id: &str) -> Option<Vec<u8>> {
-        self.get_statistics(id).await
+    async fn get_statistics(&self, id: &str) -> anyhow::Result<Option<Vec<u8>>> {
+        let id = id.try_into()?;
+        Ok(self.get_statistics(&id).await?)
     }
 }
 
@@ -470,7 +521,7 @@ pub mod worker {
     use crate::app::{job, task::TaskState};
 
     #[derive(Debug, Clone, Hash, PartialEq, Eq)]
-    pub(super) struct TaskId(pub Uuid);
+    pub struct TaskId(pub Uuid);
 
     impl TryFrom<&str> for TaskId {
         type Error = uuid::Error;
@@ -583,7 +634,6 @@ pub mod worker {
         }
 
         pub async fn get_statistics(&self, task_id: &TaskId) -> anyhow::Result<Vec<u8>> {
-            println!("[debug] get stat");
             let (mut send, recv) = self.connection.open_bi().await?;
             protocol::quic::write_data(&mut send, &Request::ReadStatistics(task_id.to_string()))
                 .await?;
@@ -599,6 +649,16 @@ pub mod worker {
                     Err(e.into())
                 }
             }
+        }
+
+        pub async fn remove_statistics(&self, task_ids: &[TaskId]) -> anyhow::Result<Vec<String>> {
+            let (mut send, mut recv) = self.connection.open_bi().await?;
+            protocol::quic::write_data(
+                &mut send,
+                &Request::RemoveStatistics(task_ids.into_iter().map(|id| id.to_string()).collect()),
+            )
+            .await?;
+            Ok(protocol::quic::read_data::<Vec<String>>(&mut recv).await?)
         }
     }
 
@@ -736,6 +796,10 @@ pub mod worker {
                 queue_tx,
                 workers: _workers,
             })
+        }
+
+        pub fn get_worker_count(&self) -> usize {
+            self.workers.len()
         }
 
         pub fn get_worker(&self, index: usize) -> &WorkerClient {

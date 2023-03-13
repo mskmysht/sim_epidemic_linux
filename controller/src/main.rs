@@ -29,7 +29,7 @@ async fn main() -> anyhow::Result<()> {
         .nest("/", api_service)
         .nest("/spec.json", spec)
         .at("/doc", make_sync(|_| Html(include_str!("index.html"))));
-    Server::new(TcpListener::bind("127.0.0.1:8080"))
+    Server::new(TcpListener::bind("0.0.0.0:8080"))
         .run(endpoint)
         .await?;
     Ok(())

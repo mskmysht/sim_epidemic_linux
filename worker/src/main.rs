@@ -38,11 +38,8 @@ async fn main() -> Result<(), Box<dyn Error>> {
         max_resource,
         stat_dir,
     } = toml::from_str(&std::fs::read_to_string(&config_path)?)?;
-    assert!(
-        Path::new(&stat_dir).exists(),
-        "{} does not exist.",
-        stat_dir
-    );
+    let stat_dir_path = Path::new(&stat_dir).to_path_buf();
+    assert!(stat_dir_path.exists(), "{} does not exist.", stat_dir);
     assert!(
         Path::new(&world_path).exists(),
         "{} does not exist.",
@@ -50,21 +47,25 @@ async fn main() -> Result<(), Box<dyn Error>> {
     );
 
     let endpoint = Endpoint::server(quic_config::get_server_config(cert_path, pkey_path)?, addr)?;
-    let manager = batch::WorldManager::new(world_path, stat_dir);
+    let manager = batch::WorldManager::new(world_path, stat_dir, stat_dir_path);
     while let Some(connecting) = endpoint.accept().await {
         let connection = connecting.await.unwrap();
         let ip = connection.remote_address().to_string();
-        println!("[info] Acceept {}", ip);
-        if let Err(e) = batch::run(
-            manager.clone(),
+        let manager = manager.clone();
+
+        let connection2 = connection.clone();
+        let handle = tokio::spawn(batch::run(
+            manager,
             connection,
             max_population_size,
             max_resource,
-        )
-        .await
-        {
-            println!("[info] Disconnect {} ({})", ip, e);
-        }
+        ));
+        tokio::spawn(async move {
+            println!("[info] {ip} is acceepted");
+            let err = connection2.closed().await;
+            handle.abort();
+            println!("[error] {ip} is closed by {err}");
+        });
     }
     Ok(())
 }

@@ -1,3 +1,6 @@
+DROP TABLE task;
+DROP TABLE job;
+
 CREATE TYPE "JobState" AS ENUM (
     'Created',
     'Queued',
