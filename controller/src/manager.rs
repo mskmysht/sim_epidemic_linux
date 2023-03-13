@@ -327,11 +327,11 @@ impl Db {
 
 #[derive(serde::Deserialize, Debug)]
 pub struct Config {
-    client_addr: IpAddr,
+    addr: IpAddr,
     db_username: String,
     db_password: String,
     max_job_request: usize,
-    servers: Vec<ServerConfig>,
+    workers: Vec<ServerConfig>,
 }
 
 pub struct Manager {
@@ -359,8 +359,7 @@ impl Manager {
         });
 
         let (job_queue_tx, mut job_queue_rx) = mpsc::channel::<Job>(config.max_job_request);
-        let worker_manager =
-            Arc::new(WorkerManager::new(config.client_addr, config.servers).await?);
+        let worker_manager = Arc::new(WorkerManager::new(config.addr, config.workers).await?);
 
         let manager = Self {
             job_queue_tx,
@@ -539,10 +538,10 @@ pub mod worker {
 
     #[derive(serde::Deserialize, Debug)]
     pub struct ServerConfig {
-        pub client_port: u16,
+        pub controller_port: u16,
+        pub cert_path: String,
         pub addr: SocketAddr,
         pub domain: String,
-        pub cert_path: String,
     }
 
     #[derive(Clone, Debug)]
@@ -560,7 +559,7 @@ pub mod worker {
             index: usize,
         ) -> Result<Self, Box<dyn Error>> {
             let mut endpoint =
-                Endpoint::client(SocketAddr::new(client_addr, server_config.client_port))?;
+                Endpoint::client(SocketAddr::new(client_addr, server_config.controller_port))?;
             endpoint.set_default_client_config(quic_config::get_client_config(
                 &server_config.cert_path,
             )?);
