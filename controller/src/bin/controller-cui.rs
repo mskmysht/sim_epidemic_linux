@@ -1,4 +1,5 @@
 use clap::Parser;
+use controller::manager::worker::ServerConfig;
 use repl::Parsable;
 use std::{
     error::Error,
@@ -14,22 +15,30 @@ enum Command {
 fn main() -> Result<(), Box<dyn Error>> {
     let cmd = Command::parse();
     match cmd {
-        Command::QUIC(args) => start_quic(args),
+        Command::QUIC(QuicArgs { config_path }) => start_quic(config_path),
         Command::TCP(args) => start_tcp(args),
     }
 }
 
 #[derive(clap::Args)]
 struct QuicArgs {
-    addr: SocketAddr,
-    cert_path: String,
-    server_info: String,
+    config_path: String,
 }
 
-fn start_quic(args: QuicArgs) -> Result<(), Box<dyn Error>> {
+#[derive(serde::Deserialize)]
+struct QuicConfig {
+    client_addr: SocketAddr,
+    server_config: ServerConfig,
+}
+
+fn start_quic(config_path: String) -> Result<(), Box<dyn Error>> {
+    let QuicConfig {
+        client_addr,
+        server_config,
+    } = toml::from_str(&std::fs::read_to_string(&config_path)?)?;
     let rt = tokio::runtime::Runtime::new()?;
     rt.block_on(async move {
-        let mut handler = quic::MyHandler::new(args.addr, args.cert_path, args.server_info).await?;
+        let mut handler = quic::MyHandler::new(client_addr, server_config).await?;
         loop {
             match WorkerParser::recv_input() {
                 repl::Command::Quit => break,
@@ -103,25 +112,25 @@ mod quic {
     use quinn::{Connection, Endpoint};
     use worker_if::realtime::{Request, Response};
 
-    use controller::server::Server;
+    use controller::manager::worker::ServerConfig;
 
     pub struct MyHandler(Connection);
 
     impl MyHandler {
         pub async fn new(
             client_addr: SocketAddr,
-            cert_path: String,
-            server_info: String,
+            server_config: ServerConfig,
         ) -> Result<Self, Box<dyn Error>> {
-            let mut endpoint = {
+            let endpoint = {
                 let mut endpoint = Endpoint::client(client_addr)?;
-                endpoint.set_default_client_config(quic_config::get_client_config(cert_path)?);
+                endpoint.set_default_client_config(quic_config::get_client_config(
+                    server_config.cert_path,
+                )?);
                 endpoint
             };
             Ok(Self(
-                server_info
-                    .parse::<Server>()?
-                    .connect(&mut endpoint)
+                endpoint
+                    .connect(server_config.addr, &server_config.domain)?
                     .await?,
             ))
         }

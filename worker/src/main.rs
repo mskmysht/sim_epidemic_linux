@@ -5,32 +5,31 @@ use worker::batch;
 
 #[derive(clap::Parser)]
 struct Args {
+    config_path: String,
+}
+
+#[derive(serde::Deserialize)]
+struct Config {
     /// path of certificate file
-    #[arg(long)]
     cert_path: String,
     /// path of private key file
-    #[arg(long)]
     pkey_path: String,
     /// world binary path
-    #[arg(long)]
     world_path: String,
     /// address to listen
-    #[arg(long)]
     addr: SocketAddr,
     /// max population size
-    #[arg(long)]
     max_population_size: u32,
     /// max resource size
-    #[arg(long)]
     max_resource: u32,
-    #[arg(long)]
     /// directory where statistics are saved
     stat_dir: String,
 }
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn Error>> {
-    let Args {
+    let Args { config_path } = Args::parse();
+    let Config {
         cert_path,
         pkey_path,
         world_path,
@@ -38,7 +37,7 @@ async fn main() -> Result<(), Box<dyn Error>> {
         max_population_size,
         max_resource,
         stat_dir,
-    } = Args::parse();
+    } = toml::from_str(&std::fs::read_to_string(&config_path)?)?;
     assert!(
         Path::new(&stat_dir).exists(),
         "{} does not exist.",

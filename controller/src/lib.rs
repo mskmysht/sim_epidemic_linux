@@ -1,6 +1,5 @@
 pub mod app;
 pub mod manager;
-pub mod server;
 
 #[cfg(test)]
 mod tests {

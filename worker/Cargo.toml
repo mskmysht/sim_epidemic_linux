@@ -34,3 +34,4 @@ arrow2 = { version = "0.16", features = [
     "io_ipc_compression",
     "io_csv_write",
 ] }
+toml = "0.7"

@@ -13,7 +13,7 @@ use crate::app::{
     ResourceManager,
 };
 
-use self::worker::{TaskId, WorkerManager};
+use self::worker::{ServerConfig, TaskId, WorkerManager};
 
 #[derive(PartialEq, Eq, Clone, Debug, Hash)]
 struct JobId(Uuid);
@@ -290,6 +290,15 @@ impl Db {
     }
 }
 
+#[derive(serde::Deserialize, Debug)]
+pub struct Config {
+    client_addr: SocketAddr,
+    db_username: String,
+    db_password: String,
+    max_job_request: usize,
+    servers: Vec<ServerConfig>,
+}
+
 pub struct Manager {
     job_queue_tx: mpsc::Sender<Job>,
     job_terminations: Arc<RwLock<HashMap<JobId, TerminationSender>>>,
@@ -298,18 +307,11 @@ pub struct Manager {
 }
 
 impl Manager {
-    pub async fn new(
-        client_addr: SocketAddr,
-        cert_path: String,
-        db_username: String,
-        db_password: String,
-        max_job_request: usize,
-        servers: Vec<String>,
-    ) -> Result<Self, Box<dyn Error>> {
+    pub async fn new(config: Config) -> Result<Self, Box<dyn Error>> {
         let (client, connection) = tokio_postgres::connect(
             &format!(
                 "host=localhost user={} password={}",
-                db_username, db_password
+                config.db_username, config.db_password
             ),
             NoTls,
         )
@@ -321,8 +323,9 @@ impl Manager {
             }
         });
 
-        let (job_queue_tx, mut job_queue_rx) = mpsc::channel::<Job>(max_job_request);
-        let worker_manager = Arc::new(WorkerManager::new(client_addr, cert_path, servers).await?);
+        let (job_queue_tx, mut job_queue_rx) = mpsc::channel::<Job>(config.max_job_request);
+        let worker_manager =
+            Arc::new(WorkerManager::new(config.client_addr, config.servers).await?);
 
         let manager = Self {
             job_queue_tx,
@@ -446,7 +449,7 @@ impl ResourceManager for Manager {
     }
 }
 
-mod worker {
+pub mod worker {
     use std::{collections::HashMap, error::Error, fmt::Display, net::SocketAddr, sync::Arc};
 
     use futures_util::StreamExt;
@@ -458,10 +461,7 @@ mod worker {
 
     use worker_if::batch::{Cost, Request, ResourceMeasure, Response};
 
-    use crate::{
-        app::{job, task::TaskState},
-        server::Server,
-    };
+    use crate::app::{job, task::TaskState};
 
     #[derive(Debug, Clone, Hash, PartialEq, Eq)]
     pub(super) struct TaskId(pub Uuid);
@@ -480,6 +480,13 @@ mod worker {
         }
     }
 
+    #[derive(serde::Deserialize, Debug)]
+    pub struct ServerConfig {
+        pub addr: SocketAddr,
+        pub domain: String,
+        pub cert_path: String,
+    }
+
     #[derive(Clone, Debug)]
     pub(super) struct WorkerClient {
         connection: Arc<Connection>,
@@ -490,12 +497,18 @@ mod worker {
 
     impl WorkerClient {
         async fn new(
-            endpoint: &mut Endpoint,
-            server_info: String,
+            client_addr: SocketAddr,
+            server_config: ServerConfig,
             index: usize,
-            // release_tx: mpsc::UnboundedSender<(usize, Resource)>,
         ) -> Result<Self, Box<dyn Error>> {
-            let connection = server_info.parse::<Server>()?.connect(endpoint).await?;
+            let mut endpoint = Endpoint::client(client_addr)?;
+            endpoint.set_default_client_config(quic_config::get_client_config(
+                &server_config.cert_path,
+            )?);
+
+            let connection = endpoint
+                .connect(server_config.addr, &server_config.domain)?
+                .await?;
 
             let mut recv = connection.accept_uni().await?;
             let measure = protocol::quic::read_data::<ResourceMeasure>(&mut recv).await?;
@@ -658,15 +671,11 @@ mod worker {
 
         pub async fn new(
             addr: SocketAddr,
-            cert_path: String,
-            servers: Vec<String>,
+            servers: Vec<ServerConfig>,
         ) -> Result<Self, Box<dyn Error>> {
-            let mut endpoint = Endpoint::client(addr)?;
-            endpoint.set_default_client_config(quic_config::get_client_config(&cert_path)?);
-
             let mut _workers = Vec::new();
-            for (i, server_info) in servers.into_iter().enumerate() {
-                _workers.push(WorkerClient::new(&mut endpoint, server_info, i).await?);
+            for (i, server_config) in servers.into_iter().enumerate() {
+                _workers.push(WorkerClient::new(addr, server_config, i).await?);
             }
 
             let (queue_tx, mut queue_rx): (mpsc::Sender<(async_channel::Sender<_>, _)>, _) =
