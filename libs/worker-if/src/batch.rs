@@ -12,6 +12,7 @@ pub enum Request {
     Execute(String, job::JobParam),
     Terminate(String),
     ReadStatistics(String),
+    RemoveStatistics(Vec<String>),
 }
 
 #[derive(Debug, serde::Serialize, serde::Deserialize)]

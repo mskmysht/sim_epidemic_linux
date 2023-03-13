@@ -38,11 +38,8 @@ async fn main() -> Result<(), Box<dyn Error>> {
         max_resource,
         stat_dir,
     } = toml::from_str(&std::fs::read_to_string(&config_path)?)?;
-    assert!(
-        Path::new(&stat_dir).exists(),
-        "{} does not exist.",
-        stat_dir
-    );
+    let stat_dir_path = Path::new(&stat_dir).to_path_buf();
+    assert!(stat_dir_path.exists(), "{} does not exist.", stat_dir);
     assert!(
         Path::new(&world_path).exists(),
         "{} does not exist.",
@@ -50,7 +47,7 @@ async fn main() -> Result<(), Box<dyn Error>> {
     );
 
     let endpoint = Endpoint::server(quic_config::get_server_config(cert_path, pkey_path)?, addr)?;
-    let manager = batch::WorldManager::new(world_path, stat_dir);
+    let manager = batch::WorldManager::new(world_path, stat_dir, stat_dir_path);
     while let Some(connecting) = endpoint.accept().await {
         let connection = connecting.await.unwrap();
         let ip = connection.remote_address().to_string();

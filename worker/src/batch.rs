@@ -1,4 +1,4 @@
-use std::{collections::BTreeMap, error::Error, fs::File, io, path::Path, process, sync::Arc};
+use std::{collections::BTreeMap, error::Error, fs::File, io, path::PathBuf, process, sync::Arc};
 
 use arrow2::io::{
     csv::write::{self, SerializeOptions},
@@ -103,6 +103,15 @@ pub async fn run(
                         .await
                         .unwrap();
                 }
+                batch::Request::RemoveStatistics(ids) => {
+                    for id in ids {
+                        let path = manager.stat_dir_path.join(&id).with_extension("arrow");
+                        match std::fs::remove_file(path) {
+                            Ok(_) => println!("[info] removed {id}.arrow"),
+                            Err(e) => eprintln!("[error] failed to remove {id}.arrow: {e}"),
+                        }
+                    }
+                }
             };
         });
     }
@@ -112,6 +121,7 @@ pub async fn run(
 pub struct WorldManager {
     world_path: String,
     stat_dir: String,
+    stat_dir_path: PathBuf,
     table: Mutex<BTreeMap<String, IpcBiConnection>>,
 }
 
@@ -131,10 +141,11 @@ fn request(bicon: &IpcBiConnection, req: world_if::Request) -> anyhow::Result<wo
 }
 
 impl WorldManager {
-    pub fn new(world_path: String, stat_dir: String) -> Arc<Self> {
+    pub fn new(world_path: String, stat_dir: String, stat_dir_path: PathBuf) -> Arc<Self> {
         Arc::new(Self {
             world_path,
             stat_dir,
+            stat_dir_path,
             table: Default::default(),
         })
     }
@@ -178,9 +189,7 @@ impl WorldManager {
     }
 
     async fn read_statistics(&self, world_id: String) -> Result<Vec<u8>, ReadStatisticsError> {
-        let path = Path::new(&self.stat_dir)
-            .join(&world_id)
-            .with_extension("arrow");
+        let path = self.stat_dir_path.join(&world_id).with_extension("arrow");
 
         let mut file = File::open(path)?;
         let metadata = read::read_file_metadata(&mut file)?;

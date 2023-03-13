@@ -10,6 +10,8 @@ use poem_openapi::{
     ApiResponse, OpenApi,
 };
 
+use crate::manager::JobDeleteError;
+
 #[derive(Tags)]
 enum ApiTags {
     /// Operations about job
@@ -24,8 +26,14 @@ enum CreateJobResponse {
     JobId(Json<String>),
     #[oai(status = 409)]
     JobAlreadyExists,
-    // #[oai(status = 404)]
-    // Failed(PlainText<String>),
+}
+
+#[derive(ApiResponse)]
+enum GetAllJobsResponse {
+    #[oai(status = 200)]
+    Jobs(Json<Vec<job::Job>>),
+    #[oai(status = 500)]
+    InternalError,
 }
 
 #[derive(ApiResponse)]
@@ -34,6 +42,8 @@ enum GetJobResponse {
     Job(Json<job::Job>),
     #[oai(status = 404)]
     NotFound(PlainText<String>),
+    #[oai(status = 500)]
+    InternalError,
 }
 
 #[derive(ApiResponse)]
@@ -42,6 +52,8 @@ enum GetTaskResponse {
     Task(Json<task::Task>),
     #[oai(status = 404)]
     NotFound(PlainText<String>),
+    #[oai(status = 500)]
+    InternalError,
 }
 
 #[derive(ApiResponse)]
@@ -52,12 +64,16 @@ enum TerminateJobResponse {
     AlreadyTerminated,
     #[oai(status = 404)]
     NotFound(PlainText<String>),
+    #[oai(status = 500)]
+    InternalError,
 }
 
 #[derive(ApiResponse)]
 enum DeleteJobResponse {
     #[oai(status = 202)]
     Accepted,
+    #[oai(status = 404)]
+    NotFound(PlainText<String>),
     #[oai(status = 500)]
     InternalError,
 }
@@ -67,18 +83,20 @@ enum GetStatisticsResponse {
     #[oai(status = 200, content_type = "text/csv")]
     CSV(Binary<Vec<u8>>),
     #[oai(status = 404)]
-    NotFound,
+    NotFound(PlainText<String>),
+    #[oai(status = 500)]
+    InternalError,
 }
 
 #[async_trait]
 pub trait ResourceManager {
     async fn create_job(&self, config: job::Config) -> Option<String>;
-    async fn get_job(&self, id: &str) -> Option<job::Job>;
-    async fn get_all_jobs(&self) -> Vec<job::Job>;
-    async fn delete_all_jobs(&self) -> bool;
-    async fn terminate_job(&self, id: &str) -> Option<bool>;
-    async fn get_task(&self, id: &str) -> Option<task::Task>;
-    async fn get_statistics(&self, id: &str) -> Option<Vec<u8>>;
+    async fn get_job(&self, id: &str) -> anyhow::Result<Option<job::Job>>;
+    async fn get_all_jobs(&self) -> anyhow::Result<Vec<job::Job>>;
+    async fn delete_job(&self, id: &str) -> Result<(), JobDeleteError>;
+    async fn terminate_job(&self, id: &str) -> anyhow::Result<Option<bool>>;
+    async fn get_task(&self, id: &str) -> anyhow::Result<Option<task::Task>>;
+    async fn get_statistics(&self, id: &str) -> anyhow::Result<Option<Vec<u8>>>;
 }
 
 pub struct Api<M: ResourceManager>(pub M);
@@ -90,65 +108,74 @@ impl<M: ResourceManager + Send + Sync + 'static> Api<M> {
         match self.0.create_job(config.0).await {
             Some(id) => Ok(CreateJobResponse::JobId(Json(id))),
             None => Ok(CreateJobResponse::JobAlreadyExists),
-            // Err(_) => Ok(CreateJobResponse::Failed(PlainText(
-            //     "Job creation failed.".to_string(),
-            // ))),
         }
     }
 
     #[oai(tag = "ApiTags::Job", path = "/jobs/:id", method = "get")]
     async fn get_job(&self, id: Path<String>) -> poem::Result<GetJobResponse> {
         match self.0.get_job(&id.0).await {
-            Some(job) => Ok(GetJobResponse::Job(Json(job.clone()))),
-            None => Ok(GetJobResponse::NotFound(PlainText(format!(
+            Ok(Some(job)) => Ok(GetJobResponse::Job(Json(job.clone()))),
+            Ok(None) => Ok(GetJobResponse::NotFound(PlainText(format!(
                 "Job {} is not found.",
                 id.0
             )))),
+            Err(_) => Ok(GetJobResponse::InternalError),
         }
     }
 
     #[oai(tag = "ApiTags::Job", path = "/jobs/:id/terminate", method = "post")]
     async fn terminate_job(&self, id: Path<String>) -> poem::Result<TerminateJobResponse> {
         match self.0.terminate_job(&id.0).await {
-            Some(true) => Ok(TerminateJobResponse::Succeeded),
-            Some(false) => Ok(TerminateJobResponse::AlreadyTerminated),
-            None => Ok(TerminateJobResponse::NotFound(PlainText(format!(
+            Ok(Some(true)) => Ok(TerminateJobResponse::Succeeded),
+            Ok(Some(false)) => Ok(TerminateJobResponse::AlreadyTerminated),
+            Ok(None) => Ok(TerminateJobResponse::NotFound(PlainText(format!(
                 "Job {} is not found.",
                 id.0
             )))),
+            Err(_) => Ok(TerminateJobResponse::InternalError),
         }
     }
 
     #[oai(tag = "ApiTags::Job", path = "/jobs", method = "get")]
-    async fn get_all_jobs(&self) -> poem::Result<Json<Vec<job::Job>>> {
-        Ok(Json(self.0.get_all_jobs().await))
+    async fn get_all_jobs(&self) -> poem::Result<GetAllJobsResponse> {
+        match self.0.get_all_jobs().await {
+            Ok(js) => Ok(GetAllJobsResponse::Jobs(Json(js))),
+            Err(_) => Ok(GetAllJobsResponse::InternalError),
+        }
     }
 
-    #[oai(tag = "ApiTags::Job", path = "/jobs", method = "delete")]
-    async fn delete_all_jobs(&self) -> poem::Result<DeleteJobResponse> {
-        if self.0.delete_all_jobs().await {
-            Ok(DeleteJobResponse::Accepted)
-        } else {
-            Ok(DeleteJobResponse::InternalError)
+    #[oai(tag = "ApiTags::Job", path = "/jobs/:id", method = "delete")]
+    async fn delete_job(&self, id: Path<String>) -> poem::Result<DeleteJobResponse> {
+        match self.0.delete_job(&id.0).await {
+            Ok(_) => Ok(DeleteJobResponse::Accepted),
+            Err(JobDeleteError::NotFound(_)) => Ok(DeleteJobResponse::NotFound(PlainText(
+                format!("Job {} is not found.", id.0),
+            ))),
+            Err(JobDeleteError::InternalError(_)) => Ok(DeleteJobResponse::InternalError),
         }
     }
 
     #[oai(tag = "ApiTags::Task", path = "/tasks/:id", method = "get")]
     async fn get_task(&self, id: Path<String>) -> poem::Result<GetTaskResponse> {
         match self.0.get_task(&id.0).await {
-            Some(task) => Ok(GetTaskResponse::Task(Json(task.clone()))),
-            None => Ok(GetTaskResponse::NotFound(PlainText(format!(
+            Ok(Some(task)) => Ok(GetTaskResponse::Task(Json(task.clone()))),
+            Ok(None) => Ok(GetTaskResponse::NotFound(PlainText(format!(
                 "Task {} is not found.",
                 id.0
             )))),
+            Err(_) => Ok(GetTaskResponse::InternalError),
         }
     }
 
     #[oai(tag = "ApiTags::Task", path = "/tasks/:id/statistics", method = "get")]
     async fn get_statistics(&self, id: Path<String>) -> poem::Result<GetStatisticsResponse> {
         match self.0.get_statistics(&id.0).await {
-            Some(bin) => Ok(GetStatisticsResponse::CSV(Binary(bin))),
-            None => Ok(GetStatisticsResponse::NotFound),
+            Ok(Some(bin)) => Ok(GetStatisticsResponse::CSV(Binary(bin))),
+            Ok(None) => Ok(GetStatisticsResponse::NotFound(PlainText(format!(
+                "Task {} is not found.",
+                id.0
+            )))),
+            Err(_) => Ok(GetStatisticsResponse::InternalError),
         }
     }
 }
