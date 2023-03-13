@@ -1,5 +1,3 @@
-use std::ops::{AddAssign, Div, Sub, SubAssign};
-
 use ::world_if::batch::api::job;
 
 pub mod world_if {
@@ -37,53 +35,6 @@ impl<T, E: std::error::Error> From<Result<T, E>> for Response<T> {
         Self(value.map_err(|e| serde_error::Error::new(&e)))
     }
 }
-
-// #[derive(
-//     Debug, serde::Serialize, serde::Deserialize, PartialEq, Eq, PartialOrd, Ord, Clone, Copy,
-// )]
-// pub struct Resource(pub u32);
-
-// impl AddAssign for Resource {
-//     fn add_assign(&mut self, rhs: Self) {
-//         self.0 += rhs.0;
-//     }
-// }
-
-// impl AddAssign<&Resource> for Resource {
-//     fn add_assign(&mut self, rhs: &Self) {
-//         self.0 += rhs.0;
-//     }
-// }
-
-// impl SubAssign for Resource {
-//     fn sub_assign(&mut self, rhs: Self) {
-//         self.0 -= rhs.0;
-//     }
-// }
-
-// impl Sub for Resource {
-//     type Output = Option<Self>;
-
-//     fn sub(self, rhs: Self) -> Self::Output {
-//         self.0.checked_sub(rhs.0).map(Self)
-//     }
-// }
-
-// impl Sub<&Resource> for Resource {
-//     type Output = Option<Self>;
-
-//     fn sub(self, rhs: &Self) -> Self::Output {
-//         self.0.checked_sub(rhs.0).map(Self)
-//     }
-// }
-
-// impl Div for Resource {
-//     type Output = f64;
-
-//     fn div(self, rhs: Self) -> Self::Output {
-//         self.0 as f64 / rhs.0 as f64
-//     }
-// }
 
 #[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
 pub struct Cost(u64);
