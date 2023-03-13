@@ -23,8 +23,8 @@ pub fn get_server_config<P: AsRef<Path>>(
     );
     let mut config = ServerConfig::with_single_cert(vec![cert], key)?;
     let mut tc = TransportConfig::default();
-    tc.max_idle_timeout(Some(VarInt::from_u32(60_000).into()));
-    tc.keep_alive_interval(Some(Duration::from_secs(30)));
+    tc.max_idle_timeout(Some(VarInt::from_u32(5_000).into()));
+    tc.keep_alive_interval(Some(Duration::from_secs(4)));
     config.transport_config(Arc::new(tc));
     Ok(config)
 }

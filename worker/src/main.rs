@@ -51,17 +51,21 @@ async fn main() -> Result<(), Box<dyn Error>> {
     while let Some(connecting) = endpoint.accept().await {
         let connection = connecting.await.unwrap();
         let ip = connection.remote_address().to_string();
-        println!("[info] Acceept {}", ip);
-        if let Err(e) = batch::run(
-            manager.clone(),
+        let manager = manager.clone();
+
+        let connection2 = connection.clone();
+        let handle = tokio::spawn(batch::run(
+            manager,
             connection,
             max_population_size,
             max_resource,
-        )
-        .await
-        {
-            println!("[info] Disconnect {} ({})", ip, e);
-        }
+        ));
+        tokio::spawn(async move {
+            println!("[info] {ip} is acceepted");
+            let err = connection2.closed().await;
+            handle.abort();
+            println!("[error] {ip} is closed by {err}");
+        });
     }
     Ok(())
 }

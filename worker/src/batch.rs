@@ -1,4 +1,4 @@
-use std::{collections::BTreeMap, error::Error, fs::File, io, path::PathBuf, process, sync::Arc};
+use std::{collections::BTreeMap, fs::File, io, path::PathBuf, process, sync::Arc};
 
 use arrow2::io::{
     csv::write::{self, SerializeOptions},
@@ -47,7 +47,7 @@ pub async fn run(
     connection: Connection,
     max_population_size: u32,
     max_resource: u32,
-) -> Result<(), Box<dyn Error>> {
+) -> anyhow::Result<()> {
     let mut send = connection.open_uni().await?;
     protocol::quic::write_data(
         &mut send,
