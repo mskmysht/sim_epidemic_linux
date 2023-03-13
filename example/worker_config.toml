@@ -1,0 +1,7 @@
+cert_path = "ca_cert.der"
+pkey_path = "ca_pkey.der"
+world_path = "./target/release/world"
+addr = "192.168.1.11:3000"
+max_population_size = 20000
+max_resource = 100
+stat_dir = "./dump"
