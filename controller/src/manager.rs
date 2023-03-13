@@ -325,15 +325,6 @@ impl Db {
     }
 }
 
-#[derive(serde::Deserialize, Debug)]
-pub struct Config {
-    client_addr: IpAddr,
-    db_username: String,
-    db_password: String,
-    max_job_request: usize,
-    servers: Vec<ServerConfig>,
-}
-
 pub struct Manager {
     job_queue_tx: mpsc::Sender<Job>,
     job_terminations: Arc<RwLock<HashMap<JobId, TerminationSender>>>,
@@ -342,11 +333,17 @@ pub struct Manager {
 }
 
 impl Manager {
-    pub async fn new(config: Config) -> Result<Self, Box<dyn Error>> {
+    pub async fn new(
+        db_username: String,
+        db_password: String,
+        max_job_request: usize,
+        addr: IpAddr,
+        workers: Vec<ServerConfig>,
+    ) -> Result<Self, Box<dyn Error>> {
         let (client, connection) = tokio_postgres::connect(
             &format!(
                 "host=localhost user={} password={}",
-                config.db_username, config.db_password
+                db_username, db_password
             ),
             NoTls,
         )
@@ -358,9 +355,8 @@ impl Manager {
             }
         });
 
-        let (job_queue_tx, mut job_queue_rx) = mpsc::channel::<Job>(config.max_job_request);
-        let worker_manager =
-            Arc::new(WorkerManager::new(config.client_addr, config.servers).await?);
+        let (job_queue_tx, mut job_queue_rx) = mpsc::channel::<Job>(max_job_request);
+        let worker_manager = Arc::new(WorkerManager::new(addr, workers).await?);
 
         let manager = Self {
             job_queue_tx,
@@ -539,10 +535,10 @@ pub mod worker {
 
     #[derive(serde::Deserialize, Debug)]
     pub struct ServerConfig {
-        pub client_port: u16,
+        pub controller_port: u16,
+        pub cert_path: String,
         pub addr: SocketAddr,
         pub domain: String,
-        pub cert_path: String,
     }
 
     #[derive(Clone, Debug)]
@@ -560,7 +556,7 @@ pub mod worker {
             index: usize,
         ) -> Result<Self, Box<dyn Error>> {
             let mut endpoint =
-                Endpoint::client(SocketAddr::new(client_addr, server_config.client_port))?;
+                Endpoint::client(SocketAddr::new(client_addr, server_config.controller_port))?;
             endpoint.set_default_client_config(quic_config::get_client_config(
                 &server_config.cert_path,
             )?);
