@@ -1,0 +1,8 @@
+client_addr = "192.168.1.10"
+db_username = "simepi"
+db_password = "simepi"
+max_job_request = 127
+servers = [
+    { client_port = 3000, addr = "192.168.1.11:3000", domain = "worker1", cert_path = "ca_cert1.der" },
+    { client_port = 3001, addr = "192.168.1.12:3000", domain = "worker2", cert_path = "ca_cert2.der" },
+]
