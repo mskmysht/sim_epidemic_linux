@@ -1,4 +1,4 @@
-use std::{collections::HashMap, error::Error, fmt::Display, net::SocketAddr, sync::Arc};
+use std::{collections::HashMap, error::Error, fmt::Display, net::IpAddr, sync::Arc};
 
 use async_trait::async_trait;
 use futures_util::future::join_all;
@@ -292,7 +292,7 @@ impl Db {
 
 #[derive(serde::Deserialize, Debug)]
 pub struct Config {
-    client_addr: SocketAddr,
+    client_addr: IpAddr,
     db_username: String,
     db_password: String,
     max_job_request: usize,
@@ -450,7 +450,13 @@ impl ResourceManager for Manager {
 }
 
 pub mod worker {
-    use std::{collections::HashMap, error::Error, fmt::Display, net::SocketAddr, sync::Arc};
+    use std::{
+        collections::HashMap,
+        error::Error,
+        fmt::Display,
+        net::{IpAddr, SocketAddr},
+        sync::Arc,
+    };
 
     use futures_util::StreamExt;
     use quinn::{Connection, Endpoint};
@@ -482,6 +488,7 @@ pub mod worker {
 
     #[derive(serde::Deserialize, Debug)]
     pub struct ServerConfig {
+        pub client_port: u16,
         pub addr: SocketAddr,
         pub domain: String,
         pub cert_path: String,
@@ -497,11 +504,12 @@ pub mod worker {
 
     impl WorkerClient {
         async fn new(
-            client_addr: SocketAddr,
+            client_addr: IpAddr,
             server_config: ServerConfig,
             index: usize,
         ) -> Result<Self, Box<dyn Error>> {
-            let mut endpoint = Endpoint::client(client_addr)?;
+            let mut endpoint =
+                Endpoint::client(SocketAddr::new(client_addr, server_config.client_port))?;
             endpoint.set_default_client_config(quic_config::get_client_config(
                 &server_config.cert_path,
             )?);
@@ -670,12 +678,12 @@ pub mod worker {
         }
 
         pub async fn new(
-            addr: SocketAddr,
+            client_addr: IpAddr,
             servers: Vec<ServerConfig>,
         ) -> Result<Self, Box<dyn Error>> {
             let mut _workers = Vec::new();
             for (i, server_config) in servers.into_iter().enumerate() {
-                _workers.push(WorkerClient::new(addr, server_config, i).await?);
+                _workers.push(WorkerClient::new(client_addr, server_config, i).await?);
             }
 
             let (queue_tx, mut queue_rx): (mpsc::Sender<(async_channel::Sender<_>, _)>, _) =
