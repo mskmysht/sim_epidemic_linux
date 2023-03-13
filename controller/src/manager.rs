@@ -421,7 +421,14 @@ impl Manager {
         }
         for (worker_index, task_ids) in task_ids_map.into_iter().enumerate() {
             let worker = self.worker_manager.get_worker(worker_index);
-            worker.remove_statistics(&task_ids).await?;
+            match worker.remove_statistics(&task_ids).await {
+                Ok(failed) => {
+                    for id in failed {
+                        eprintln!("[error] failed to remove {id}");
+                    }
+                }
+                Err(e) => eprintln!("[error] {e}"),
+            }
         }
         self.db.delete_job(&id).await?;
         Ok(())
@@ -644,17 +651,14 @@ pub mod worker {
             }
         }
 
-        pub async fn remove_statistics(&self, task_ids: &[TaskId]) -> anyhow::Result<()> {
+        pub async fn remove_statistics(&self, task_ids: &[TaskId]) -> anyhow::Result<Vec<String>> {
             let (mut send, mut recv) = self.connection.open_bi().await?;
             protocol::quic::write_data(
                 &mut send,
                 &Request::RemoveStatistics(task_ids.into_iter().map(|id| id.to_string()).collect()),
             )
             .await?;
-            protocol::quic::read_data::<Response<()>>(&mut recv)
-                .await?
-                .as_result()?;
-            Ok(())
+            Ok(protocol::quic::read_data::<Vec<String>>(&mut recv).await?)
         }
     }
 

@@ -104,13 +104,25 @@ pub async fn run(
                         .unwrap();
                 }
                 batch::Request::RemoveStatistics(ids) => {
-                    for id in ids {
-                        let path = manager.stat_dir_path.join(&id).with_extension("arrow");
-                        match std::fs::remove_file(path) {
-                            Ok(_) => println!("[info] removed {id}.arrow"),
-                            Err(e) => eprintln!("[error] failed to remove {id}.arrow: {e}"),
-                        }
-                    }
+                    let failed = ids
+                        .into_iter()
+                        .filter(|id| {
+                            let path = manager.stat_dir_path.join(&id).with_extension("arrow");
+                            match std::fs::remove_file(path) {
+                                Ok(_) => {
+                                    println!("[info] removed {id}.arrow");
+                                    false
+                                }
+                                Err(e) => {
+                                    eprintln!("[error] failed to remove {id}.arrow: {e}");
+                                    true
+                                }
+                            }
+                        })
+                        .collect::<Vec<_>>();
+                    protocol::quic::write_data(&mut send, &failed)
+                        .await
+                        .unwrap();
                 }
             };
         });
