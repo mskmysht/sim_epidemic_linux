@@ -92,6 +92,7 @@ Linux HPC向けのシミュレーションジョブの管理システムです�
    以下の項目からなるTOMLファイルを作成します。
    ```toml
    addr = "192.168.1.10"   # controllerサーバのIPアドレス
+   port = 8080             # REST APIのListenポート番号
    db_username = "simepi"  # PostgreSQLのユーザ名
    db_password = "simepi"  # PostgreSQLのパスワード
    max_job_request = 127   # ジョブの最大リクエスト数
@@ -119,6 +120,6 @@ Linux HPC向けのシミュレーションジョブの管理システムです�
    ```
 
 ## ジョブの実行
-- REST APIのドキュメント（`http://[controllerのドメインまたはIPアドレス]/doc`）を参照してください。
+REST APIのドキュメント（`http://[controllerサーバのアドレス]/doc`）を参照してください。
 
 &copy; Masaaki Miyashita and Tatsuo Unemi, 2020-2023, All rights reserved.

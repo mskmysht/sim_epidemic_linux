@@ -1,8 +1,9 @@
 addr = "192.168.1.10"
+port = 8080
 db_username = "simepi"
 db_password = "simepi"
 max_job_request = 127
-servers = [
+workers = [
     { controller_port = 3000, cert_path = "ca_cert1.der", addr = "192.168.1.11:3000", domain = "worker1" },
     { controller_port = 3001, cert_path = "ca_cert2.der", addr = "192.168.1.12:3000", domain = "worker2" },
 ]

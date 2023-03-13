@@ -325,15 +325,6 @@ impl Db {
     }
 }
 
-#[derive(serde::Deserialize, Debug)]
-pub struct Config {
-    addr: IpAddr,
-    db_username: String,
-    db_password: String,
-    max_job_request: usize,
-    workers: Vec<ServerConfig>,
-}
-
 pub struct Manager {
     job_queue_tx: mpsc::Sender<Job>,
     job_terminations: Arc<RwLock<HashMap<JobId, TerminationSender>>>,
@@ -342,11 +333,17 @@ pub struct Manager {
 }
 
 impl Manager {
-    pub async fn new(config: Config) -> Result<Self, Box<dyn Error>> {
+    pub async fn new(
+        db_username: String,
+        db_password: String,
+        max_job_request: usize,
+        addr: IpAddr,
+        workers: Vec<ServerConfig>,
+    ) -> Result<Self, Box<dyn Error>> {
         let (client, connection) = tokio_postgres::connect(
             &format!(
                 "host=localhost user={} password={}",
-                config.db_username, config.db_password
+                db_username, db_password
             ),
             NoTls,
         )
@@ -358,8 +355,8 @@ impl Manager {
             }
         });
 
-        let (job_queue_tx, mut job_queue_rx) = mpsc::channel::<Job>(config.max_job_request);
-        let worker_manager = Arc::new(WorkerManager::new(config.addr, config.workers).await?);
+        let (job_queue_tx, mut job_queue_rx) = mpsc::channel::<Job>(max_job_request);
+        let worker_manager = Arc::new(WorkerManager::new(addr, workers).await?);
 
         let manager = Self {
             job_queue_tx,
