@@ -36,7 +36,7 @@ impl Gathering {
         let p = if !gat_spots_fixed.is_empty() && rp.gat_rnd_rt.r() < rng.gen::<f64>() {
             *gat_spots_fixed.choose(rng).unwrap()
         } else {
-            // wp.wrk_plc_mode == WrkPlcMode::WrkPlcNone
+            //[todo] wp.wrk_plc_mode == WrkPlcMode::WrkPlcNone
             agents.choose(rng).unwrap().read().origin.unwrap_or(Point {
                 x: rng.gen::<f64>() * wp.field_size(),
                 y: rng.gen::<f64>() * wp.field_size(),

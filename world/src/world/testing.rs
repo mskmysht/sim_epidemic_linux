@@ -10,7 +10,7 @@ pub enum TestReason {
     AsSymptom,
     AsContact,
     AsSuspected,
-    // [todo] TestPositiveRate,
+    //[todo] TestPositiveRate,
 }
 
 #[derive(Enum, Clone)]

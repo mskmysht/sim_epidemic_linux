@@ -14,8 +14,8 @@ Linux HPC向けのシミュレーションジョブの管理システムです�
 |cert-gen|ルート証明書生成用プログラム|
 
 ## システム構成
-- controllerサーバ x 1
-- workerサーバ x N
+- controllerサーバ x 1台
+- workerサーバ x N台
 
 ## セットアップ
 ### workerサーバ
@@ -64,7 +64,7 @@ Linux HPC向けのシミュレーションジョブの管理システムです�
 
    - タスクの計算コストが最大リソース量よりも大きい場合、タスクは拒否されます。
 
-### controller
+### controllerサーバ
 1. ソースコードのビルド
 
    1. Rustの[インストール](https://www.rust-lang.org/ja/tools/install)

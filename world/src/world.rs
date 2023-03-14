@@ -188,7 +188,7 @@ impl World {
 
         self.stat.health_stat.push(self.health_count.clone());
         self.runtime_params.step += 1;
-        // [todo] self.predicate_to_stop
+        //[todo] self.predicate_to_stop
         //    if loop_mode == LoopMode::LoopEndByCondition
         //        && world.scenario_index < self.scenario.len() as i32
         //    {
@@ -216,16 +216,3 @@ impl World {
         block:^(NSTimer * _Nonnull timer) { [self stop:LoopEndByTimeLimit]; }];
 }
 */
-
-// #[derive(Clone, Copy, PartialEq, Debug, Serialize, Deserialize, Default)]
-// pub enum RunningMode {
-//     #[default]
-//     Stopped,
-//     Over,
-//     Started,
-//     // LoopFinished,
-//     // LoopEndByUser,
-//     // LoopEndAsDaysPassed,
-//     //[todo] LoopEndByCondition,
-//     //[todo] LoopEndByTimeLimit,
-// }

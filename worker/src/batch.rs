@@ -30,8 +30,6 @@ pub enum ResponseError {
     FailedInProcess(#[from] world_if::Error),
     #[error("No id found")]
     NoIdFound,
-    // #[error("Abort child process")]
-    // Abort(anyhow::Error),
 }
 
 #[derive(Debug, thiserror::Error)]
@@ -81,7 +79,6 @@ pub async fn run(
 
                     if let Some(child) = child {
                         tokio::spawn(async move {
-                            // let pid = child.id();
                             let status = child.wait().unwrap();
                             stream
                                 .send(bincode::serialize(&status.success()).unwrap().into())
