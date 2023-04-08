@@ -7,9 +7,11 @@ use std::{
 };
 
 use async_trait::async_trait;
-use futures_util::future::join_all;
 use poem_openapi::types::ToJSON;
-use tokio::sync::{mpsc, RwLock};
+use tokio::{
+    select,
+    sync::{mpsc, watch, Notify, RwLock},
+};
 use tokio_postgres::{Client, NoTls};
 use uuid::Uuid;
 
@@ -38,94 +40,117 @@ impl Display for JobId {
     }
 }
 
-fn termination_channel() -> (TerminationSender, TerminationReceiver) {
-    let (tx, rx) = async_channel::bounded(1);
-    (
-        TerminationSender(tx),
-        TerminationReceiver(rx, Default::default()),
-    )
+fn oneshot_notify_channel() -> (OneshotNotifySender, OneshotNotifyReceiver) {
+    let (tx, rx) = watch::channel(false);
+    (OneshotNotifySender(tx), OneshotNotifyReceiver(rx))
 }
 
 #[derive(Debug)]
-struct TerminationSender(async_channel::Sender<()>);
+struct OneshotNotifySender(watch::Sender<bool>);
 
-impl TerminationSender {
-    async fn send(self) -> bool {
-        self.0.send(()).await.is_ok()
+impl OneshotNotifySender {
+    fn notify(self) -> bool {
+        self.0.send(true).is_ok()
     }
 }
 
 #[derive(Clone, Debug)]
-struct TerminationReceiver(async_channel::Receiver<()>, Arc<parking_lot::Mutex<bool>>);
+struct OneshotNotifyReceiver(watch::Receiver<bool>);
 
-impl TerminationReceiver {
-    fn try_recv(&self) -> bool {
-        self.0.try_recv().is_ok()
+impl OneshotNotifyReceiver {
+    pub fn has_notified(&self) -> Result<bool, watch::error::RecvError> {
+        self.0.has_changed()
     }
 
-    async fn recv(self) -> bool {
-        match self.0.recv().await {
-            Ok(_) => {
-                *self.1.lock() = true;
-                true
-            }
-            Err(_) => *self.1.lock(),
+    async fn notified(mut self) -> Result<(), watch::error::RecvError> {
+        self.0.changed().await
+    }
+}
+
+struct ForceQuitSignal {
+    tx: OneshotNotifySender,
+    notify: Arc<Notify>,
+}
+
+impl ForceQuitSignal {
+    async fn force_quit(self) -> bool {
+        if self.tx.notify() {
+            self.notify.notified().await;
+            true
+        } else {
+            false
         }
+    }
+}
+
+#[cfg(test)]
+mod test_force_quit {
+    use std::{sync::Arc, thread, time::Duration};
+
+    use tokio::{
+        runtime::Runtime,
+        sync::{watch, Notify},
+    };
+
+    #[test]
+    fn test_force_quit() {
+        Runtime::new().unwrap().block_on(async {
+            let (tx, mut rx) = watch::channel(false);
+            let notify = Arc::new(Notify::new());
+            let notify2 = notify.clone();
+            tokio::spawn(async move {
+                if rx.changed().await.is_ok() {
+                    println!("changed");
+                    notify2.notify_one();
+                    println!("emit notification");
+                    // thread::sleep(Duration::from_secs(3));
+                }
+            });
+            let f = match tx.send(true) {
+                Ok(_) => {
+                    thread::sleep(Duration::from_secs(3));
+                    println!("wait notification");
+                    notify.notified().await;
+                    true
+                }
+                Err(_) => false,
+            };
+            println!("{}", f);
+        });
     }
 }
 
 #[derive(Debug)]
 struct Job {
     id: JobId,
-    rx: TerminationReceiver,
+    fq_rx: OneshotNotifyReceiver,
     task_ids: Vec<TaskId>,
     config: job::Config,
 }
 
 impl Job {
     async fn consume(self, worker_manager: &WorkerManager, db: &Db) {
-        let workings = Default::default();
-        let mut handles = Vec::new();
         for task_id in self.task_ids {
-            let lease = worker_manager.lease((&self.config.param).into());
-            let rx = self.rx.clone();
-            let lease2 = lease.clone();
-            let id = task_id.clone();
-            tokio::spawn(async move {
-                if rx.recv().await {
-                    println!("[debug] catched termination signal at {}", id);
-                    if lease2.close() {
-                        println!("[info] {} lease is canceled", id);
-                    }
-                }
-            });
+            let lease = worker_manager.lease((&self.config.param).into()).await;
+            println!("[debug] received task {}", task_id);
+            let fq_rx = self.fq_rx.clone();
 
-            let workings = Arc::clone(&workings);
-            let config = self.config.clone();
-            let db = db.clone();
-            handles.push(tokio::spawn(async move {
-                println!("[debug] received task {}", task_id);
-                println!("[debug] waiting to receive worker");
-                let Ok(worker) = lease.recv().await else {
-                    println!("[debug] {} is skipped", task_id);
-                    return;
-                };
-                worker.execute(&task_id, config, &db, workings).await;
-            }));
-        }
-
-        tokio::spawn(async move {
-            if self.rx.recv().await {
-                for (task_id, client) in workings.read().await.iter() {
-                    if client.terminate(task_id).await.is_err() {
-                        println!("[info] task {} is already terminated", self.id);
-                    }
+            select! {
+                Ok(_) = fq_rx.notified() => {
+                    println!("[info] {} lease is canceled", task_id);
                 }
-                println!("[debug] {} is released", self.id);
+                Ok(worker) = lease => {
+                    worker
+                        .execute(
+                            &task_id,
+                            self.config.clone(),
+                            &db,
+                            self.fq_rx.clone(),
+                        )
+                        .await;
+                }
             }
-            println!("[debug] job {} termination has ended", self.id);
-        });
-        join_all(handles).await;
+        }
     }
 }
 
@@ -308,6 +333,7 @@ impl Db {
         self.0
             .execute("DELETE FROM job WHERE id = $1", &[&id.0])
             .await?;
+        println!("[info] removed job {id} from DB");
         Ok(())
     }
 
@@ -326,8 +352,8 @@ impl Db {
 }
 
 pub struct Manager {
-    job_queue_tx: mpsc::Sender<Job>,
-    job_terminations: Arc<RwLock<HashMap<JobId, TerminationSender>>>,
+    job_queue_tx: mpsc::Sender<(Job, Arc<Notify>)>,
+    queued_jobs: Arc<RwLock<HashMap<JobId, ForceQuitSignal>>>,
     db: Db,
     worker_manager: Arc<WorkerManager>,
 }
@@ -355,28 +381,29 @@ impl Manager {
             }
         });
 
-        let (job_queue_tx, mut job_queue_rx) = mpsc::channel::<Job>(max_job_request);
+        let (job_queue_tx, mut job_queue_rx) = mpsc::channel(max_job_request);
         let worker_manager = Arc::new(WorkerManager::new(addr, workers).await?);
 
+        let db = Db(Arc::new(client));
         let manager = Self {
             job_queue_tx,
-            job_terminations: Default::default(),
-            db: Db(Arc::new(client)),
+            db: db.clone(),
             worker_manager: worker_manager.clone(),
+            queued_jobs: Default::default(),
         };
+        let queued_jobs = manager.queued_jobs.clone();
 
-        let job_terminations = Arc::clone(&manager.job_terminations);
-        let db = manager.db.clone();
         tokio::spawn(async move {
-            while let Some(job) = job_queue_rx.recv().await {
+            while let Some((job, notify)) = job_queue_rx.recv().await {
                 let id = job.id.clone();
 
                 println!("[info] received job {}", id);
-                if !job.rx.try_recv() {
+                if !job.fq_rx.has_notified().unwrap() {
                     db.update_job_state(&id, &JobState::Running).await;
                     job.consume(&worker_manager, &db).await;
                 }
-                job_terminations.write().await.remove(&id);
+                notify.notify_waiters();
+                queued_jobs.write().await.remove(&id);
                 db.update_job_state(&id, &JobState::Completed).await;
                 println!("[info] job {} terminated", id);
             }
@@ -390,19 +417,27 @@ impl Manager {
         let (job_id, task_ids) = self.db.insert_job(&config).await?;
 
         if config.iteration_count > 0 {
-            let (tx, rx) = termination_channel();
-            self.job_terminations
+            let (fq_tx, fq_rx) = oneshot_notify_channel();
+            let notify = Arc::new(Notify::new());
+            let signal = ForceQuitSignal {
+                tx: fq_tx,
+                notify: notify.clone(),
+            };
+            self.queued_jobs
                 .write()
                 .await
-                .insert(job_id.clone(), tx);
+                .insert(job_id.clone(), signal);
 
             self.job_queue_tx
-                .send(Job {
-                    id: job_id.clone(),
-                    rx,
-                    task_ids,
-                    config,
-                })
+                .send((
+                    Job {
+                        id: job_id.clone(),
+                        fq_rx,
+                        task_ids,
+                        config,
+                    },
+                    notify,
+                ))
                 .await
                 .unwrap();
         }
@@ -410,30 +445,42 @@ impl Manager {
         Ok(job_id.to_string())
     }
 
-    async fn delete_job(&self, id: &JobId) -> anyhow::Result<()> {
-        let mut task_ids_map = vec![Vec::new(); self.worker_manager.get_worker_count()];
-        for (task_id, worker_index) in self.db.get_all_tasks_with_stats(&id).await? {
-            task_ids_map[worker_index].push(task_id);
-        }
-        for (worker_index, task_ids) in task_ids_map.into_iter().enumerate() {
-            let worker = self.worker_manager.get_worker(worker_index);
-            match worker.remove_statistics(&task_ids).await {
-                Ok(failed) => {
-                    for id in failed {
-                        eprintln!("[error] failed to remove {id}");
-                    }
-                }
-                Err(e) => eprintln!("[error] {e}"),
+    fn delete_job(&self, id: &JobId) {
+        let id = id.clone();
+        let queued_jobs = self.queued_jobs.clone();
+        let worker_manager = self.worker_manager.clone();
+        let db = self.db.clone();
+        tokio::spawn(async move {
+            if let Some(signal) = queued_jobs.write().await.remove(&id) {
+                signal.force_quit().await;
             }
-        }
-        self.db.delete_job(&id).await?;
-        Ok(())
+            let mut task_ids_map = vec![Vec::new(); worker_manager.get_worker_count()];
+            for (task_id, worker_index) in db.get_all_tasks_with_stats(&id).await.unwrap() {
+                task_ids_map[worker_index].push(task_id);
+            }
+            for (worker_index, task_ids) in task_ids_map.into_iter().enumerate() {
+                let worker = worker_manager.get_worker(worker_index);
+                match worker.remove_statistics(&task_ids).await {
+                    Ok(failed) => {
+                        for id in failed {
+                            eprintln!("[error] failed to remove {id}");
+                        }
+                    }
+                    Err(e) => eprintln!("[error] {e}"),
+                }
+            }
+            db.delete_job(&id).await.unwrap();
+        });
     }
 
-    async fn terminate_job(&self, id: &JobId) -> Option<bool> {
-        let mut table = self.job_terminations.write().await;
-        let tx = table.remove(&id)?;
-        Some(tx.send().await)
+    async fn terminate_job(&self, id: &JobId) -> bool {
+        let Some(signal) = self.queued_jobs.write().await.remove(&id) else {
+            return false;
+        };
+        tokio::spawn(async move {
+            signal.force_quit().await;
+        });
+        true
     }
 
     async fn get_statistics(&self, id: &TaskId) -> anyhow::Result<Option<Vec<u8>>> {
@@ -443,14 +490,6 @@ impl Manager {
         let client = self.worker_manager.get_worker(worker_index);
         Ok(Some(client.get_statistics(&id).await?))
     }
-}
-
-#[derive(thiserror::Error, Debug)]
-pub enum JobDeleteError {
-    #[error("job not found")]
-    NotFound(#[from] uuid::Error),
-    #[error("internal error")]
-    InternalError(#[from] anyhow::Error),
 }
 
 #[async_trait]
@@ -474,13 +513,13 @@ impl ResourceManager for Manager {
         self.db.get_jobs().await
     }
 
-    async fn delete_job(&self, id: &str) -> Result<(), JobDeleteError> {
+    fn delete_job(&self, id: &str) -> Result<(), uuid::Error> {
         let id = JobId::try_from(id)?;
-        self.delete_job(&id).await?;
+        self.delete_job(&id);
         Ok(())
     }
 
-    async fn terminate_job(&self, id: &str) -> anyhow::Result<Option<bool>> {
+    async fn terminate_job(&self, id: &str) -> anyhow::Result<bool> {
         let id = id.try_into()?;
         Ok(self.terminate_job(&id).await)
     }
@@ -498,23 +537,25 @@ impl ResourceManager for Manager {
 
 pub mod worker {
     use std::{
-        collections::HashMap,
         error::Error,
         fmt::Display,
         net::{IpAddr, SocketAddr},
+        pin::Pin,
         sync::Arc,
     };
 
-    use futures_util::StreamExt;
+    use futures_util::{stream::FuturesUnordered, Future, StreamExt};
     use quinn::{Connection, Endpoint};
     use repl::nom::AsBytes;
-    use tokio::sync::{mpsc, oneshot, OwnedSemaphorePermit, RwLock, Semaphore};
+    use tokio::sync::{mpsc, oneshot, OwnedSemaphorePermit, Semaphore};
     use tokio_util::codec::{FramedRead, LengthDelimitedCodec};
     use uuid::Uuid;
 
     use worker_if::batch::{Cost, Request, ResourceMeasure, Response};
 
     use crate::app::{job, task::TaskState};
+
+    use super::OneshotNotifyReceiver;
 
     #[derive(Debug, Clone, Hash, PartialEq, Eq)]
     pub struct TaskId(pub Uuid);
@@ -577,10 +618,6 @@ pub mod worker {
             })
         }
 
-        fn available(&self) -> u32 {
-            self.semaphore.available_permits() as u32
-        }
-
         async fn acquire(self, n: u32) -> WorkerClientPermitted {
             let permit = self.semaphore.clone().acquire_many_owned(n).await.unwrap();
             WorkerClientPermitted(self, permit)
@@ -590,7 +627,7 @@ pub mod worker {
             &self,
             task_id: &TaskId,
             config: job::Config,
-        ) -> anyhow::Result<oneshot::Receiver<Option<bool>>> {
+        ) -> anyhow::Result<impl Future<Output = Option<bool>>> {
             let (mut send, recv) = self.connection.open_bi().await?;
             protocol::quic::write_data(
                 &mut send,
@@ -606,18 +643,14 @@ pub mod worker {
                 return Err(e.into());
             }
 
-            let (tx, rx) = oneshot::channel();
-            tokio::spawn(async move {
-                let exit_status = stream
+            Ok(async move {
+                stream
                     .next()
                     .await
                     .unwrap()
                     .ok()
-                    .map(|data| bincode::deserialize::<bool>(data.as_bytes()).unwrap());
-                tx.send(exit_status).unwrap();
-            });
-
-            Ok(rx)
+                    .map(|data| bincode::deserialize::<bool>(data.as_bytes()).unwrap())
+            })
         }
 
         pub async fn terminate(&self, task_id: &TaskId) -> anyhow::Result<()> {
@@ -647,6 +680,7 @@ pub mod worker {
             }
         }
 
+        /// Returns a string vector of `TaskId`s whose statistics could not removed.
         pub async fn remove_statistics(&self, task_ids: &[TaskId]) -> anyhow::Result<Vec<String>> {
             let (mut send, mut recv) = self.connection.open_bi().await?;
             protocol::quic::write_data(
@@ -667,12 +701,12 @@ pub mod worker {
             task_id: &TaskId,
             config: job::Config,
             db: &super::Db,
-            workings: Arc<RwLock<HashMap<TaskId, WorkerClient>>>,
+            fq_rx: OneshotNotifyReceiver,
         ) {
             println!("[debug] executing...");
             db.update_task_state(&task_id, &TaskState::Assigned).await;
 
-            let Ok(rx) = self.0.execute(&task_id, config).await else {
+            let Ok(fut) = self.0.execute(&task_id, config).await else {
                     db.update_task_state(&task_id, &TaskState::Failed).await;
                     println!("[info] task {} could not execute", task_id);
                     return;
@@ -681,10 +715,18 @@ pub mod worker {
 
             println!("[debug] {} is running", task_id);
             let worker_index = self.0.index;
-            workings.write().await.insert(task_id.clone(), self.0);
-            println!("[debug] worker is registered");
 
-            let result = rx.await.unwrap();
+            println!("[debug] worker is registered");
+            let id = task_id.clone();
+            let fq_handle = tokio::spawn(async move {
+                if let Ok(_) = fq_rx.notified().await {
+                    if self.0.terminate(&id).await.is_err() {
+                        println!("[info] task {} is already terminated", id);
+                    }
+                }
+            });
+            let result = fut.await;
+            fq_handle.abort();
             drop(self.1);
 
             match result {
@@ -697,42 +739,15 @@ pub mod worker {
                     println!("[info] task {} failured in process", task_id);
                 }
             }
-            workings.write().await.remove(&task_id);
         }
     }
 
     pub(super) struct WorkerManager {
         workers: Vec<WorkerClient>,
-        queue_tx: mpsc::Sender<(async_channel::Sender<WorkerClientPermitted>, Cost)>,
+        queue_tx: mpsc::Sender<(oneshot::Sender<WorkerClientPermitted>, Cost)>,
     }
 
     impl WorkerManager {
-        fn find_optimal_worker(
-            workers: &[WorkerClient],
-            cost: &Cost,
-        ) -> Result<(WorkerClient, u32), Vec<(WorkerClient, u32)>> {
-            let mut best = -1.0;
-            let mut info_res = None;
-            let mut lackings = Vec::new();
-            for client in workers {
-                let cr = client.available();
-                let Ok(res) = client.measure.measure(cost) else {
-                    continue;
-                };
-                println!("[debug] {res:?}/{cr:?}");
-                let Some(r) = cr.checked_sub(res) else {
-                    lackings.push((client.clone(), res));
-                    continue;
-                };
-                let remaining = r as f32 / client.measure.max_resource as f32;
-                if remaining > best {
-                    best = remaining;
-                    info_res = Some((client.clone(), res))
-                }
-            }
-            info_res.ok_or(lackings)
-        }
-
         pub async fn new(
             client_addr: IpAddr,
             servers: Vec<ServerConfig>,
@@ -742,50 +757,27 @@ pub mod worker {
                 _workers.push(WorkerClient::new(client_addr, server_config, i).await?);
             }
 
-            let (queue_tx, mut queue_rx): (mpsc::Sender<(async_channel::Sender<_>, _)>, _) =
+            let (queue_tx, mut queue_rx): (mpsc::Sender<(oneshot::Sender<_>, _)>, _) =
                 mpsc::channel(1);
 
             let workers = _workers.clone();
             tokio::spawn(async move {
                 while let Some((tx, cost)) = queue_rx.recv().await {
-                    match Self::find_optimal_worker(&workers, &cost) {
-                        Ok((client, res)) => {
-                            println!(
-                                "[debug] current resource of worker {}: ({:?})",
-                                client.index, client.semaphore
-                            );
-                            if !tx.is_closed() {
-                                tx.send(client.acquire(res).await).await.unwrap();
-                            }
-                        }
-                        Err(lackings) => {
-                            println!("[debug] lacking...");
-                            let (lackings_tx, mut lackings_rx) = mpsc::channel(1);
-                            let mut handles = Vec::new();
-                            for (client, res) in lackings {
-                                let tx = lackings_tx.clone();
-                                let client = client.clone();
-                                handles.push(tokio::spawn(async move {
-                                    println!("[debug] temporally acqurired");
-                                    if !tx.is_closed() {
-                                        tx.send(client.acquire(res).await).await.unwrap();
-                                    }
-                                }));
-                            }
-                            tokio::spawn(async move {
-                                if let Some(permit) = lackings_rx.recv().await {
-                                    for handle in handles {
-                                        handle.abort();
-                                    }
-                                    println!("[debug] acqurired and aborted");
-                                    if !tx.is_closed() {
-                                        tx.send(permit).await.unwrap();
-                                    }
-                                    println!("[debug] sent");
-                                }
-                            });
+                    let mut futs = FuturesUnordered::new();
+                    for client in &workers {
+                        let Ok(res) = client.measure.measure(&cost) else {
+                            continue;
+                        };
+                        let client = client.clone();
+                        futs.push(async move { client.acquire(res).await });
+                    }
+                    if let Some(permit) = futs.next().await {
+                        println!("[debug] acquired at {}", permit.0.index);
+                        if let Err(_) = tx.send(permit) {
+                            println!("[debug] A lease has already dropped.");
                         }
                     }
+                    drop(futs);
                 }
             });
             Ok(Self {
@@ -802,61 +794,88 @@ pub mod worker {
             &self.workers[index]
         }
 
-        pub fn lease(&self, cost: Cost) -> WorkerLease {
-            let (tx, rx) = async_channel::bounded(1);
-            let queue = self.queue_tx.clone();
-            tokio::spawn(async move {
-                queue.send((tx, cost)).await.unwrap();
-            });
+        pub async fn lease(&self, cost: Cost) -> WorkerLease {
+            let (tx, rx) = oneshot::channel();
+            self.queue_tx.send((tx, cost)).await.unwrap();
             WorkerLease(rx)
         }
     }
 
-    #[derive(Clone)]
-    pub(super) struct WorkerLease(async_channel::Receiver<WorkerClientPermitted>);
+    pub(super) struct WorkerLease(oneshot::Receiver<WorkerClientPermitted>);
 
-    impl WorkerLease {
-        pub fn close(&self) -> bool {
-            self.0.close()
-        }
+    impl Future for WorkerLease {
+        type Output = Result<WorkerClientPermitted, oneshot::error::RecvError>;
 
-        pub fn recv(&self) -> async_channel::Recv<'_, WorkerClientPermitted> {
-            self.0.recv()
+        fn poll(
+            mut self: std::pin::Pin<&mut Self>,
+            cx: &mut std::task::Context<'_>,
+        ) -> std::task::Poll<Self::Output> {
+            Pin::new(&mut self.as_mut().0).poll(cx)
         }
     }
 }
 
 #[cfg(test)]
 mod tests {
-    use std::sync::Arc;
+    use std::{sync::Arc, time::Duration};
 
-    use futures_util::future::join_all;
+    use futures_util::{future::join_all, stream::FuturesUnordered, StreamExt};
     use poem_openapi::types::ToJSON;
-    use tokio::{
-        runtime::Runtime,
-        sync::{mpsc, Semaphore},
-    };
+    use tokio::{runtime::Runtime, sync::Semaphore, time};
     use tokio_postgres::{types::Json, NoTls};
 
-    use super::termination_channel;
+    use super::oneshot_notify_channel;
 
     #[test]
     fn test_notify() {
         let rt = Runtime::new().unwrap();
         rt.block_on(async {
-            let mut handles = Vec::new();
-            let (tx, rx) = termination_channel();
+            let mut futs = Vec::new();
+            let (tx, rx) = oneshot_notify_channel();
+            tx.notify();
+
             for i in 0..5 {
                 let rx = rx.clone();
-                handles.push(tokio::spawn(async move {
-                    if rx.recv().await {
+                futs.push(async move {
+                    time::sleep(Duration::from_secs(1)).await;
+                    if rx.notified().await.is_ok() {
                         println!("received signal at {i}");
                     }
-                }));
+                });
             }
 
-            tx.send().await;
-            join_all(handles).await;
+            join_all(futs).await;
+        });
+    }
+
+    #[test]
+    fn test_watch() {
+        use tokio::sync::watch;
+        let (tx, mut rx) = watch::channel(false);
+        tx.send(true).unwrap();
+        assert!(rx.has_changed().unwrap());
+        assert_eq!(*rx.borrow_and_update(), true);
+        tx.send(true).unwrap();
+        assert!(rx.has_changed().unwrap());
+        assert_eq!(*rx.borrow_and_update(), true);
+        tx.send(false).unwrap();
+        assert!(rx.has_changed().unwrap());
+        assert_eq!(*rx.borrow_and_update(), false);
+    }
+
+    #[test]
+    fn abort_handle() {
+        let rt = tokio::runtime::Runtime::new().unwrap();
+        rt.block_on(async {
+            let h = tokio::spawn(async {
+                // time::sleep(Duration::from_secs(1)).await;
+                println!("done.");
+            });
+            time::sleep(Duration::from_secs(1)).await;
+            if h.is_finished() {
+                println!("finished");
+            }
+            h.abort();
         });
     }
 
@@ -874,24 +893,19 @@ mod tests {
                     .collect::<Vec<_>>()
             );
 
-            let mut handles = Vec::new();
-            let (tx, mut rx) = mpsc::channel(1);
+            let mut futs = FuturesUnordered::new();
             for (i, semaphore) in semaphores.iter().enumerate() {
                 let semaphore = semaphore.clone();
-                let tx = tx.clone();
-                handles.push(tokio::spawn(async move {
+                futs.push(async move {
                     let permit = semaphore.acquire_many_owned(2).await.unwrap();
                     println!("temporally acquired from semphore-{i}");
-                    tx.send((i, permit)).await.unwrap();
-                }));
+                    (i, permit)
+                });
             }
 
             let semaphores2 = semaphores.clone();
             tokio::spawn(async move {
-                if let Some((i, permit)) = rx.recv().await {
-                    for handle in handles {
-                        handle.abort();
-                    }
+                if let Some((i, permit)) = futs.next().await {
                     println!("acquired 2 permits from semaphore-{i}");
                     println!(
                         "{:?}",
@@ -902,19 +916,20 @@ mod tests {
                     );
                     drop(permit);
                 }
+                drop(futs);
             });
 
-            let mut handles2 = Vec::new();
+            let mut futs2 = Vec::new();
             for (i, semaphore) in semaphores.iter().enumerate() {
                 let semaphore = semaphore.clone();
-                handles2.push(tokio::spawn(async move {
+                futs2.push(async move {
                     let permit = semaphore.acquire_owned().await.unwrap();
-                    println!("aquired a permit from semaphore-{i}");
+                    println!("acquired a permit from semaphore-{i}");
                     drop(permit);
-                }));
+                });
             }
 
-            join_all(handles2).await;
+            join_all(futs2).await;
         });
     }
 
