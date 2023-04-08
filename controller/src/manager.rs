@@ -40,37 +40,90 @@ impl Display for JobId {
     }
 }
 
-fn force_quit_channel() -> (ForceQuitSender, ForceQuitReceiver) {
+fn oneshot_notify_channel() -> (OneshotNotifySender, OneshotNotifyReceiver) {
     let (tx, rx) = watch::channel(false);
-    (ForceQuitSender(tx), ForceQuitReceiver(rx))
+    (OneshotNotifySender(tx), OneshotNotifyReceiver(rx))
 }
 
 #[derive(Debug)]
-struct ForceQuitSender(watch::Sender<bool>);
+struct OneshotNotifySender(watch::Sender<bool>);
 
-impl ForceQuitSender {
-    fn send(&self) -> bool {
+impl OneshotNotifySender {
+    fn notify(self) -> bool {
         self.0.send(true).is_ok()
     }
 }
 
 #[derive(Clone, Debug)]
-struct ForceQuitReceiver(watch::Receiver<bool>);
+struct OneshotNotifyReceiver(watch::Receiver<bool>);
 
-impl ForceQuitReceiver {
-    pub fn has_changed(&self) -> Result<bool, watch::error::RecvError> {
+impl OneshotNotifyReceiver {
+    pub fn has_notified(&self) -> Result<bool, watch::error::RecvError> {
         self.0.has_changed()
     }
 
-    async fn changed(mut self) -> Result<(), watch::error::RecvError> {
+    async fn notified(mut self) -> Result<(), watch::error::RecvError> {
         self.0.changed().await
+    }
+}
+
+struct ForceQuitSignal {
+    tx: OneshotNotifySender,
+    notify: Arc<Notify>,
+}
+
+impl ForceQuitSignal {
+    async fn force_quit(self) -> bool {
+        if self.tx.notify() {
+            self.notify.notified().await;
+            true
+        } else {
+            false
+        }
+    }
+}
+
+#[cfg(test)]
+mod test_force_quit {
+    use std::{sync::Arc, thread, time::Duration};
+
+    use tokio::{
+        runtime::Runtime,
+        sync::{watch, Notify},
+    };
+
+    #[test]
+    fn test_force_quit() {
+        Runtime::new().unwrap().block_on(async {
+            let (tx, mut rx) = watch::channel(false);
+            let notify = Arc::new(Notify::new());
+            let notify2 = notify.clone();
+            tokio::spawn(async move {
+                if rx.changed().await.is_ok() {
+                    println!("changed");
+                    notify2.notify_one();
+                    println!("emit notification");
+                    // thread::sleep(Duration::from_secs(3));
+                }
+            });
+            let f = match tx.send(true) {
+                Ok(_) => {
+                    thread::sleep(Duration::from_secs(3));
+                    println!("wait notification");
+                    notify.notified().await;
+                    true
+                }
+                Err(_) => false,
+            };
+            println!("{}", f);
+        });
     }
 }
 
 #[derive(Debug)]
 struct Job {
     id: JobId,
-    fq_rx: ForceQuitReceiver,
+    fq_rx: OneshotNotifyReceiver,
     task_ids: Vec<TaskId>,
     config: job::Config,
 }
@@ -83,7 +136,7 @@ impl Job {
             let fq_rx = self.fq_rx.clone();
 
             select! {
-                Ok(_) = fq_rx.changed() => {
+                Ok(_) = fq_rx.notified() => {
                     println!("[info] {} lease is canceled", task_id);
                 }
                 Ok(worker) = lease => {
@@ -280,6 +333,7 @@ impl Db {
         self.0
             .execute("DELETE FROM job WHERE id = $1", &[&id.0])
             .await?;
+        println!("[info] removed job {id} from DB");
         Ok(())
     }
 
@@ -298,8 +352,8 @@ impl Db {
 }
 
 pub struct Manager {
-    job_queue_tx: mpsc::Sender<Job>,
-    queued_jobs: Arc<RwLock<HashMap<JobId, (ForceQuitSender, Notify)>>>,
+    job_queue_tx: mpsc::Sender<(Job, Arc<Notify>)>,
+    queued_jobs: Arc<RwLock<HashMap<JobId, ForceQuitSignal>>>,
     db: Db,
     worker_manager: Arc<WorkerManager>,
 }
@@ -327,7 +381,7 @@ impl Manager {
             }
         });
 
-        let (job_queue_tx, mut job_queue_rx) = mpsc::channel::<Job>(max_job_request);
+        let (job_queue_tx, mut job_queue_rx) = mpsc::channel(max_job_request);
         let worker_manager = Arc::new(WorkerManager::new(addr, workers).await?);
 
         let db = Db(Arc::new(client));
@@ -340,16 +394,16 @@ impl Manager {
         let queued_jobs = manager.queued_jobs.clone();
 
         tokio::spawn(async move {
-            while let Some(job) = job_queue_rx.recv().await {
+            while let Some((job, notify)) = job_queue_rx.recv().await {
                 let id = job.id.clone();
 
                 println!("[info] received job {}", id);
-                if !job.fq_rx.has_changed().unwrap() {
+                if !job.fq_rx.has_notified().unwrap() {
                     db.update_job_state(&id, &JobState::Running).await;
                     job.consume(&worker_manager, &db).await;
                 }
-                let (_, notify) = queued_jobs.write().await.remove(&id).unwrap();
-                notify.notify_one();
+                notify.notify_waiters();
+                queued_jobs.write().await.remove(&id);
                 db.update_job_state(&id, &JobState::Completed).await;
                 println!("[info] job {} terminated", id);
             }
@@ -363,19 +417,27 @@ impl Manager {
         let (job_id, task_ids) = self.db.insert_job(&config).await?;
 
         if config.iteration_count > 0 {
-            let (fq_tx, fq_rx) = force_quit_channel();
+            let (fq_tx, fq_rx) = oneshot_notify_channel();
+            let notify = Arc::new(Notify::new());
+            let signal = ForceQuitSignal {
+                tx: fq_tx,
+                notify: notify.clone(),
+            };
             self.queued_jobs
                 .write()
                 .await
-                .insert(job_id.clone(), (fq_tx, Notify::new()));
+                .insert(job_id.clone(), signal);
 
             self.job_queue_tx
-                .send(Job {
-                    id: job_id.clone(),
-                    fq_rx,
-                    task_ids,
-                    config,
-                })
+                .send((
+                    Job {
+                        id: job_id.clone(),
+                        fq_rx,
+                        task_ids,
+                        config,
+                    },
+                    notify,
+                ))
                 .await
                 .unwrap();
         }
@@ -389,10 +451,8 @@ impl Manager {
         let worker_manager = self.worker_manager.clone();
         let db = self.db.clone();
         tokio::spawn(async move {
-            if let Some((tx, notify)) = queued_jobs.read().await.get(&id) {
-                if tx.send() {
-                    notify.notified().await;
-                }
+            if let Some(signal) = queued_jobs.write().await.remove(&id) {
+                signal.force_quit().await;
             }
             let mut task_ids_map = vec![Vec::new(); worker_manager.get_worker_count()];
             for (task_id, worker_index) in db.get_all_tasks_with_stats(&id).await.unwrap() {
@@ -413,10 +473,14 @@ impl Manager {
         });
     }
 
-    async fn terminate_job(&self, id: &JobId) -> Option<bool> {
-        let map = self.queued_jobs.read().await;
-        let (tx, _) = map.get(&id)?;
-        Some(tx.send())
+    async fn terminate_job(&self, id: &JobId) -> bool {
+        let Some(signal) = self.queued_jobs.write().await.remove(&id) else {
+            return false;
+        };
+        tokio::spawn(async move {
+            signal.force_quit().await;
+        });
+        true
     }
 
     async fn get_statistics(&self, id: &TaskId) -> anyhow::Result<Option<Vec<u8>>> {
@@ -455,7 +519,7 @@ impl ResourceManager for Manager {
         Ok(())
     }
 
-    async fn terminate_job(&self, id: &str) -> anyhow::Result<Option<bool>> {
+    async fn terminate_job(&self, id: &str) -> anyhow::Result<bool> {
         let id = id.try_into()?;
         Ok(self.terminate_job(&id).await)
     }
@@ -491,7 +555,7 @@ pub mod worker {
 
     use crate::app::{job, task::TaskState};
 
-    use super::ForceQuitReceiver;
+    use super::OneshotNotifyReceiver;
 
     #[derive(Debug, Clone, Hash, PartialEq, Eq)]
     pub struct TaskId(pub Uuid);
@@ -637,7 +701,7 @@ pub mod worker {
             task_id: &TaskId,
             config: job::Config,
             db: &super::Db,
-            fq_rx: ForceQuitReceiver,
+            fq_rx: OneshotNotifyReceiver,
         ) {
             println!("[debug] executing...");
             db.update_task_state(&task_id, &TaskState::Assigned).await;
@@ -655,7 +719,7 @@ pub mod worker {
             println!("[debug] worker is registered");
             let id = task_id.clone();
             let fq_handle = tokio::spawn(async move {
-                if let Ok(_) = fq_rx.changed().await {
+                if let Ok(_) = fq_rx.notified().await {
                     if self.0.terminate(&id).await.is_err() {
                         println!("[info] task {} is already terminated", id);
                     }
@@ -760,21 +824,21 @@ mod tests {
     use tokio::{runtime::Runtime, sync::Semaphore, time};
     use tokio_postgres::{types::Json, NoTls};
 
-    use super::force_quit_channel;
+    use super::oneshot_notify_channel;
 
     #[test]
     fn test_notify() {
         let rt = Runtime::new().unwrap();
         rt.block_on(async {
             let mut futs = Vec::new();
-            let (tx, rx) = force_quit_channel();
-            tx.send();
+            let (tx, rx) = oneshot_notify_channel();
+            tx.notify();
 
             for i in 0..5 {
                 let rx = rx.clone();
                 futs.push(async move {
                     time::sleep(Duration::from_secs(1)).await;
-                    if rx.changed().await.is_ok() {
+                    if rx.notified().await.is_ok() {
                         println!("received signal at {i}");
                     }
                 });

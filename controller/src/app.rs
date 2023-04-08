@@ -62,8 +62,6 @@ enum TerminateJobResponse {
     AlreadyTerminated,
     #[oai(status = 404)]
     NotFound(PlainText<String>),
-    #[oai(status = 500)]
-    InternalError,
 }
 
 #[derive(ApiResponse)]
@@ -90,7 +88,7 @@ pub trait ResourceManager {
     async fn get_job(&self, id: &str) -> anyhow::Result<Option<job::Job>>;
     async fn get_all_jobs(&self) -> anyhow::Result<Vec<job::Job>>;
     fn delete_job(&self, id: &str) -> Result<(), uuid::Error>;
-    async fn terminate_job(&self, id: &str) -> anyhow::Result<Option<bool>>;
+    async fn terminate_job(&self, id: &str) -> anyhow::Result<bool>;
     async fn get_task(&self, id: &str) -> anyhow::Result<Option<task::Task>>;
     async fn get_statistics(&self, id: &str) -> anyhow::Result<Option<Vec<u8>>>;
 }
@@ -122,13 +120,12 @@ impl<M: ResourceManager + Send + Sync + 'static> Api<M> {
     #[oai(tag = "ApiTags::Job", path = "/jobs/:id/terminate", method = "post")]
     async fn terminate_job(&self, id: Path<String>) -> poem::Result<TerminateJobResponse> {
         match self.0.terminate_job(&id.0).await {
-            Ok(Some(true)) => Ok(TerminateJobResponse::Succeeded),
-            Ok(Some(false)) => Ok(TerminateJobResponse::AlreadyTerminated),
-            Ok(None) => Ok(TerminateJobResponse::NotFound(PlainText(format!(
+            Ok(true) => Ok(TerminateJobResponse::Succeeded),
+            Ok(false) => Ok(TerminateJobResponse::AlreadyTerminated),
+            Err(_) => Ok(TerminateJobResponse::NotFound(PlainText(format!(
                 "Job {} is not found.",
                 id.0
             )))),
-            Err(_) => Ok(TerminateJobResponse::InternalError),
         }
     }
 
