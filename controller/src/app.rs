@@ -10,8 +10,6 @@ use poem_openapi::{
     ApiResponse, OpenApi,
 };
 
-use crate::manager::JobDeleteError;
-
 #[derive(Tags)]
 enum ApiTags {
     /// Operations about job
@@ -74,8 +72,6 @@ enum DeleteJobResponse {
     Accepted,
     #[oai(status = 404)]
     NotFound(PlainText<String>),
-    #[oai(status = 500)]
-    InternalError,
 }
 
 #[derive(ApiResponse)]
@@ -93,7 +89,7 @@ pub trait ResourceManager {
     async fn create_job(&self, config: job::Config) -> Option<String>;
     async fn get_job(&self, id: &str) -> anyhow::Result<Option<job::Job>>;
     async fn get_all_jobs(&self) -> anyhow::Result<Vec<job::Job>>;
-    async fn delete_job(&self, id: &str) -> Result<(), JobDeleteError>;
+    fn delete_job(&self, id: &str) -> Result<(), uuid::Error>;
     async fn terminate_job(&self, id: &str) -> anyhow::Result<Option<bool>>;
     async fn get_task(&self, id: &str) -> anyhow::Result<Option<task::Task>>;
     async fn get_statistics(&self, id: &str) -> anyhow::Result<Option<Vec<u8>>>;
@@ -146,12 +142,12 @@ impl<M: ResourceManager + Send + Sync + 'static> Api<M> {
 
     #[oai(tag = "ApiTags::Job", path = "/jobs/:id", method = "delete")]
     async fn delete_job(&self, id: Path<String>) -> poem::Result<DeleteJobResponse> {
-        match self.0.delete_job(&id.0).await {
+        match self.0.delete_job(&id.0) {
             Ok(_) => Ok(DeleteJobResponse::Accepted),
-            Err(JobDeleteError::NotFound(_)) => Ok(DeleteJobResponse::NotFound(PlainText(
-                format!("Job {} is not found.", id.0),
-            ))),
-            Err(JobDeleteError::InternalError(_)) => Ok(DeleteJobResponse::InternalError),
+            Err(_) => Ok(DeleteJobResponse::NotFound(PlainText(format!(
+                "Job {} is not found.",
+                id.0
+            )))),
         }
     }
 

@@ -383,29 +383,34 @@ impl Manager {
         Ok(job_id.to_string())
     }
 
-    async fn delete_job(&self, id: &JobId) -> anyhow::Result<()> {
-        if let Some((tx, notify)) = self.queued_jobs.read().await.get(&id) {
-            tx.send();
-            notify.notified().await;
-        }
-
-        let mut task_ids_map = vec![Vec::new(); self.worker_manager.get_worker_count()];
-        for (task_id, worker_index) in self.db.get_all_tasks_with_stats(&id).await? {
-            task_ids_map[worker_index].push(task_id);
-        }
-        for (worker_index, task_ids) in task_ids_map.into_iter().enumerate() {
-            let worker = self.worker_manager.get_worker(worker_index);
-            match worker.remove_statistics(&task_ids).await {
-                Ok(failed) => {
-                    for id in failed {
-                        eprintln!("[error] failed to remove {id}");
-                    }
+    fn delete_job(&self, id: &JobId) {
+        let id = id.clone();
+        let queued_jobs = self.queued_jobs.clone();
+        let worker_manager = self.worker_manager.clone();
+        let db = self.db.clone();
+        tokio::spawn(async move {
+            if let Some((tx, notify)) = queued_jobs.read().await.get(&id) {
+                if tx.send() {
+                    notify.notified().await;
                 }
-                Err(e) => eprintln!("[error] {e}"),
             }
-        }
-        self.db.delete_job(&id).await?;
-        Ok(())
+            let mut task_ids_map = vec![Vec::new(); worker_manager.get_worker_count()];
+            for (task_id, worker_index) in db.get_all_tasks_with_stats(&id).await.unwrap() {
+                task_ids_map[worker_index].push(task_id);
+            }
+            for (worker_index, task_ids) in task_ids_map.into_iter().enumerate() {
+                let worker = worker_manager.get_worker(worker_index);
+                match worker.remove_statistics(&task_ids).await {
+                    Ok(failed) => {
+                        for id in failed {
+                            eprintln!("[error] failed to remove {id}");
+                        }
+                    }
+                    Err(e) => eprintln!("[error] {e}"),
+                }
+            }
+            db.delete_job(&id).await.unwrap();
+        });
     }
 
     async fn terminate_job(&self, id: &JobId) -> Option<bool> {
@@ -421,14 +426,6 @@ impl Manager {
         let client = self.worker_manager.get_worker(worker_index);
         Ok(Some(client.get_statistics(&id).await?))
     }
-}
-
-#[derive(thiserror::Error, Debug)]
-pub enum JobDeleteError {
-    #[error("job not found")]
-    NotFound(#[from] uuid::Error),
-    #[error("internal error")]
-    InternalError(#[from] anyhow::Error),
 }
 
 #[async_trait]
@@ -452,9 +449,9 @@ impl ResourceManager for Manager {
         self.db.get_jobs().await
     }
 
-    async fn delete_job(&self, id: &str) -> Result<(), JobDeleteError> {
+    fn delete_job(&self, id: &str) -> Result<(), uuid::Error> {
         let id = JobId::try_from(id)?;
-        self.delete_job(&id).await?;
+        self.delete_job(&id);
         Ok(())
     }
 
@@ -619,6 +616,7 @@ pub mod worker {
             }
         }
 
+        /// Returns a string vector of `TaskId`s whose statistics could not removed.
         pub async fn remove_statistics(&self, task_ids: &[TaskId]) -> anyhow::Result<Vec<String>> {
             let (mut send, mut recv) = self.connection.open_bi().await?;
             protocol::quic::write_data(
