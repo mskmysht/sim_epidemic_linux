@@ -20,64 +20,82 @@ enum ApiTags {
 
 #[derive(ApiResponse)]
 enum CreateJobResponse {
+    /// The request was successful
     #[oai(status = 200)]
     JobId(Json<String>),
+    /// The job already exists
     #[oai(status = 409)]
     JobAlreadyExists,
 }
 
 #[derive(ApiResponse)]
 enum GetAllJobsResponse {
+    /// The request was successful
     #[oai(status = 200)]
     Jobs(Json<Vec<job::Job>>),
+    /// Some problem has occurred on the server
     #[oai(status = 500)]
     InternalError,
 }
 
 #[derive(ApiResponse)]
 enum GetJobResponse {
+    /// The request was successful
     #[oai(status = 200)]
     Job(Json<job::Job>),
+    /// The job could not be found
     #[oai(status = 404)]
     NotFound(PlainText<String>),
+    /// Some problem has occurred on the server
     #[oai(status = 500)]
     InternalError,
 }
 
 #[derive(ApiResponse)]
 enum GetTaskResponse {
+    /// The request was successful
     #[oai(status = 200)]
     Task(Json<task::Task>),
+    /// The task could not be found
     #[oai(status = 404)]
     NotFound(PlainText<String>),
     #[oai(status = 500)]
+    /// Some problem has occurred on the server
     InternalError,
 }
 
 #[derive(ApiResponse)]
 enum TerminateJobResponse {
-    #[oai(status = 204)]
-    Succeeded,
-    #[oai(status = 405)]
+    /// The request was accepted
+    #[oai(status = 202)]
+    Accepted,
+    /// The job has already terminated
+    #[oai(status = 409)]
     AlreadyTerminated,
+    /// The job could not be found
     #[oai(status = 404)]
     NotFound(PlainText<String>),
 }
 
 #[derive(ApiResponse)]
 enum DeleteJobResponse {
+    /// The request was accepted
     #[oai(status = 202)]
     Accepted,
+    /// The job could not be found
     #[oai(status = 404)]
     NotFound(PlainText<String>),
 }
 
 #[derive(ApiResponse)]
 enum GetStatisticsResponse {
+    /// The request was successful
     #[oai(status = 200, content_type = "text/csv")]
     CSV(Binary<Vec<u8>>),
+    /// The job could not be found
     #[oai(status = 404)]
     NotFound(PlainText<String>),
+    /// Some problem has occurred on the server
     #[oai(status = 500)]
     InternalError,
 }
@@ -120,7 +138,7 @@ impl<M: ResourceManager + Send + Sync + 'static> Api<M> {
     #[oai(tag = "ApiTags::Job", path = "/jobs/:id/terminate", method = "post")]
     async fn terminate_job(&self, id: Path<String>) -> poem::Result<TerminateJobResponse> {
         match self.0.terminate_job(&id.0).await {
-            Ok(true) => Ok(TerminateJobResponse::Succeeded),
+            Ok(true) => Ok(TerminateJobResponse::Accepted),
             Ok(false) => Ok(TerminateJobResponse::AlreadyTerminated),
             Err(_) => Ok(TerminateJobResponse::NotFound(PlainText(format!(
                 "Job {} is not found.",
