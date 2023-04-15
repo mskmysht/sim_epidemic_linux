@@ -56,36 +56,29 @@ impl WorldSpawner {
         Ok(spawner)
     }
 
-    pub fn spawn(self) -> io::Result<JoinHandle<()>> {
+    pub fn spawn(self) -> io::Result<JoinHandle<anyhow::Result<()>>> {
         thread::Builder::new()
             .name(format!("world_{}", self.world.id.clone()))
-            .spawn(move || self.listen().unwrap())
+            .spawn(move || self.listen())
+    }
+
+    fn listen(mut self) -> anyhow::Result<()> {
+        loop {
+            match self.bicon.recv()? {
+                Request::Execute => {
+                    self.execute()?;
+                    break;
+                }
+                Request::Terminate => self.res_err(ResponseError::AlreadyStopped)?,
+            }
+        }
+        tracing::info!("stopped {}", self.world.id);
+        Ok(())
     }
 
     #[inline]
     fn res_ok(&self) -> anyhow::Result<()> {
         self.bicon.send(&Response::from(ResponseOk::Success))
-    }
-
-    #[inline]
-    fn res_ok_with(&self, msg: String) -> anyhow::Result<()> {
-        self.bicon
-            .send(&Response::from(ResponseOk::SuccessWithMessage(msg)))
-    }
-
-    #[inline]
-    fn res_err(&self, err: ResponseError) -> anyhow::Result<()> {
-        self.bicon.send(&Response::from(err))
-    }
-
-    #[inline]
-    fn send_status_with(&self, state: WorldState, custom: String) -> anyhow::Result<()> {
-        self.stream.send(WorldStatus::new(
-            self.world.runtime_params.step,
-            state,
-            custom,
-        ))?;
-        Ok(())
     }
 
     #[inline]
@@ -151,17 +144,24 @@ impl WorldSpawner {
         Ok(cont)
     }
 
-    fn listen(mut self) -> anyhow::Result<()> {
-        loop {
-            match self.bicon.recv()? {
-                Request::Execute => {
-                    self.execute()?;
-                    break;
-                }
-                Request::Terminate => self.res_err(ResponseError::AlreadyStopped)?,
-            }
-        }
-        println!("<{}> stopped", self.world.id);
+    #[inline]
+    fn res_ok_with(&self, msg: String) -> anyhow::Result<()> {
+        self.bicon
+            .send(&Response::from(ResponseOk::SuccessWithMessage(msg)))
+    }
+
+    #[inline]
+    fn res_err(&self, err: ResponseError) -> anyhow::Result<()> {
+        self.bicon.send(&Response::from(err))
+    }
+
+    #[inline]
+    fn send_status_with(&self, state: WorldState, custom: String) -> anyhow::Result<()> {
+        self.stream.send(WorldStatus::new(
+            self.world.runtime_params.step,
+            state,
+            custom,
+        ))?;
         Ok(())
     }
 }

@@ -734,7 +734,7 @@ pub mod worker {
             let fq_handle = tokio::spawn(async move {
                 if let Ok(_) = fq_rx.notified().await {
                     if worker.terminate(&id).await.is_err() {
-                        tracing::warn!("already terminated");
+                        tracing::info!("already terminated");
                     }
                 }
             });

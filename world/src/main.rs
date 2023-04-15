@@ -29,5 +29,7 @@ fn main() {
     let spawner =
         myprocess::batch::WorldSpawner::new(world_id, bicon, stream_tx, stat_dir).unwrap();
     let handle = spawner.spawn().unwrap();
-    handle.join().unwrap();
+    if let Err(e) = handle.join().unwrap() {
+        tracing::error!("stopped with {e}");
+    }
 }

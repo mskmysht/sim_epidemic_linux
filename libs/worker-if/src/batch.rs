@@ -1,3 +1,5 @@
+use std::fmt::Display;
+
 use ::world_if::batch::api::job;
 
 pub mod world_if {
@@ -11,6 +13,17 @@ pub enum Request {
     Terminate(String),
     ReadStatistics(String),
     RemoveStatistics(Vec<String>),
+}
+
+impl Display for Request {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Request::Execute(_, _) => write!(f, "execute"),
+            Request::Terminate(_) => write!(f, "terminate"),
+            Request::ReadStatistics(_) => write!(f, "read statistics"),
+            Request::RemoveStatistics(_) => write!(f, "remove statistics"),
+        }
+    }
 }
 
 #[derive(Debug, serde::Serialize, serde::Deserialize)]
