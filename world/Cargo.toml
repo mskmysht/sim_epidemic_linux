@@ -9,18 +9,20 @@ edition = "2021"
 table = { path = "../libs/table" }
 enum_map = { path = "../libs/enum_map" }
 world-if = { path = "../libs/world-if" }
-ipc-channel = "0.16"
-clap = { version = "4.1", features = ["derive"] }
-rayon = "1.5"
-chrono = { version = "0.4", features = ["serde"] }
-csv = "1.1"
-rand = { version = "0.8", features = ["alloc"] }
-rand_distr = "0.4"
-serde = { version = "1.0", features = ["derive"] }
-parking_lot = "0.12"
 repl = { path = "../libs/repl" }
 protocol = { path = "../libs/protocol" }
-thiserror = "1.0"
-anyhow = "1.0"
-arrow2 = { version = "0.16", features = ["io_ipc", "io_ipc_compression"] }
+ipc-channel = { workspace = true }
+serde = { workspace = true, features = ["derive"] }
+parking_lot = { workspace = true }
+thiserror = { workspace = true }
+anyhow = { workspace = true }
+rayon = "1.5"
 strum = { version = "0.24", features = ["derive"] }
+clap = { version = "4.1", features = ["derive"] }
+chrono = { version = "0.4", features = ["serde"] }
+csv = "1.1"
+arrow2 = { version = "0.16", features = ["io_ipc", "io_ipc_compression"] }
+rand = { version = "0.8", features = ["alloc"] }
+rand_distr = "0.4"
+tracing = { workspace = true }
+tracing-subscriber = { workspace = true }

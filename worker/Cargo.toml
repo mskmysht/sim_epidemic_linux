@@ -11,27 +11,29 @@ worker-if = { path = "../libs/worker-if" }
 protocol = { path = "../libs/protocol" }
 quic-config = { path = "../libs/quic-config" }
 repl = { path = "../libs/repl" }
-ipc-channel = "0.16"
+ipc-channel = { workspace = true }
 clap = { version = "4.1", features = ["derive"] }
 rand = { version = "0.8", features = ["alloc"] }
 rand_distr = "0.4"
-serde = { version = "1.0", features = ["derive"] }
-parking_lot = "0.12"
+serde = { workspace = true, features = ["derive"] }
+parking_lot = { workspace = true }
 async-trait = "0.1"
-tokio = { version = "1.25", features = ["full"] }
-tokio-util = "0.7"
-quinn = "0.9"
-rustls = "0.20"
+tokio = { workspace = true, features = ["full"] }
+tokio-util = { workspace = true }
+quinn = { workspace = true }
+rustls = { workspace = true }
 rcgen = "0.10"
 futures-util = "0.3"
-anyhow = "1.0"
-thiserror = "1.0"
+anyhow = { workspace = true }
+thiserror = { workspace = true }
 serde-error = "0.1"
 shared_child = "1.0"
-bincode = "1.3"
+bincode = { workspace = true }
 arrow2 = { version = "0.16", features = [
     "io_ipc",
     "io_ipc_compression",
     "io_csv_write",
 ] }
 toml = "0.7"
+tracing = { workspace = true }
+tracing-subscriber = { workspace = true }

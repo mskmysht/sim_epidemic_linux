@@ -46,6 +46,8 @@ async fn main() -> Result<(), Box<dyn Error>> {
         world_path
     );
 
+    tracing_subscriber::fmt::init();
+
     let endpoint = Endpoint::server(quic_config::get_server_config(cert_path, pkey_path)?, addr)?;
     let manager = batch::WorldManager::new(world_path, stat_dir, stat_dir_path);
     while let Some(connecting) = endpoint.accept().await {
@@ -61,10 +63,10 @@ async fn main() -> Result<(), Box<dyn Error>> {
             max_resource,
         ));
         tokio::spawn(async move {
-            println!("[info] {ip} is acceepted");
+            tracing::info!(accepted = ip);
             let err = connection2.closed().await;
             handle.abort();
-            println!("[error] {ip} is closed by {err}");
+            tracing::error!(closed = ip, ?err);
         });
     }
     Ok(())

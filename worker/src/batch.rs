@@ -63,7 +63,7 @@ pub async fn run(
         let manager = Arc::clone(&manager);
         tokio::spawn(async move {
             let req: batch::Request = protocol::quic::read_data(&mut recv).await.unwrap();
-            println!("[request] {req:?}");
+            tracing::info!(request = %req);
             match req {
                 batch::Request::Execute(id, param) => {
                     let mut stream = FramedWrite::new(send, LengthDelimitedCodec::new());
@@ -71,7 +71,6 @@ pub async fn run(
                         Ok(child) => (batch::Response::<()>::from_ok(()), Some(child)),
                         Err(e) => (batch::Response::<()>::from_err(e), None),
                     };
-                    println!("[response] {res:?}");
                     stream
                         .send(bincode::serialize(&res).unwrap().into())
                         .await
@@ -89,7 +88,6 @@ pub async fn run(
                 }
                 batch::Request::Terminate(id) => {
                     let res: batch::Response<_> = manager.terminate(id).await.into();
-                    println!("[response] {res:?}");
                     protocol::quic::write_data(&mut send, &res).await.unwrap();
                 }
                 batch::Request::ReadStatistics(id) => {
@@ -107,11 +105,11 @@ pub async fn run(
                             let path = manager.stat_dir_path.join(&id).with_extension("arrow");
                             match std::fs::remove_file(path) {
                                 Ok(_) => {
-                                    println!("[info] removed {id}.arrow");
+                                    tracing::info!("removed {id}.arrow");
                                     false
                                 }
                                 Err(e) => {
-                                    eprintln!("[error] failed to remove {id}.arrow: {e}");
+                                    tracing::warn!("could not remove {id}.arrow due to {e}");
                                     true
                                 }
                             }
@@ -177,7 +175,7 @@ impl WorldManager {
             while let Ok(status) = stream.recv() {
                 status_hist.push(status);
             }
-            println!("{:?}", status_hist.last());
+            tracing::debug!("status: {:?}", status_hist.last());
         });
 
         match request(&bicon, world_if::Request::Execute)? {

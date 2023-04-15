@@ -7,12 +7,14 @@ use std::{
 };
 
 use async_trait::async_trait;
+use futures_util::future::join_all;
 use poem_openapi::types::ToJSON;
 use tokio::{
     select,
     sync::{mpsc, watch, Notify, RwLock},
 };
 use tokio_postgres::{Client, NoTls};
+use tracing::Instrument;
 use uuid::Uuid;
 
 use crate::app::{
@@ -130,27 +132,34 @@ struct Job {
 
 impl Job {
     async fn consume(self, worker_manager: &WorkerManager, db: &Db) {
+        let mut handles = Vec::new();
         for task_id in self.task_ids {
+            tracing::debug!("received task {}", task_id);
             let lease = worker_manager.lease((&self.config.param).into()).await;
-            println!("[debug] received task {}", task_id);
             let fq_rx = self.fq_rx.clone();
-
-            select! {
-                Ok(_) = fq_rx.notified() => {
-                    println!("[info] {} lease is canceled", task_id);
+            let db = db.clone();
+            let config = self.config.clone();
+            handles.push(tokio::spawn(async move {
+                select! {
+                    Ok(_) = fq_rx.clone().notified() => {
+                        tracing::info!("{} lease is canceled", task_id);
+                    }
+                    Ok(worker) = lease => {
+                        let span = tracing::debug_span!("task", id = task_id.to_string(), worker = worker.index());
+                        worker
+                            .execute(
+                                &task_id,
+                                config,
+                                &db,
+                                fq_rx,
+                            )
+                            .instrument(span)
+                            .await;
+                    }
                 }
-                Ok(worker) = lease => {
-                    worker
-                        .execute(
-                            &task_id,
-                            self.config.clone(),
-                            &db,
-                            self.fq_rx.clone(),
-                        )
-                        .await;
-                }
-            }
+            }));
         }
+        join_all(handles).await;
     }
 }
 
@@ -333,7 +342,7 @@ impl Db {
         self.0
             .execute("DELETE FROM job WHERE id = $1", &[&id.0])
             .await?;
-        println!("[info] removed job {id} from DB");
+        tracing::info!("removed job {} from DB", id);
         Ok(())
     }
 
@@ -377,7 +386,7 @@ impl Manager {
 
         tokio::spawn(async move {
             if let Err(e) = connection.await {
-                println!("[error] Postresql database connection error: {e}");
+                tracing::error!("Postresql database connection error: {e}");
             }
         });
 
@@ -397,7 +406,7 @@ impl Manager {
             while let Some((job, notify)) = job_queue_rx.recv().await {
                 let id = job.id.clone();
 
-                println!("[info] received job {}", id);
+                tracing::info!("received job {}", id);
                 if !job.fq_rx.has_notified().unwrap() {
                     db.update_job_state(&id, &JobState::Running).await;
                     job.consume(&worker_manager, &db).await;
@@ -405,11 +414,11 @@ impl Manager {
                 notify.notify_waiters();
                 queued_jobs.write().await.remove(&id);
                 db.update_job_state(&id, &JobState::Completed).await;
-                println!("[info] job {} terminated", id);
+                tracing::info!("job {} terminated", id);
             }
         });
 
-        println!("[info] created job manager");
+        tracing::debug!("Manager is created");
         Ok(manager)
     }
 
@@ -463,10 +472,10 @@ impl Manager {
                 match worker.remove_statistics(&task_ids).await {
                     Ok(failed) => {
                         for id in failed {
-                            eprintln!("[error] failed to remove {id}");
+                            tracing::error!("failed to remove {}", id);
                         }
                     }
-                    Err(e) => eprintln!("[error] {e}"),
+                    Err(e) => tracing::error!("{}", e),
                 }
             }
             db.delete_job(&id).await.unwrap();
@@ -498,7 +507,7 @@ impl ResourceManager for Manager {
         match self.create_job(config.clone()).await {
             Ok(id) => Some(id),
             Err(e) => {
-                println!("[error] {e}");
+                tracing::error!("{}", e);
                 None
             }
         }
@@ -608,7 +617,7 @@ pub mod worker {
 
             let mut recv = connection.accept_uni().await?;
             let measure = protocol::quic::read_data::<ResourceMeasure>(&mut recv).await?;
-            println!("[info] worker {index} has {measure:?}");
+            tracing::debug!("worker {} has {:?}", index, measure);
 
             Ok(Self {
                 connection: Arc::new(connection),
@@ -674,7 +683,7 @@ pub mod worker {
             {
                 Ok(buf) => Ok(buf),
                 Err(e) => {
-                    eprintln!("[error] {:?}", e);
+                    tracing::error!("{}", e);
                     Err(e.into())
                 }
             }
@@ -696,6 +705,10 @@ pub mod worker {
     pub(super) struct WorkerClientPermitted(WorkerClient, OwnedSemaphorePermit);
 
     impl WorkerClientPermitted {
+        pub fn index(&self) -> usize {
+            self.0.index
+        }
+
         pub async fn execute(
             self,
             task_id: &TaskId,
@@ -703,40 +716,41 @@ pub mod worker {
             db: &super::Db,
             fq_rx: OneshotNotifyReceiver,
         ) {
-            println!("[debug] executing...");
-            db.update_task_state(&task_id, &TaskState::Assigned).await;
+            let worker = self.0;
+            let semphore = self.1;
+            let index = worker.index;
 
-            let Ok(fut) = self.0.execute(&task_id, config).await else {
+            tracing::debug!("preparing");
+            db.update_task_state(&task_id, &TaskState::Assigned).await;
+            let Ok(fut) = worker.execute(&task_id, config).await else {
                     db.update_task_state(&task_id, &TaskState::Failed).await;
-                    println!("[info] task {} could not execute", task_id);
+                    tracing::error!("could not execute");
                     return;
                 };
+
             db.update_task_state(&task_id, &TaskState::Running).await;
-
-            println!("[debug] {} is running", task_id);
-            let worker_index = self.0.index;
-
-            println!("[debug] worker is registered");
+            tracing::info!("executing");
             let id = task_id.clone();
             let fq_handle = tokio::spawn(async move {
                 if let Ok(_) = fq_rx.notified().await {
-                    if self.0.terminate(&id).await.is_err() {
-                        println!("[info] task {} is already terminated", id);
+                    if worker.terminate(&id).await.is_err() {
+                        tracing::info!("already terminated");
                     }
                 }
             });
+
             let result = fut.await;
             fq_handle.abort();
-            drop(self.1);
+            drop(semphore);
 
             match result {
                 Some(true) => {
-                    db.update_task_succeeded(&task_id, worker_index).await;
-                    println!("[info] task {} successfully terminated", task_id);
+                    db.update_task_succeeded(&task_id, index).await;
+                    tracing::info!("terminated");
                 }
                 _ => {
                     db.update_task_state(&task_id, &TaskState::Failed).await;
-                    println!("[info] task {} failured in process", task_id);
+                    tracing::error!("failed due to an process error");
                 }
             }
         }
@@ -769,12 +783,13 @@ pub mod worker {
                             continue;
                         };
                         let client = client.clone();
-                        futs.push(async move { client.acquire(res).await });
+                        tracing::debug!("register {}", client.index);
+                        futs.push(client.acquire(res));
                     }
                     if let Some(permit) = futs.next().await {
-                        println!("[debug] acquired at {}", permit.0.index);
+                        tracing::debug!("acquired at {}", permit.0.index);
                         if let Err(_) = tx.send(permit) {
-                            println!("[debug] A lease has already dropped.");
+                            tracing::debug!("a lease has already dropped");
                         }
                     }
                     drop(futs);

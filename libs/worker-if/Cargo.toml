@@ -6,10 +6,10 @@ version = "0.1.0"
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 
 [dependencies]
-serde = { version = "1.0" }
+serde = { workspace = true }
 nom = "7.1"
 serde-error = "0.1"
-thiserror = "1.0"
-anyhow = "1.0"
+thiserror = { workspace = true }
+anyhow = { workspace = true }
 world-if = { path = "../world-if" }
 parser = { path = "../parser" }
