@@ -6,12 +6,10 @@ edition = "2021"
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 
 [dependencies]
-worker-if = { path = "../libs/worker-if" }
+worker-if = { workspace = true }
 protocol = { path = "../libs/protocol" }
-world-if = { path = "../libs/world-if" }
-quic-config = { path = "../libs/quic-config" }
-repl = { path = "../libs/repl" }
-api = { path = "../libs/api" }
+file-io = { path = "../libs/file-io" }
+api = { workspace = true }
 async-trait = "0.1"
 clap = { version = "4.1", features = ["derive"] }
 quinn = { workspace = true }

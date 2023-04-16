@@ -44,7 +44,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "2c99f64d1e06488f620f932677e24bc6e2897582980441ae90a671415bd7ec2f"
 dependencies = [
  "cfg-if 1.0.0",
- "const-random",
  "getrandom 0.2.8",
  "once_cell",
  "version_check",
@@ -100,9 +99,9 @@ dependencies = [
 
 [[package]]
 name = "arrow2"
-version = "0.16.0"
+version = "0.17.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "7a4c5b03335bc1cb0fd9f5297f8fd3bbfd6fb04f3cb0bc7d6c91b7128cb8336a"
+checksum = "c3c63cf31f1416ed2fab8f91e8488e10129f47bd89c553ec354a06751d5697f3"
 dependencies = [
  "ahash",
  "arrow-format",
@@ -325,28 +324,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "const-random"
-version = "0.1.15"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "368a7a772ead6ce7e1de82bfb04c485f3db8ec744f72925af5735e29a22cc18e"
-dependencies = [
- "const-random-macro",
- "proc-macro-hack",
-]
-
-[[package]]
-name = "const-random-macro"
-version = "0.1.15"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "9d7d6ab3c3a2282db210df5f02c4dab6e0a7057af0fb7ebd4070f30fe05c0ddb"
-dependencies = [
- "getrandom 0.2.8",
- "once_cell",
- "proc-macro-hack",
- "tiny-keccak",
-]
-
-[[package]]
 name = "controller"
 version = "0.1.0"
 dependencies = [
@@ -355,15 +332,14 @@ dependencies = [
  "async-trait",
  "bincode",
  "clap",
+ "file-io",
  "futures-util",
  "parking_lot",
  "poem",
  "poem-openapi",
  "postgres-types",
  "protocol",
- "quic-config",
  "quinn",
- "repl",
  "rustls",
  "serde",
  "serde_json",
@@ -376,14 +352,6 @@ dependencies = [
  "tracing-subscriber",
  "uuid 1.3.0",
  "worker-if",
- "world-if",
-]
-
-[[package]]
-name = "controller-if"
-version = "0.1.0"
-dependencies = [
- "serde",
 ]
 
 [[package]]
@@ -500,12 +468,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "crunchy"
-version = "0.2.2"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "7a81dae078cea95a014a339291cec439d2f232ebe854a9d672b796c6afafa9b7"
-
-[[package]]
 name = "crypto-common"
 version = "0.1.6"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -514,18 +476,6 @@ dependencies = [
  "generic-array",
  "rand_core 0.6.4",
  "typenum",
-]
-
-[[package]]
-name = "csv"
-version = "1.2.1"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "0b015497079b9a9d69c02ad25de6c0a6edef051ea6360a327d0bd05802ef64ad"
-dependencies = [
- "csv-core",
- "itoa",
- "ryu",
- "serde",
 ]
 
 [[package]]
@@ -1797,12 +1747,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "proc-macro-hack"
-version = "0.5.20+deprecated"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "dc375e1527247fe1a97d8b7156678dfe7c1af2fc075c9a4db3690ecd2a148068"
-
-[[package]]
 name = "proc-macro2"
 version = "1.0.52"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1822,17 +1766,6 @@ dependencies = [
  "quinn",
  "serde",
  "tokio",
-]
-
-[[package]]
-name = "quic-config"
-version = "0.1.0"
-dependencies = [
- "anyhow",
- "file-io",
- "quinn",
- "rustls",
- "thiserror",
 ]
 
 [[package]]
@@ -2551,15 +2484,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "tiny-keccak"
-version = "2.0.2"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "2c9d3793400a45f954c52e73d068316d76b6f4e36977e3fcebb13a2721e80237"
-dependencies = [
- "crunchy",
-]
-
-[[package]]
 name = "tinyvec"
 version = "1.6.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -3093,19 +3017,17 @@ dependencies = [
  "async-trait",
  "bincode",
  "clap",
+ "file-io",
  "futures-util",
  "ipc-channel",
  "parking_lot",
  "protocol",
- "quic-config",
  "quinn",
  "rand 0.8.5",
  "rand_distr",
  "rcgen",
- "repl",
  "rustls",
  "serde",
- "serde-error",
  "shared_child",
  "thiserror",
  "tokio",
@@ -3121,8 +3043,6 @@ name = "worker-if"
 version = "0.1.0"
 dependencies = [
  "anyhow",
- "nom",
- "parser",
  "serde",
  "serde-error",
  "thiserror",
@@ -3134,25 +3054,31 @@ name = "world"
 version = "0.1.0"
 dependencies = [
  "anyhow",
+ "clap",
+ "ipc-channel",
+ "repl",
+ "serde",
+ "tracing",
+ "tracing-subscriber",
+ "world-core",
+ "world-if",
+]
+
+[[package]]
+name = "world-core"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
  "arrow2",
  "chrono",
- "clap",
- "csv",
  "enum_map",
- "ipc-channel",
  "parking_lot",
- "protocol",
  "rand 0.8.5",
  "rand_distr",
  "rayon",
- "repl",
  "serde",
  "strum",
  "table",
- "thiserror",
- "tracing",
- "tracing-subscriber",
- "world-if",
 ]
 
 [[package]]
@@ -3164,11 +3090,27 @@ dependencies = [
  "bincode",
  "chrono",
  "ipc-channel",
- "nom",
- "parser",
  "serde",
  "serde-error",
  "thiserror",
+]
+
+[[package]]
+name = "world-repl"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "chrono",
+ "clap",
+ "ipc-channel",
+ "nom",
+ "parser",
+ "repl",
+ "serde",
+ "serde-error",
+ "thiserror",
+ "world-core",
+ "world-if",
 ]
 
 [[package]]
@@ -3192,18 +3134,18 @@ dependencies = [
 
 [[package]]
 name = "zstd"
-version = "0.11.2+zstd.1.5.2"
+version = "0.12.3+zstd.1.5.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "20cc960326ece64f010d2d2107537f26dc589a6573a316bd5b1dba685fa5fde4"
+checksum = "76eea132fb024e0e13fd9c2f5d5d595d8a967aa72382ac2f9d39fcc95afd0806"
 dependencies = [
  "zstd-safe",
 ]
 
 [[package]]
 name = "zstd-safe"
-version = "5.0.2+zstd.1.5.2"
+version = "6.0.5+zstd.1.5.4"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "1d2a5585e04f9eea4b2a3d1eca508c4dee9592a89ef6f450c11719da0726f4db"
+checksum = "d56d9e60b4b1758206c238a10165fbcae3ca37b01744e394c463463f6529d23b"
 dependencies = [
  "libc",
  "zstd-sys",

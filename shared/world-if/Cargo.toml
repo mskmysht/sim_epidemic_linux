@@ -10,9 +10,7 @@ chrono = { version = "0.4", features = ["serde"] }
 ipc-channel = { workspace = true }
 serde = { workspace = true, features = ["derive"] }
 bincode = { workspace = true }
-nom = "7.1"
 thiserror = { workspace = true }
 serde-error = "0.1"
 anyhow = { workspace = true }
-parser = { path = "../parser" }
-api = { path = "../api" }
+api = { workspace = true }

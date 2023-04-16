@@ -7,7 +7,14 @@ use nom::{
 };
 use parser::{no_newline_string1, nullary, unary};
 
-use super::Request;
+use super::spawner::Request;
+use repl::Parsable;
+
+#[derive(Debug)]
+pub enum RequestWrapper {
+    Info,
+    Req(Request),
+}
 
 fn _parse_expr(input: &str) -> IResult<&str, Request> {
     alt((
@@ -31,6 +38,20 @@ fn parse_expr(input: &str) -> IResult<&str, Request> {
 
 pub fn request(input: &str) -> IResult<&str, Request> {
     all_consuming(delimited(multispace0, parse_expr, multispace0))(input)
+}
+
+pub struct WorldParser;
+impl Parsable for WorldParser {
+    type Parsed = RequestWrapper;
+
+    fn parse(input: &str) -> repl::nom::IResult<&str, Self::Parsed> {
+        use repl::nom::bytes::complete::tag;
+        use repl::nom::combinator::map;
+        alt((
+            map(tag("info"), |_| RequestWrapper::Info),
+            map(request, RequestWrapper::Req),
+        ))(input)
+    }
 }
 
 #[cfg(test)]

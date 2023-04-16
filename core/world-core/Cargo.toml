@@ -1,0 +1,19 @@
+[package]
+name = "world-core"
+version = "0.1.0"
+edition = "2021"
+
+# See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
+
+[dependencies]
+table = { workspace = true }
+enum_map = { path = "../../libs/enum_map" }
+serde = { workspace = true, features = ["derive"] }
+parking_lot = { workspace = true }
+anyhow = { workspace = true }
+rayon = "1.5"
+strum = { version = "0.24", features = ["derive"] }
+chrono = { version = "0.4", features = ["serde"] }
+arrow2 = { workspace = true, features = ["io_ipc", "io_ipc_compression"] }
+rand = { version = "0.8", features = ["alloc"] }
+rand_distr = "0.4"
