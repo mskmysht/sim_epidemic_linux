@@ -8,25 +8,25 @@ use std::{
 
 use async_trait::async_trait;
 use futures_util::future::join_all;
-use poem_openapi::types::ToJSON;
 use tokio::{
     select,
     sync::{mpsc, watch, Notify, RwLock},
 };
-use tokio_postgres::{Client, NoTls};
+use tokio_postgres::NoTls;
 use tracing::Instrument;
 use uuid::Uuid;
 
-use crate::app::{
-    job::{self, JobState},
-    task::{self, TaskState},
-    ResourceManager,
+use crate::{
+    app::{
+        job::{self, JobState},
+        task, ResourceManager,
+    },
+    database::Db,
+    worker::{ServerConfig, TaskId, WorkerManager},
 };
 
-use self::worker::{ServerConfig, TaskId, WorkerManager};
-
 #[derive(PartialEq, Eq, Clone, Debug, Hash)]
-pub struct JobId(Uuid);
+pub struct JobId(pub Uuid);
 
 impl TryFrom<&str> for JobId {
     type Error = uuid::Error;
@@ -57,14 +57,14 @@ impl OneshotNotifySender {
 }
 
 #[derive(Clone, Debug)]
-struct OneshotNotifyReceiver(watch::Receiver<bool>);
+pub struct OneshotNotifyReceiver(watch::Receiver<bool>);
 
 impl OneshotNotifyReceiver {
     pub fn has_notified(&self) -> Result<bool, watch::error::RecvError> {
         self.0.has_changed()
     }
 
-    async fn notified(mut self) -> Result<(), watch::error::RecvError> {
+    pub async fn notified(mut self) -> Result<(), watch::error::RecvError> {
         self.0.changed().await
     }
 }
@@ -160,203 +160,6 @@ impl Job {
             }));
         }
         join_all(handles).await;
-    }
-}
-
-#[derive(Clone)]
-struct Db(Arc<Client>);
-
-impl Db {
-    async fn insert_job(
-        &self,
-        config: &job::Config,
-    ) -> Result<(JobId, Vec<TaskId>), tokio_postgres::Error> {
-        let state = if config.iteration_count == 0 {
-            JobState::Completed
-        } else {
-            JobState::Queued
-        };
-        let rows = self
-            .0
-            .query(
-                "
-                INSERT INTO job (id, state, config) VALUES (DEFAULT, $1, $2) RETURNING id
-                ",
-                &[&state, &config.to_json().unwrap()],
-            )
-            .await?;
-        let job_id = JobId(rows[0].get(0));
-        let statement = self
-            .0
-            .prepare(
-                "
-                INSERT INTO task (id, job_id, state) VALUES (DEFAULT, $1, $2)
-                RETURNING id",
-            )
-            .await?;
-
-        let mut task_ids = Vec::new();
-        for _ in 0..config.iteration_count {
-            let rows = self
-                .0
-                .query(&statement, &[&job_id.0, &TaskState::default()])
-                .await?;
-            task_ids.push(TaskId(rows[0].get(0)));
-        }
-        Ok((job_id, task_ids))
-    }
-
-    async fn update_task_succeeded(&self, task_id: &TaskId, worker_index: usize) {
-        self.0
-            .execute(
-                "UPDATE task SET worker_index = $1, state = $2 WHERE id = $3",
-                &[&(worker_index as i32), &TaskState::Succeeded, &task_id.0],
-            )
-            .await
-            .unwrap();
-    }
-
-    async fn update_task_state(&self, task_id: &TaskId, state: &TaskState) {
-        self.0
-            .execute(
-                "UPDATE task SET state = $1 WHERE id = $2",
-                &[state, &task_id.0],
-            )
-            .await
-            .unwrap();
-    }
-
-    async fn update_job_state(&self, job_id: &JobId, state: &JobState) {
-        self.0
-            .execute(
-                "UPDATE job SET state = $1 WHERE id = $2",
-                &[state, &job_id.0],
-            )
-            .await
-            .unwrap();
-    }
-
-    async fn get_task(
-        &self,
-        task_id: &TaskId,
-    ) -> Result<Option<task::Task>, tokio_postgres::Error> {
-        let rs = self
-            .0
-            .query("SELECT id, state FROM task WHERE id = $1", &[&task_id.0])
-            .await?;
-        let Some(r) = rs.get(0) else { return Ok(None) };
-        let id: Uuid = r.get(0);
-        let state: task::TaskState = r.get(1);
-        Ok(Some(task::Task {
-            id: id.to_string(),
-            state,
-        }))
-    }
-
-    async fn get_tasks(&self, job_id: &JobId) -> Vec<task::Task> {
-        let mut tasks = Vec::new();
-        for r in self
-            .0
-            .query("SELECT id, state FROM task WHERE job_id = $1", &[&job_id.0])
-            .await
-            .unwrap()
-        {
-            let id: Uuid = r.get(0);
-            let state: task::TaskState = r.get(1);
-            tasks.push(task::Task {
-                id: id.to_string(),
-                state,
-            })
-        }
-        tasks
-    }
-
-    async fn get_job(&self, id: &JobId) -> anyhow::Result<Option<job::Job>> {
-        let rs = self
-            .0
-            .query("SELECT state, config FROM job WHERE id = $1", &[&id.0])
-            .await?;
-        let Some(r) = rs.get(0) else { return Ok(None) };
-        let state: job::JobState = r.get(0);
-        let config_json: postgres_types::Json<serde_json::Value> = r.get(1);
-        let config: job::Config =
-            poem_openapi::types::ParseFromJSON::parse_from_json(Some(config_json.0))
-                .map_err(|e| anyhow::anyhow!(format!("{e:?}")))?;
-
-        Ok(Some(job::Job {
-            id: id.to_string(),
-            state,
-            config,
-            tasks: self.get_tasks(id).await,
-        }))
-    }
-
-    async fn get_jobs(&self) -> anyhow::Result<Vec<job::Job>> {
-        let mut jobs = Vec::new();
-        for r in self
-            .0
-            .query("SELECT id, state, config FROM job", &[])
-            .await?
-        {
-            let id: Uuid = r.get(0);
-            let state: job::JobState = r.get(1);
-            let config_json: postgres_types::Json<serde_json::Value> = r.get(2);
-            let config: job::Config =
-                poem_openapi::types::ParseFromJSON::parse_from_json(Some(config_json.0))
-                    .map_err(|e| anyhow::anyhow!(format!("{e:?}")))?;
-
-            jobs.push(job::Job {
-                id: id.to_string(),
-                state,
-                config,
-                tasks: self.get_tasks(&JobId(id)).await,
-            })
-        }
-        Ok(jobs)
-    }
-
-    async fn get_all_tasks_with_stats(
-        &self,
-        id: &JobId,
-    ) -> Result<Vec<(TaskId, usize)>, tokio_postgres::Error> {
-        let mut v = Vec::new();
-        for r in self
-            .0
-            .query(
-                "SELECT id, worker_index FROM task WHERE job_id = $1 AND worker_index IS NOT NULL",
-                &[&id.0],
-            )
-            .await?
-        {
-            let task_id: Uuid = r.get(0);
-            let worker_index: i32 = r.get(1);
-            v.push((TaskId(task_id), worker_index as usize));
-        }
-        Ok(v)
-    }
-
-    async fn delete_job(&self, id: &JobId) -> Result<(), tokio_postgres::Error> {
-        self.0
-            .execute("DELETE FROM task WHERE job_id = $1", &[&id.0])
-            .await?;
-        self.0
-            .execute("DELETE FROM job WHERE id = $1", &[&id.0])
-            .await?;
-        tracing::info!("removed job {} from DB", id);
-        Ok(())
-    }
-
-    async fn get_worker_index(&self, id: &TaskId) -> Result<Option<usize>, tokio_postgres::Error> {
-        let rs = self
-            .0
-            .query(
-                "SELECT worker_index FROM task WHERE id = $1 AND worker_index IS NOT NULL",
-                &[&id.0],
-            )
-            .await?;
-        let Some(r) = rs.get(0) else {return Ok(None)};
-        let i = r.get::<_, i32>(0);
-        Ok(Some(i as usize))
     }
 }
 
@@ -541,292 +344,6 @@ impl ResourceManager for Manager {
     async fn get_statistics(&self, id: &str) -> anyhow::Result<Option<Vec<u8>>> {
         let id = id.try_into()?;
         Ok(self.get_statistics(&id).await?)
-    }
-}
-
-pub mod worker {
-    use std::{
-        error::Error,
-        fmt::Display,
-        net::{IpAddr, SocketAddr},
-        pin::Pin,
-        sync::Arc,
-    };
-
-    use futures_util::{stream::FuturesUnordered, Future, StreamExt};
-    use quinn::{Connection, Endpoint};
-    use repl::nom::AsBytes;
-    use tokio::sync::{mpsc, oneshot, OwnedSemaphorePermit, Semaphore};
-    use tokio_util::codec::{FramedRead, LengthDelimitedCodec};
-    use uuid::Uuid;
-
-    use worker_if::batch::{Cost, Request, ResourceMeasure, Response};
-
-    use crate::app::{job, task::TaskState};
-
-    use super::OneshotNotifyReceiver;
-
-    #[derive(Debug, Clone, Hash, PartialEq, Eq)]
-    pub struct TaskId(pub Uuid);
-
-    impl TryFrom<&str> for TaskId {
-        type Error = uuid::Error;
-
-        fn try_from(value: &str) -> Result<Self, Self::Error> {
-            Ok(Self(value.try_into()?))
-        }
-    }
-
-    impl Display for TaskId {
-        fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-            write!(f, "{}", self.0.to_string())
-        }
-    }
-
-    #[derive(serde::Deserialize, Debug)]
-    pub struct ServerConfig {
-        pub controller_port: u16,
-        pub cert_path: String,
-        pub addr: SocketAddr,
-        pub domain: String,
-    }
-
-    #[derive(Clone, Debug)]
-    pub(super) struct WorkerClient {
-        connection: Arc<Connection>,
-        semaphore: Arc<Semaphore>,
-        measure: ResourceMeasure,
-        index: usize,
-    }
-
-    impl WorkerClient {
-        async fn new(
-            client_addr: IpAddr,
-            server_config: ServerConfig,
-            index: usize,
-        ) -> Result<Self, Box<dyn Error>> {
-            let mut endpoint =
-                Endpoint::client(SocketAddr::new(client_addr, server_config.controller_port))?;
-            endpoint.set_default_client_config(quic_config::get_client_config(
-                &server_config.cert_path,
-            )?);
-
-            let connection = endpoint
-                .connect(server_config.addr, &server_config.domain)?
-                .await?;
-
-            let mut recv = connection.accept_uni().await?;
-            let measure = protocol::quic::read_data::<ResourceMeasure>(&mut recv).await?;
-            tracing::debug!("worker {} has {:?}", index, measure);
-
-            Ok(Self {
-                connection: Arc::new(connection),
-                semaphore: Arc::new(Semaphore::new(measure.max_resource as usize)),
-                measure,
-                index,
-            })
-        }
-
-        async fn acquire(self, n: u32) -> WorkerClientPermitted {
-            let permit = self.semaphore.clone().acquire_many_owned(n).await.unwrap();
-            WorkerClientPermitted(self, permit)
-        }
-
-        pub async fn execute(
-            &self,
-            task_id: &TaskId,
-            config: job::Config,
-        ) -> anyhow::Result<impl Future<Output = Option<bool>>> {
-            let (mut send, recv) = self.connection.open_bi().await?;
-            protocol::quic::write_data(
-                &mut send,
-                &Request::Execute(task_id.to_string(), config.param),
-            )
-            .await?;
-
-            let mut stream = FramedRead::new(recv, LengthDelimitedCodec::new());
-            if let Err(e) =
-                bincode::deserialize::<Response<()>>(stream.next().await.unwrap()?.as_bytes())?
-                    .as_result()
-            {
-                return Err(e.into());
-            }
-
-            Ok(async move {
-                stream
-                    .next()
-                    .await
-                    .unwrap()
-                    .ok()
-                    .map(|data| bincode::deserialize::<bool>(data.as_bytes()).unwrap())
-            })
-        }
-
-        pub async fn terminate(&self, task_id: &TaskId) -> anyhow::Result<()> {
-            let (mut send, mut recv) = self.connection.open_bi().await?;
-            protocol::quic::write_data(&mut send, &Request::Terminate(task_id.to_string())).await?;
-            protocol::quic::read_data::<Response<()>>(&mut recv)
-                .await?
-                .as_result()?;
-            Ok(())
-        }
-
-        pub async fn get_statistics(&self, task_id: &TaskId) -> anyhow::Result<Vec<u8>> {
-            let (mut send, recv) = self.connection.open_bi().await?;
-            protocol::quic::write_data(&mut send, &Request::ReadStatistics(task_id.to_string()))
-                .await?;
-            let mut stream = FramedRead::new(recv, LengthDelimitedCodec::new());
-            match bincode::deserialize::<Response<Vec<u8>>>(
-                stream.next().await.unwrap()?.as_bytes(),
-            )?
-            .as_result()
-            {
-                Ok(buf) => Ok(buf),
-                Err(e) => {
-                    tracing::error!("{}", e);
-                    Err(e.into())
-                }
-            }
-        }
-
-        /// Returns a string vector of `TaskId`s whose statistics could not removed.
-        pub async fn remove_statistics(&self, task_ids: &[TaskId]) -> anyhow::Result<Vec<String>> {
-            let (mut send, mut recv) = self.connection.open_bi().await?;
-            protocol::quic::write_data(
-                &mut send,
-                &Request::RemoveStatistics(task_ids.into_iter().map(|id| id.to_string()).collect()),
-            )
-            .await?;
-            Ok(protocol::quic::read_data::<Vec<String>>(&mut recv).await?)
-        }
-    }
-
-    #[derive(Debug)]
-    pub(super) struct WorkerClientPermitted(WorkerClient, OwnedSemaphorePermit);
-
-    impl WorkerClientPermitted {
-        pub fn index(&self) -> usize {
-            self.0.index
-        }
-
-        pub async fn execute(
-            self,
-            task_id: &TaskId,
-            config: job::Config,
-            db: &super::Db,
-            fq_rx: OneshotNotifyReceiver,
-        ) {
-            let worker = self.0;
-            let semphore = self.1;
-            let index = worker.index;
-
-            tracing::debug!("preparing");
-            db.update_task_state(&task_id, &TaskState::Assigned).await;
-            let Ok(fut) = worker.execute(&task_id, config).await else {
-                    db.update_task_state(&task_id, &TaskState::Failed).await;
-                    tracing::error!("could not execute");
-                    return;
-                };
-
-            db.update_task_state(&task_id, &TaskState::Running).await;
-            tracing::info!("executing");
-            let id = task_id.clone();
-            let fq_handle = tokio::spawn(async move {
-                if let Ok(_) = fq_rx.notified().await {
-                    if worker.terminate(&id).await.is_err() {
-                        tracing::info!("already terminated");
-                    }
-                }
-            });
-
-            let result = fut.await;
-            fq_handle.abort();
-            drop(semphore);
-
-            match result {
-                Some(true) => {
-                    db.update_task_succeeded(&task_id, index).await;
-                    tracing::info!("terminated");
-                }
-                _ => {
-                    db.update_task_state(&task_id, &TaskState::Failed).await;
-                    tracing::error!("failed due to an process error");
-                }
-            }
-        }
-    }
-
-    pub(super) struct WorkerManager {
-        workers: Vec<WorkerClient>,
-        queue_tx: mpsc::Sender<(oneshot::Sender<WorkerClientPermitted>, Cost)>,
-    }
-
-    impl WorkerManager {
-        pub async fn new(
-            client_addr: IpAddr,
-            servers: Vec<ServerConfig>,
-        ) -> Result<Self, Box<dyn Error>> {
-            let mut _workers = Vec::new();
-            for (i, server_config) in servers.into_iter().enumerate() {
-                _workers.push(WorkerClient::new(client_addr, server_config, i).await?);
-            }
-
-            let (queue_tx, mut queue_rx): (mpsc::Sender<(oneshot::Sender<_>, _)>, _) =
-                mpsc::channel(1);
-
-            let workers = _workers.clone();
-            tokio::spawn(async move {
-                while let Some((tx, cost)) = queue_rx.recv().await {
-                    let mut futs = FuturesUnordered::new();
-                    for client in &workers {
-                        let Ok(res) = client.measure.measure(&cost) else {
-                            continue;
-                        };
-                        let client = client.clone();
-                        tracing::debug!("register {}", client.index);
-                        futs.push(client.acquire(res));
-                    }
-                    if let Some(permit) = futs.next().await {
-                        tracing::debug!("acquired at {}", permit.0.index);
-                        if let Err(_) = tx.send(permit) {
-                            tracing::debug!("a lease has already dropped");
-                        }
-                    }
-                    drop(futs);
-                }
-            });
-            Ok(Self {
-                queue_tx,
-                workers: _workers,
-            })
-        }
-
-        pub fn get_worker_count(&self) -> usize {
-            self.workers.len()
-        }
-
-        pub fn get_worker(&self, index: usize) -> &WorkerClient {
-            &self.workers[index]
-        }
-
-        pub async fn lease(&self, cost: Cost) -> WorkerLease {
-            let (tx, rx) = oneshot::channel();
-            self.queue_tx.send((tx, cost)).await.unwrap();
-            WorkerLease(rx)
-        }
-    }
-
-    pub(super) struct WorkerLease(oneshot::Receiver<WorkerClientPermitted>);
-
-    impl Future for WorkerLease {
-        type Output = Result<WorkerClientPermitted, oneshot::error::RecvError>;
-
-        fn poll(
-            mut self: std::pin::Pin<&mut Self>,
-            cx: &mut std::task::Context<'_>,
-        ) -> std::task::Poll<Self::Output> {
-            Pin::new(&mut self.as_mut().0).poll(cx)
-        }
     }
 }
 

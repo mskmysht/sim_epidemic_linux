@@ -1,13 +1,13 @@
 [package]
-name = "quic-config"
-version = "0.1.0"
 edition = "2021"
+name = "worker-if"
+version = "0.1.0"
 
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 
 [dependencies]
-file-io = { path = "../file-io" }
-quinn = { workspace = true }
-rustls = { workspace = true }
 thiserror = { workspace = true }
 anyhow = { workspace = true }
+serde-error = "0.1"
+serde = { workspace = true }
+world-if = { workspace = true }

@@ -1,11 +1,6 @@
 use std::fmt::Display;
 
-use ::world_if::batch::api::job;
-
-pub mod world_if {
-    pub use world_if::batch::*;
-    pub use world_if::pubsub::*;
-}
+use ::world_if::api::job;
 
 #[derive(Debug, serde::Serialize, serde::Deserialize)]
 pub enum Request {
@@ -138,3 +133,5 @@ impl ResponseError {
         Self::FailedInProcess(anyhow::Error::new(error))
     }
 }
+
+pub use world_if;

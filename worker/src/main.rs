@@ -1,7 +1,7 @@
+use std::{error::Error, net::SocketAddr, path::Path, sync::Arc, time::Duration};
+
 use clap::Parser;
-use quinn::Endpoint;
-use std::{error::Error, net::SocketAddr, path::Path};
-use worker::batch;
+use quinn::{crypto, Endpoint, ServerConfig, TransportConfig, VarInt};
 
 #[derive(clap::Parser)]
 struct Args {
@@ -48,15 +48,15 @@ async fn main() -> Result<(), Box<dyn Error>> {
 
     tracing_subscriber::fmt::init();
 
-    let endpoint = Endpoint::server(quic_config::get_server_config(cert_path, pkey_path)?, addr)?;
-    let manager = batch::WorldManager::new(world_path, stat_dir, stat_dir_path);
+    let endpoint = Endpoint::server(get_server_config(cert_path, pkey_path)?, addr)?;
+    let manager = worker::WorldManager::new(world_path, stat_dir, stat_dir_path);
     while let Some(connecting) = endpoint.accept().await {
         let connection = connecting.await.unwrap();
         let ip = connection.remote_address().to_string();
         let manager = manager.clone();
 
         let connection2 = connection.clone();
-        let handle = tokio::spawn(batch::run(
+        let handle = tokio::spawn(worker::run(
             manager,
             connection,
             max_population_size,
@@ -70,4 +70,32 @@ async fn main() -> Result<(), Box<dyn Error>> {
         });
     }
     Ok(())
+}
+
+#[derive(thiserror::Error, Debug)]
+enum ServerConfigError {
+    #[error("Failed to load a certificate file: {0}")]
+    CertificateLoadError(std::io::Error),
+    #[error("Failed to load a private key: {0}")]
+    PrivateKeyLoadError(std::io::Error),
+    #[error("TLS error: {0}")]
+    TLSError(#[from] crypto::rustls::Error),
+}
+
+fn get_server_config<P: AsRef<Path>>(
+    cert_path: P,
+    pkey_path: P,
+) -> Result<ServerConfig, ServerConfigError> {
+    let cert = rustls::Certificate(
+        file_io::load(cert_path).map_err(ServerConfigError::CertificateLoadError)?,
+    );
+    let key = rustls::PrivateKey(
+        file_io::load(pkey_path).map_err(ServerConfigError::PrivateKeyLoadError)?,
+    );
+    let mut config = ServerConfig::with_single_cert(vec![cert], key)?;
+    let mut tc = TransportConfig::default();
+    tc.max_idle_timeout(Some(VarInt::from_u32(5_000).into()));
+    tc.keep_alive_interval(Some(Duration::from_secs(4)));
+    config.transport_config(Arc::new(tc));
+    Ok(config)
 }

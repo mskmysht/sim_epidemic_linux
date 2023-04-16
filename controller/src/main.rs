@@ -4,10 +4,7 @@ use std::{
 };
 
 use clap::Parser;
-use controller::{
-    app::Api,
-    manager::{worker::ServerConfig, Manager},
-};
+use controller::{app::Api, manager::Manager, worker::ServerConfig};
 
 use poem::{
     endpoint::make_sync, listener::TcpListener, web::Html, Endpoint, EndpointExt, IntoResponse,

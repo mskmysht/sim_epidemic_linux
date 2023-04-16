@@ -7,10 +7,9 @@ edition = "2018"
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 
 [dependencies]
-worker-if = { path = "../libs/worker-if" }
+worker-if = { workspace = true }
 protocol = { path = "../libs/protocol" }
-quic-config = { path = "../libs/quic-config" }
-repl = { path = "../libs/repl" }
+file-io = { path = "../libs/file-io" }
 ipc-channel = { workspace = true }
 clap = { version = "4.1", features = ["derive"] }
 rand = { version = "0.8", features = ["alloc"] }
@@ -26,10 +25,9 @@ rcgen = "0.10"
 futures-util = "0.3"
 anyhow = { workspace = true }
 thiserror = { workspace = true }
-serde-error = "0.1"
 shared_child = "1.0"
 bincode = { workspace = true }
-arrow2 = { version = "0.16", features = [
+arrow2 = { workspace = true, features = [
     "io_ipc",
     "io_ipc_compression",
     "io_csv_write",
