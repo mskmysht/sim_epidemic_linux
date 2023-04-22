@@ -60,7 +60,7 @@ pub async fn run(
     .await?;
 
     while let Ok((mut send, mut recv)) = connection.accept_bi().await {
-        let manager = Arc::clone(&manager);
+        let manager = manager.clone();
         tokio::spawn(async move {
             let req: worker_if::Request = protocol::quic::read_data(&mut recv).await.unwrap();
             tracing::info!(request = %req);
