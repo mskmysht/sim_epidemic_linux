@@ -257,10 +257,10 @@ macro_rules! num_field {
     };
 }
 
-#[derive(Clone, Copy, Debug, PartialEq)]
+#[derive(Clone, Copy, Debug, PartialEq, Default)]
 pub struct Percentage(f64);
 
-#[derive(Clone, Copy, Debug, PartialEq)]
+#[derive(Clone, Copy, Debug, PartialEq, Default)]
 pub struct Permille(f64);
 
 num_field!(Percentage, 100.0);

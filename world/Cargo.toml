@@ -15,3 +15,5 @@ anyhow = { workspace = true }
 clap = { version = "4.1", features = ["derive"] }
 tracing = { workspace = true }
 tracing-subscriber = { workspace = true }
+serde_json = { workspace = true }
+scenario-operation = { workspace = true }

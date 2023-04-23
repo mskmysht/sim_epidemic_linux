@@ -8,7 +8,7 @@ use table::TableIndex;
 
 use rand::Rng;
 
-#[derive(Debug)]
+#[derive(Debug, Default)]
 pub struct RuntimeParams {
     pub mass: Percentage,
     pub friction: Percentage,
@@ -82,9 +82,23 @@ pub struct RuntimeParams {
     //[todo] pub trc_ope: TracingOperation, // How to treat the contacts, tests or vaccination, or both
     //[todo] pub trc_vcn_type: u32, // vaccine type for tracing vaccination
     pub step: u32,
+    pub local_step: u32,
+    pub days_elapsed: u32,
     //[todo] pub recov: DistInfo<f64>,
     //[todo] pub immun: DistInfo<f64>,
     //[todo] pub vcn_p_rate: f64,
+}
+
+impl RuntimeParams {
+    pub fn step(&mut self, wp: &WorldParams) {
+        self.step += 1;
+        if wp.steps_per_day == self.local_step + 1 {
+            self.days_elapsed += 1;
+            self.local_step = 0;
+        } else {
+            self.local_step += 1;
+        }
+    }
 }
 
 #[derive(Eq, Hash, Enum, Clone, Copy, PartialEq, Debug, strum::Display)]

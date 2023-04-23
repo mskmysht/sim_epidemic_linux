@@ -8,8 +8,10 @@ members = [
   "shared/worker-if",
   "controller",
   "shared/api",
+  "shared/scenario-operation",
   "cert-gen",
   "world-repl",
+  "libs/predicate",
   "libs/enum_map_derive",
   "libs/enum_map",
   "libs/protocol",
@@ -24,6 +26,7 @@ tracing-subscriber = "0.3"
 tokio = "1.26"
 tokio-util = "0.7"
 serde = "1.0"
+serde_json = "1.0"
 quinn = "0.9.3"
 rustls = "0.20"
 anyhow = "1.0"
@@ -38,3 +41,5 @@ world-if = { path = "shared/world-if" }
 worker-if = { path = "shared/worker-if" }
 api = { path = "shared/api" }
 repl = { path = "libs/repl" }
+predicate = { path = "libs/predicate" }
+scenario-operation = { path = "shared/scenario-operation" }

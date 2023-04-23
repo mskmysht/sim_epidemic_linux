@@ -121,6 +121,6 @@ pub fn new_runtime_params() -> RuntimeParams {
         tst_sbj_sym: 99.0.into(),
         tst_capa: 50.0.into(),
         tst_dly_lim: 3.0,
-        step: 0,
+        ..Default::default()
     }
 }

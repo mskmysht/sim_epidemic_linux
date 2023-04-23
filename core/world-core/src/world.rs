@@ -15,6 +15,7 @@ use self::{
     testing::TestQueue,
 };
 use crate::{
+    scenario::Scenario,
     stat::{HealthCount, Stat},
     util::math::Point,
 };
@@ -33,7 +34,7 @@ pub struct World {
     pub health_count: HealthCount,
     stat: Stat,
     scenario_index: i32,
-    //[todo] scenario: Vec<i32>,
+    scenario: Scenario,
     gatherings: Gatherings,
     gat_spots_fixed: Vec<Point>,
     //[todo] n_mesh: usize,
@@ -43,11 +44,17 @@ pub struct World {
 }
 
 impl World {
-    pub fn new(id: String, runtime_params: RuntimeParams, world_params: WorldParams) -> World {
+    pub fn new(
+        id: String,
+        runtime_params: RuntimeParams,
+        world_params: WorldParams,
+        scenario: Scenario,
+    ) -> World {
         let mut w = World {
             id,
             runtime_params,
             world_params,
+            scenario,
             agents: Vec::with_capacity(world_params.init_n_pop as usize),
             health_count: Default::default(),
             stat: Stat::default(),
