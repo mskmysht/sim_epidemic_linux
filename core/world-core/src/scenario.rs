@@ -1,6 +1,4 @@
-use std::ops::{Add, AddAssign, Sub};
-
-use scenario_operation::{Assignment, AssignmentField, ConditionField, EvalField, Operation};
+use scenario_operation::{vec, AssignmentField, ConditionField, EvalField, Extract, Operation};
 
 use crate::world::commons::{RuntimeParams, WorldParams};
 
@@ -8,6 +6,7 @@ use crate::world::commons::{RuntimeParams, WorldParams};
 pub struct Scenario {
     index: usize,
     operations: Vec<Operation>,
+    curr: Vec<vec::AssignmentField>,
 }
 
 impl Scenario {
@@ -15,16 +14,16 @@ impl Scenario {
         Self {
             index: 0,
             operations: ops.into_iter().map(f).collect(),
+            curr: Vec::new(),
         }
     }
 
-    pub fn exec(&self, env: EnvMut) {
+    pub fn exec(&mut self, env: EnvMut) {
         env.world.init_n_pop += 1;
         let op = &self.operations[self.index];
         if op.condition.eval(&env) {
             for a in &op.assignments {
-                todo!();
-                // env.assign(f);
+                self.curr.push(a.expand(&env));
             }
         }
     }
@@ -35,14 +34,12 @@ pub struct EnvMut<'a> {
     world: &'a mut WorldParams,
 }
 
-// impl EnvMut {
-//     fn assign(&self, f: &AssignmentField) {
-//         match f {
-//             AssignmentField::GatheringFrequency(a) => self.hoge(a),
-//             AssignmentField::VaccinePerformRate(a) => todo!(),
-//         }
-//     }
-// }
+scenario_operation::impl_extract!(
+    AssignmentField -> EnvMut<'_>[self] {
+        GatheringFrequency => self.runtime.gat_fr,
+        VaccinePerformRate => self.runtime.gat_fr,
+    }
+);
 
 impl<'b> EvalField<ConditionField> for EnvMut<'b> {
     fn eval<'a>(&self, field: &'a ConditionField) -> (ConditionField, &'a ConditionField) {

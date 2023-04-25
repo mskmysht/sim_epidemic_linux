@@ -86,7 +86,7 @@ pub struct RuntimeParams {
     pub days_elapsed: u32,
     //[todo] pub recov: DistInfo<f64>,
     //[todo] pub immun: DistInfo<f64>,
-    //[todo] pub vcn_p_rate: f64,
+    pub vcn_p_rate: Permille,
 }
 
 impl RuntimeParams {
