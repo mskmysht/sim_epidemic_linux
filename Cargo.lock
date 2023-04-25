@@ -1250,6 +1250,13 @@ dependencies = [
 ]
 
 [[package]]
+name = "math"
+version = "0.1.0"
+dependencies = [
+ "serde",
+]
+
+[[package]]
 name = "maybe-uninit"
 version = "2.0.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2099,6 +2106,7 @@ checksum = "f91339c0467de62360649f8d3e185ca8de4224ff281f66000de5eb2a77a79041"
 name = "scenario-operation"
 version = "0.1.0"
 dependencies = [
+ "math",
  "nom",
  "predicate",
  "serde",
@@ -3093,6 +3101,7 @@ dependencies = [
  "arrow2",
  "chrono",
  "enum_map",
+ "math",
  "nom",
  "parking_lot",
  "rand 0.8.5",

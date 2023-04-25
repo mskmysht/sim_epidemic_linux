@@ -1,14 +1,13 @@
 use super::{
-    super::commons::{RuntimeParams, WorldParams, WrkPlcMode},
+    super::commons::{CenteredBias, RuntimeParams, WorldParams, WrkPlcMode},
     field::Field,
     Agent,
 };
-use crate::util::{
-    math::{self, Point},
-    random,
-};
+use crate::{util::random, world::commons};
 
 use std::{f64, ops, sync::Arc};
+
+use math::{self, Point};
 
 use parking_lot::RwLock;
 use rand::{seq::SliceRandom, Rng};
@@ -89,19 +88,19 @@ impl Gathering {
         }
     }*/
     fn get_range(r: f64, row: usize, p: &Point, wp: &WorldParams) -> ops::RangeInclusive<usize> {
-        let dy = p.y - math::dequantize(row, wp.res_rate());
+        let dy = p.y - commons::dequantize(row, wp.res_rate());
         let dx = (r * r - dy * dy).sqrt();
-        let left = math::quantize(0f64.max(p.x - dx), wp.res_rate(), wp.mesh);
-        let right = math::quantize(p.x.min(p.x + dx), wp.res_rate(), wp.mesh);
+        let left = commons::quantize(0f64.max(p.x - dx), wp.res_rate(), wp.mesh);
+        let right = commons::quantize(p.x.min(p.x + dx), wp.res_rate(), wp.mesh);
         left..=right
     }
 
     fn get_allocations(&self, wp: &WorldParams) -> Vec<(usize, usize)> {
         let r = self.size + SURROUND;
         let p = self.p;
-        let bottom = math::quantize(0f64.max(p.y - r), wp.res_rate(), wp.mesh);
-        let top = math::quantize(wp.field_size().min(p.y + r), wp.res_rate(), wp.mesh);
-        let center = math::quantize(p.y + 0.5, wp.res_rate(), wp.mesh); // rounding
+        let bottom = commons::quantize(0f64.max(p.y - r), wp.res_rate(), wp.mesh);
+        let top = commons::quantize(wp.field_size().min(p.y + r), wp.res_rate(), wp.mesh);
+        let center = commons::quantize(p.y + 0.5, wp.res_rate(), wp.mesh); // rounding
 
         let mut locs = Vec::new();
         for row in bottom..center {

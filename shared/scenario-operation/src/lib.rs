@@ -23,9 +23,37 @@ impl FieldCombinator for ConditionField {
     }
 }
 
+trait Delta {
+    fn delta(s: &Self, t: &Self, n: u32) -> Self;
+}
+
+fn linear_space<T: Clone + AddAssign<T> + Delta, U, F: Fn(T) -> U>(
+    u: &T,
+    v: &T,
+    k: &u32,
+    f: F,
+) -> std::collections::VecDeque<U> {
+    let n = k + 1;
+    let d = Delta::delta(u, v, n);
+    (0..n)
+        .scan(u.clone(), |s, _| {
+            *s += d.clone();
+            Some(f(s.clone()))
+        })
+        .collect()
+}
+
+pub trait Getter<T> {
+    fn get(&self, item: &T) -> T;
+}
+
+pub trait Setter<T> {
+    fn set(&mut self, item: T);
+}
+
 macro_rules! define_assignment_field {
     ($enum_name:ident{$($enum_item:ident($type:ty)),+$(,)?}) => {
-        #[derive(Debug, serde::Deserialize, serde::Serialize)]
+        #[derive(Debug, Clone, serde::Deserialize, serde::Serialize)]
         #[serde(rename_all = "camelCase")]
         pub enum $enum_name {
             $(
@@ -33,72 +61,13 @@ macro_rules! define_assignment_field {
             )+
         }
 
-        pub mod pair {
-            pub enum $enum_name<'a> {
-                $(
-                    $enum_item(&'a $type, &'a $type),
-                )+
-            }
-        }
-
-        pub mod mutable {
-            #[derive(Debug)]
-            pub enum $enum_name<'a> {
-                $(
-                    $enum_item(&'a mut $type),
-                )+
-            }
-        }
-
-        pub mod vec {
-            #[derive(Debug)]
-            pub enum $enum_name {
-                $(
-                    $enum_item(Vec<$type>),
-                )+
-            }
-        }
-
-        impl From<&$enum_name> for vec::$enum_name {
-            fn from(value: &$enum_name) -> Self {
-                match value {
-                    $(
-                        $enum_name::$enum_item(v) => Self::$enum_item(vec![*v]),
-                    )+
-                }
-            }
-        }
-
-        pub trait Extract {
-            fn extract(&self, v: &$enum_name) -> $enum_name;
-            fn extract_mut(&mut self, v: &$enum_name) -> mutable::$enum_name;
-        }
-
         impl $enum_name {
-            pub fn zip<'a>(&'a self, other: &'a Self) -> Option<pair::$enum_name<'a>> {
-                match (self, other) {
-                    $(
-                        (Self::$enum_item(v), Self::$enum_item(w)) => Some(pair::$enum_name::$enum_item(v, w)),
-                    )+
-                    _ => None
-                }
+            pub fn assign<E: $crate::Setter<$enum_name>>(self, env: &mut E) {
+                env.set(self);
             }
         }
 
-        trait Delta {
-            fn delta(s: &Self, t: &Self, n: u32) -> Self;
-        }
-
-        fn linear_space<T: Clone + AddAssign<T> + Delta>(u: &T, v: &T, k: &u32) -> Vec<T> {
-            let n = k + 1;
-            let d = Delta::delta(u, v, n);
-            (0..n)
-                .scan(u.clone(), |s, _| {
-                    *s += d.clone();
-                    Some(s.clone())
-                })
-                .collect()
-        }
+        pub type AssignmentQueue = std::collections::VecDeque<$enum_name>;
 
         #[derive(Debug, serde::Deserialize, serde::Serialize)]
         #[serde(rename_all = "camelCase")]
@@ -108,14 +77,19 @@ macro_rules! define_assignment_field {
         }
 
         impl Assignment {
-            pub fn expand<E: Extract>(&self, env: &E) -> vec::$enum_name {
+            pub fn expand<E: Getter<$enum_name>>(&self, env: &E) -> std::collections::VecDeque<$enum_name> {
                 match self {
-                    Self::Immediate(v) => v.into(),
-                    Self::Linear(v, k) => {
-                        match env.extract(v).zip(v).unwrap() {
+                    Self::Immediate(item) => {
+                        let mut vs = std::collections::VecDeque::with_capacity(1);
+                        vs.push_front(item.clone());
+                        vs
+                    },
+                    Self::Linear(item, k) => {
+                        match (item, env.get(item)) {
                             $(
-                                pair::$enum_name::$enum_item(u, v) => vec::$enum_name::$enum_item(linear_space(u, v, k)),
+                                ($enum_name::$enum_item(u), $enum_name::$enum_item(v)) => linear_space(u, &v, k, $enum_name::$enum_item),
                             )+
+                            _ => unreachable!()
                         }
                     }
                 }
@@ -125,66 +99,37 @@ macro_rules! define_assignment_field {
 }
 
 #[macro_export]
-macro_rules! impl_extract {
-    ($enum_name:ident -> $type:ty[$self_:ident] {
+macro_rules! impl_accessor {
+    ($self_:ident: $env:ty; $enum_name:ident {
         $(
-            $name:ident => $variable:expr
-        ),+$(,)?
+            $name:ident =>
+                get {$get:expr}
+                set($v:ident) {$set:expr;}
+        )+
     }) => {
-        impl Extract for $type {
-            fn extract(&$self_, v: &$enum_name) -> $enum_name {
-                match v {$(
-                    $enum_name::$name(_) => $enum_name::$name($variable),
-                )+}
+        impl $crate::Getter<$enum_name> for $env {
+            fn get(&$self_, item: &$enum_name) -> $enum_name {
+                match item {
+                    $(
+                        $enum_name::$name(_) => $enum_name::$name($get),
+                    )+
+                }
             }
+        }
 
-            fn extract_mut(&mut $self_, v: &$enum_name) -> $crate::mutable::$enum_name {
-                match v {$(
-                    $enum_name::$name(_) => $crate::mutable::$enum_name::$name(&mut $variable),
-                )+}
+        impl $crate::Setter<$enum_name> for $env {
+            fn set(&mut $self_, item: $enum_name) {
+                match item {
+                    $(
+                        $enum_name::$name($v) => {
+                            $set
+                        },
+                    )+
+                }
             }
         }
     };
 }
-
-// pub struct Env {
-//     days: u32,
-// }
-
-// impl EvalField<ConditionField> for Env {
-//     fn eval<'a>(&self, field: &'a ConditionField) -> (ConditionField, &'a ConditionField) {
-//         match field {
-//             ConditionField::Days(_) => (ConditionField::Days(self.days), field),
-//         }
-//     }
-// }
-
-// #[derive(Debug, serde::Deserialize, serde::Serialize)]
-// #[serde(rename_all = "camelCase")]
-// pub enum AssignmentField {
-//     GatheringFrequency(f64),
-//     VaccinePerformRate(f64),
-// }
-
-// impl<T> Assignment<T>
-// where
-//     T: Copy + Sub<Output = T> + AddAssign<T>,
-// {
-//     pub fn atomic<E>(&self, env: &E) -> Vec<T> {
-//         match self {
-//             Assignment::Immediate(v) => vec![*v],
-//             Assignment::Linear(v, k) => {
-//                 let n = k + 1;
-//                 (0..n)
-//                 .scan(c, |s, _| {
-//                     *s += c - *v;
-//                     Some(*s)
-//                 })
-//                 .collect()
-//             },
-//         }
-//     }
-// }
 
 macro_rules! impl_delta {
     ($num_type:ty) => {

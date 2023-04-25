@@ -1,9 +1,7 @@
-use crate::util::{
-    math::{self, Percentage, Permille, Point},
-    random::DistInfo,
-};
+use crate::util::random::DistInfo;
 
 use enum_map::macros::Enum;
+use math::{Percentage, Permille, Point};
 use table::TableIndex;
 
 use rand::Rng;
@@ -233,8 +231,8 @@ impl WorldParams {
     #[inline]
     pub fn into_grid_index(&self, p: &Point) -> TableIndex {
         TableIndex::new(
-            math::quantize(p.y, self.res_rate(), self.mesh),
-            math::quantize(p.x, self.res_rate(), self.mesh),
+            quantize(p.y, self.res_rate(), self.mesh),
+            quantize(p.x, self.res_rate(), self.mesh),
         )
     }
 
@@ -259,6 +257,20 @@ impl WorldParams {
         let v = p.centered_bias();
         p.apply_mut(|c| *c = (*c * v + 1.0) * 0.5 * self.field_size());
         p
+    }
+}
+
+pub(crate) trait CenteredBias {
+    const CENTERED_BIAS: f64;
+    fn centered_bias(&self) -> f64;
+}
+
+impl CenteredBias for Point {
+    const CENTERED_BIAS: f64 = 0.25;
+
+    fn centered_bias(&self) -> f64 {
+        let a = Self::CENTERED_BIAS / (1.0 - Self::CENTERED_BIAS);
+        a / (1.0 - (1.0 - a) * self.x.abs().max(self.y.abs()))
     }
 }
 
@@ -341,4 +353,17 @@ impl<'a> ParamsForStep<'a> {
             rp.step % wp.steps_per_day < wp.steps_per_day * 2 / 3
         }
     }
+}
+
+pub fn quantize(p: f64, res_rate: f64, n: usize) -> usize {
+    let i = (p * res_rate).floor() as usize;
+    if i >= n {
+        n - 1
+    } else {
+        i
+    }
+}
+
+pub fn dequantize(i: usize, res_rate: f64) -> f64 {
+    (i as f64) / res_rate
 }

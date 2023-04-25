@@ -1,20 +1,4 @@
-use std::{iter::FromIterator, ops};
-
-use rand::Rng;
-use rand_distr::Open01;
-
-pub fn quantize(p: f64, res_rate: f64, n: usize) -> usize {
-    let i = (p * res_rate).floor() as usize;
-    if i >= n {
-        n - 1
-    } else {
-        i
-    }
-}
-
-pub fn dequantize(i: usize, res_rate: f64) -> f64 {
-    (i as f64) / res_rate
-}
+use std::ops;
 
 #[derive(Default, PartialEq, Clone, Copy, Debug)]
 pub struct Point {
@@ -37,12 +21,6 @@ impl Point {
     pub fn apply_mut<F: FnMut(&mut f64)>(&mut self, mut f: F) {
         f(&mut self.x);
         f(&mut self.y);
-    }
-
-    const CENTERED_BIAS: f64 = 0.25;
-    pub fn centered_bias(&self) -> f64 {
-        let a = Self::CENTERED_BIAS / (1.0 - Self::CENTERED_BIAS);
-        a / (1.0 - (1.0 - a) * self.x.abs().max(self.y.abs()))
     }
 }
 
@@ -181,7 +159,7 @@ impl ops::DivAssign<f64> for Point {
     }
 }
 
-macro_rules! num_field {
+macro_rules! impl_parts_per {
     ($t:ty, $e:expr) => {
         impl From<f64> for $t {
             fn from(v: f64) -> Self {
@@ -257,57 +235,11 @@ macro_rules! num_field {
     };
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Default)]
-pub struct Percentage(f64);
+#[derive(Clone, Copy, Debug, PartialEq, Default, serde::Serialize, serde::Deserialize)]
+pub struct Percentage(pub f64);
 
-#[derive(Clone, Copy, Debug, PartialEq, Default)]
-pub struct Permille(f64);
+#[derive(Clone, Copy, Debug, PartialEq, Default, serde::Serialize, serde::Deserialize)]
+pub struct Permille(pub f64);
 
-num_field!(Percentage, 100.0);
-num_field!(Permille, 1000.0);
-
-#[derive(Default, Clone, Debug)]
-pub struct Range {
-    pub length: i32,
-    pub location: i32,
-}
-
-pub fn reservoir_sampling(n: usize, k: usize) -> Vec<usize> {
-    assert!(n >= k);
-    let mut r = Vec::from_iter(0..k);
-    if n == k || k == 0 {
-        return r;
-    }
-
-    let rng = &mut rand::thread_rng();
-    let kf = k as f64;
-    // exp(log(random())/k)
-    let mut w = (f64::ln(rng.sample(Open01)) / kf).exp();
-    let mut i = k - 1;
-    loop {
-        i += 1 + (f64::ln(rng.sample(Open01)) / (1.0 - w).ln()).floor() as usize;
-        if i < n {
-            r[rng.gen_range(0..k)] = i;
-            w *= (f64::ln(rng.sample(Open01)) / kf).exp()
-        } else {
-            break;
-        }
-    }
-    r
-}
-
-#[cfg(test)]
-mod tests {
-    #[test]
-    fn test_reservoir_sampling() {
-        use super::reservoir_sampling;
-        for k in 0..10 {
-            let s = reservoir_sampling(10, k);
-            println!("{s:?}");
-            assert!(s.len() == k, "s.len() = {}, k = {}", s.len(), k);
-            for i in s {
-                assert!(i < 10);
-            }
-        }
-    }
-}
+impl_parts_per!(Percentage, 100.0);
+impl_parts_per!(Permille, 1000.0);

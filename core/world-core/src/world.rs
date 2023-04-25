@@ -17,8 +17,8 @@ use self::{
 use crate::{
     scenario::Scenario,
     stat::{HealthCount, Stat},
-    util::math::Point,
 };
+use math::Point;
 
 pub struct World {
     pub id: String,

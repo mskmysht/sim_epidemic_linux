@@ -10,7 +10,6 @@ use super::{
 use crate::{
     stat::{HealthCount, HealthDiff, HistInfo, InfectionCntInfo, Stat},
     util::{
-        math::{Percentage, Point},
         random::{self, DistInfo},
         DrainMap,
     },
@@ -18,6 +17,7 @@ use crate::{
 
 use std::{ops::DerefMut, sync::Arc};
 
+use math::{Percentage, Point};
 use table::{Table, TableIndex};
 
 use parking_lot::RwLock;

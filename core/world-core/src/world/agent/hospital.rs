@@ -1,8 +1,10 @@
 use super::{warp::Warps, Agent, Location, LocationLabel, ParamsForStep, WarpParam};
 use crate::{
     stat::{HealthCount, HealthDiff, HistInfo, Stat},
-    util::{math::Point, DrainMap},
+    util::DrainMap,
 };
+
+use math::Point;
 
 #[derive(Default)]
 pub struct HospitalStepInfo {

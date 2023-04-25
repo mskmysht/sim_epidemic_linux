@@ -13,10 +13,7 @@ use super::{
 };
 use crate::{
     stat::{HealthDiff, HistInfo, InfectionCntInfo},
-    util::{
-        math::{Percentage, Point},
-        random::{self, modified_prob, DistInfo},
-    },
+    util::random::{self, modified_prob, DistInfo},
 };
 
 use std::{
@@ -25,6 +22,7 @@ use std::{
     sync::{Arc, Weak},
 };
 
+use math::{Percentage, Point};
 use table::TableIndex;
 
 use parking_lot::RwLock;
@@ -856,7 +854,6 @@ impl Agent {
         rp: &RuntimeParams,
     ) -> (Vec<HealthType>, u32) {
         let mut cats = 'block: {
-            use crate::util::math;
             let r = n_pop - n_infected;
             if r == 0 {
                 break 'block vec![HealthType::Asymptomatic; n_pop];
@@ -867,7 +864,7 @@ impl Agent {
                 vec![HealthType::Susceptible; n_pop]
             };
             let m = {
-                let idxs_inf = math::reservoir_sampling(n_pop, n_infected);
+                let idxs_inf = reservoir_sampling(n_pop, n_infected);
                 let mut m = usize::MAX;
                 for idx in idxs_inf {
                     cats[idx] = HealthType::Asymptomatic;
@@ -892,7 +889,7 @@ impl Agent {
                 is
             };
             if r > n_recovered {
-                for i in math::reservoir_sampling(r, n_recovered) {
+                for i in reservoir_sampling(r, n_recovered) {
                     cats[i + cnts_inf[i]] = HealthType::Recovered;
                 }
             }
@@ -1030,5 +1027,47 @@ impl WarpParam {
             (rng.gen::<f64>() * 0.468 + 0.001) * wp.field_size(),
         );
         Self::new(WarpMode::Cemetery, goal)
+    }
+}
+
+fn reservoir_sampling(n: usize, k: usize) -> Vec<usize> {
+    use rand_distr::Open01;
+
+    assert!(n >= k);
+    let mut r = Vec::from_iter(0..k);
+    if n == k || k == 0 {
+        return r;
+    }
+
+    let rng = &mut rand::thread_rng();
+    let kf = k as f64;
+    // exp(log(random())/k)
+    let mut w = (f64::ln(rng.sample(Open01)) / kf).exp();
+    let mut i = k - 1;
+    loop {
+        i += 1 + (f64::ln(rng.sample(Open01)) / (1.0 - w).ln()).floor() as usize;
+        if i < n {
+            r[rng.gen_range(0..k)] = i;
+            w *= (f64::ln(rng.sample(Open01)) / kf).exp()
+        } else {
+            break;
+        }
+    }
+    r
+}
+
+#[cfg(test)]
+mod tests {
+    #[test]
+    fn test_reservoir_sampling() {
+        use super::reservoir_sampling;
+        for k in 0..10 {
+            let s = reservoir_sampling(10, k);
+            println!("{s:?}");
+            assert!(s.len() == k, "s.len() = {}, k = {}", s.len(), k);
+            for i in s {
+                assert!(i < 10);
+            }
+        }
     }
 }

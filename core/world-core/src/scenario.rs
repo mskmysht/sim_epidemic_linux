@@ -1,4 +1,5 @@
-use scenario_operation::{vec, AssignmentField, ConditionField, EvalField, Extract, Operation};
+use math::Permille;
+use scenario_operation::{AssignmentField, AssignmentQueue, ConditionField, EvalField, Operation};
 
 use crate::world::commons::{RuntimeParams, WorldParams};
 
@@ -6,7 +7,7 @@ use crate::world::commons::{RuntimeParams, WorldParams};
 pub struct Scenario {
     index: usize,
     operations: Vec<Operation>,
-    curr: Vec<vec::AssignmentField>,
+    curr: Vec<AssignmentQueue>,
 }
 
 impl Scenario {
@@ -18,13 +19,23 @@ impl Scenario {
         }
     }
 
-    pub fn exec(&mut self, env: EnvMut) {
-        env.world.init_n_pop += 1;
+    pub fn exec(&mut self, env: &mut EnvMut) {
         let op = &self.operations[self.index];
-        if op.condition.eval(&env) {
+        if op.condition.eval(env) {
             for a in &op.assignments {
-                self.curr.push(a.expand(&env));
+                self.curr.push(a.expand(env));
             }
+        }
+
+        for i in (0..self.curr.len()).rev() {
+            let queue = self.curr.get_mut(i).unwrap();
+            queue.pop_front().unwrap().assign(env);
+            if !queue.is_empty() {
+                continue;
+            }
+            drop(queue);
+
+            self.curr.swap_remove(i);
         }
     }
 }
@@ -34,10 +45,15 @@ pub struct EnvMut<'a> {
     world: &'a mut WorldParams,
 }
 
-scenario_operation::impl_extract!(
-    AssignmentField -> EnvMut<'_>[self] {
-        GatheringFrequency => self.runtime.gat_fr,
-        VaccinePerformRate => self.runtime.gat_fr,
+scenario_operation::impl_accessor!(
+    self: EnvMut<'_>;
+    AssignmentField {
+        GatheringFrequency =>
+            get { self.runtime.gat_fr }
+            set(v) { self.runtime.gat_fr = v; }
+        VaccinePerformRate =>
+            get { self.runtime.vcn_p_rate.0 }
+            set(v) { self.runtime.vcn_p_rate = Permille(v); }
     }
 );
 
