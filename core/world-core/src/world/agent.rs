@@ -5,11 +5,11 @@ pub(super) mod hospital;
 pub(super) mod param;
 pub(super) mod warp;
 
-use self::{gathering::Gathering, param::*};
+use self::{allocation::InitialHealth, gathering::Gathering, param::*};
 use super::{
-    commons::{HealthType, ParamsForStep, RuntimeParams, WorldParams, WrkPlcMode},
+    commons::{HealthType, ParamsForStep, RuntimeParams, WorkPlaceMode, WorldParams},
     contact::Contacts,
-    testing::{TestReason, TestResult, Testee},
+    testing::{TestResult, Testee},
 };
 use crate::{
     stat::{HealthDiff, HistInfo, InfectionCntInfo},
@@ -18,7 +18,7 @@ use crate::{
 
 use std::{
     f64,
-    ops::Deref,
+    ops::{Deref, DerefMut},
     sync::{Arc, Weak},
 };
 
@@ -63,7 +63,7 @@ fn back_home_force(pt: &Point, origin: &Point) -> Option<Point> {
 }
 
 #[derive(Default)]
-enum HealthState {
+pub enum HealthState {
     #[default]
     Susceptible,
     Infected(InfectionParam, InfMode),
@@ -128,7 +128,7 @@ impl VaccineState {
 }
 
 #[derive(Default)]
-struct DaysTo {
+pub struct DaysTo {
     recover: f64,
     onset: f64,
     die: f64,
@@ -202,44 +202,48 @@ impl DaysTo {
 }
 
 #[derive(Default)]
-struct AgentHealth {
+pub struct AgentHealth {
     days_to: DaysTo,
     vaccine_state: VaccineState,
     state: HealthState,
 }
 
 impl AgentHealth {
-    pub fn reset(&mut self, activeness: f64, age: f64, wp: &WorldParams, rp: &RuntimeParams) {
+    pub fn reset(
+        &mut self,
+        activeness: f64,
+        age: f64,
+        wp: &WorldParams,
+        rp: &RuntimeParams,
+        it: &mut InitialHealth,
+    ) {
         self.days_to.reset(activeness, age, wp, rp);
         self.vaccine_state = VaccineState::default();
-        self.state = HealthState::default();
-    }
-
-    pub fn force_susceptible(&mut self) {
-        self.state = HealthState::Susceptible;
-    }
-
-    pub fn force_infected(&mut self) {
-        let mut ip = InfectionParam::new(0.0, 0);
-        ip.days_infected =
-            rand::thread_rng().gen::<f64>() * self.days_to.recover.min(self.days_to.die);
-        let d = ip.days_infected - self.days_to.onset;
-        let inf_mode = if d >= 0.0 {
-            ip.days_diseased = d;
-            InfMode::Sym
-        } else {
-            InfMode::Asym
-        };
-        self.state = HealthState::Infected(ip, inf_mode);
-    }
-
-    pub fn force_recovered(&mut self, rp: &RuntimeParams) {
-        let rng = &mut rand::thread_rng();
-        self.days_to.expire_immunity = rng.gen::<f64>() * rp.imn_max_dur;
-        let days_recovered = rng.gen::<f64>() * self.days_to.expire_immunity;
-        let mut rcp = RecoverParam::new(0.0, 0);
-        rcp.days_recovered = days_recovered;
-        self.state = HealthState::Recovered(rcp);
+        self.state = match it {
+            InitialHealth::Susceptible => HealthState::Susceptible,
+            InitialHealth::Infected { symptomatic } => {
+                let mut ip = InfectionParam::new(0.0, 0);
+                ip.days_infected =
+                    rand::thread_rng().gen::<f64>() * self.days_to.recover.min(self.days_to.die);
+                let d = ip.days_infected - self.days_to.onset;
+                *symptomatic = d >= 0.0;
+                let inf_mode = if *symptomatic {
+                    ip.days_diseased = d;
+                    InfMode::Sym
+                } else {
+                    InfMode::Asym
+                };
+                HealthState::Infected(ip, inf_mode)
+            }
+            InitialHealth::Recovered => {
+                let rng = &mut rand::thread_rng();
+                self.days_to.expire_immunity = rng.gen::<f64>() * rp.imn_max_dur;
+                let days_recovered = rng.gen::<f64>() * self.days_to.expire_immunity;
+                let mut rcp = RecoverParam::new(0.0, 0);
+                rcp.days_recovered = days_recovered;
+                HealthState::Recovered(rcp)
+            }
+        }
     }
 
     fn infected_by(&self, b: &Self, d: f64, pfs: &ParamsForStep) -> Option<(f64, usize)> {
@@ -275,7 +279,7 @@ impl AgentHealth {
         }
     }
 
-    fn get_infected(&self) -> Option<&InfectionParam> {
+    pub fn get_infected(&self) -> Option<&InfectionParam> {
         match &self.state {
             HealthState::Infected(ip, _) => Some(ip),
             _ => None,
@@ -401,8 +405,8 @@ impl Body {
         self.v.y = th.sin();
 
         self.pt = match wp.wrk_plc_mode {
-            WrkPlcMode::WrkPlcNone | WrkPlcMode::WrkPlcUniform => wp.random_point(),
-            WrkPlcMode::WrkPlcCentered => wp.centered_point(),
+            None | Some(WorkPlaceMode::Uniform) => wp.random_point(),
+            Some(WorkPlaceMode::Centered) => wp.centered_point(),
         };
     }
 
@@ -546,38 +550,61 @@ impl AgentLog {
 }
 
 #[derive(Default)]
+pub struct GatheringInfo {
+    pub gathering: Weak<RwLock<Gathering>>,
+    gat_freq: f64,
+}
+
+#[derive(Default)]
 pub struct InnerAgent {
-    pub id: usize,
     body: Body,
-    /// [`None`] means it has no home. (e.g. [`wrk_plc_mode`](WorldParams::wrk_plc_mode) equals [`WrkPlcMode::WrkPlcNone`].)
+    /// [`None`] means it has no home. (e.g. [`wrk_plc_mode`](WorldParams::wrk_plc_mode) equals [`WorkPlaceMode::None`].)
     pub origin: Option<Point>,
 
     distancing: bool,
     activeness: f64,
     age: f64,
     mob_freq: f64,
-    gat_freq: f64,
 
-    gathering: Weak<RwLock<Gathering>>,
-    location: Location,
-    health: AgentHealth,
-    testing: TestState,
+    gat_info: Arc<RwLock<GatheringInfo>>,
+    pub location: Arc<RwLock<Location>>,
+    pub health: Arc<RwLock<AgentHealth>>,
+    pub testing: Arc<RwLock<TestState>>,
     contacts: Contacts,
 
     log: AgentLog,
 }
 
 impl InnerAgent {
-    fn reset(&mut self, wp: &WorldParams, rp: &RuntimeParams, id: usize, distancing: bool) {
-        self.testing.reset();
+    pub fn reset(
+        &mut self,
+        wp: &WorldParams,
+        rp: &RuntimeParams,
+        distancing: bool,
+        ih: &mut InitialHealth,
+    ) {
+        self.testing.write().reset();
         self.log.reset();
 
         let rng = &mut rand::thread_rng();
-        self.health.reset(self.activeness, self.age, wp, rp);
+        self.health
+            .write()
+            .reset(self.activeness, self.age, wp, rp, ih);
 
         self.activeness = random::random_mk(rng, rp.act_mode.r(), rp.act_kurt.r());
-        self.gathering = Weak::new();
         let d_info = DistInfo::new(0.0, 0.5, 1.0);
+
+        self.gat_info = Arc::new(RwLock::new(GatheringInfo {
+            gat_freq: random::random_with_corr(
+                rng,
+                &d_info,
+                self.activeness,
+                rp.act_mode.r(),
+                rp.gat_act.r(),
+            ),
+            ..Default::default()
+        }));
+
         self.mob_freq = random::random_with_corr(
             rng,
             &d_info,
@@ -585,21 +612,14 @@ impl InnerAgent {
             rp.act_mode.r(),
             rp.mob_act.r(),
         );
-        self.gat_freq = random::random_with_corr(
-            rng,
-            &d_info,
-            self.activeness,
-            rp.act_mode.r(),
-            rp.gat_act.r(),
-        );
 
-        self.id = id;
         self.distancing = distancing;
         self.body.reset(wp);
 
-        self.origin = match wp.wrk_plc_mode {
-            WrkPlcMode::WrkPlcNone => None,
-            _ => Some(self.body.pt),
+        self.origin = if wp.wrk_plc_mode.is_none() {
+            None
+        } else {
+            Some(self.body.pt)
         };
     }
 
@@ -608,51 +628,12 @@ impl InnerAgent {
         &self.body.pt
     }
 
-    fn check_test_in_field(&self, pfs: &ParamsForStep) -> Option<TestReason> {
-        if let Some(ip) = self.health.get_symptomatic() {
-            if ip.days_diseased >= pfs.rp.tst_delay
-                && random::at_least_once_hit_in(pfs.wp.days_per_step(), pfs.rp.tst_sbj_sym.r())
-            {
-                return Some(TestReason::AsSymptom);
-            }
-        }
-        if random::at_least_once_hit_in(pfs.wp.days_per_step(), pfs.rp.tst_sbj_asy.r()) {
-            return Some(TestReason::AsSuspected);
-        }
-        None
-    }
-
-    pub fn get_test(&mut self, time_stamp: u32, pfs: &ParamsForStep) -> TestResult {
-        let rng = &mut rand::thread_rng();
-        let b = if let Some(ip) = self.health.get_infected() {
-            // P(U < 1 - (1-p)^x) = 1 - (1-p)^x = P(U > (1-p)^x)
-            random::at_least_once_hit_in(
-                pfs.vr_info[ip.virus_variant].reproductivity,
-                pfs.rp.tst_sens.r(),
-            )
-        } else {
-            rng.gen::<f64>() > pfs.rp.tst_spec.r()
-        };
-        let result = TestResult::from(b);
-        self.testing.notify_result(time_stamp, result.clone());
-        result
-    }
-
-    pub fn cancel_test(&mut self) {
-        self.testing.cancel();
-    }
-
-    #[inline]
-    pub fn is_in_field(&self) -> bool {
-        matches!(self.location, Location::Field)
-    }
-
     pub fn get_back_to(&self) -> Point {
         self.origin.unwrap_or(self.body.pt)
     }
 
     fn calc_gathering_effect(&self) -> (Option<Point>, Option<f64>) {
-        match self.gathering.upgrade() {
+        match self.gat_info.read().gathering.upgrade() {
             None => (None, None),
             Some(gat) => gat.read().get_effect(&self.body.pt),
         }
@@ -701,7 +682,7 @@ impl InnerAgent {
     }
 
     fn warp_inside(&self, pfs: &ParamsForStep) -> Option<WarpParam> {
-        if self.health.is_symptomatic() {
+        if self.health.read().is_symptomatic() {
             return None;
         }
         if let Some(goal) = self.get_warp_inside_goal(pfs) {
@@ -764,7 +745,7 @@ impl InnerAgent {
     ) -> Option<TableIndex> {
         let (f, gat_dist) = self.calc_force(force, best, pfs);
         self.body
-            .field_update(self.health.is_symptomatic(), f, &gat_dist, pfs);
+            .field_update(self.health.read().is_symptomatic(), f, &gat_dist, pfs);
         let new_idx = pfs.wp.into_grid_index(&self.body.pt);
         if *idx != new_idx {
             Some(new_idx)
@@ -773,36 +754,12 @@ impl InnerAgent {
         }
     }
 
-    pub fn reserve_test_in_field(&mut self, agent: Agent, pfs: &ParamsForStep) -> Option<Testee> {
-        let reason = {
-            if !self.testing.is_reservable(pfs) {
-                return None;
-            }
-            self.check_test_in_field(pfs)?
-        };
-        self.testing.reserve();
-        Some(Testee::new(agent, reason, pfs.rp.step))
-    }
-
-    pub fn reserve_test_with<F: Fn(&Self) -> Option<TestReason>>(
-        &mut self,
-        agent: Agent,
-        pfs: &ParamsForStep,
-        f: F,
-    ) -> Option<Testee> {
-        let reason = {
-            if !self.testing.is_reservable(pfs) {
-                return None;
-            }
-            f(&self)?
-        };
-        self.testing.reserve();
-        Some(Testee::new(agent, reason, pfs.rp.step))
-    }
-
     fn check_quarantine(&mut self, pfs: &ParamsForStep) -> Option<(WarpParam, Vec<Testee>)> {
         //[todo] prms.rp.trc_ope != TrcTst
-        if matches!(self.testing.read_result(), Some(TestResult::Positive)) {
+        if matches!(
+            self.testing.write().read_result(),
+            Some(TestResult::Positive)
+        ) {
             Some((
                 WarpParam::hospital(self.get_back_to(), pfs.wp),
                 self.contacts.drain_testees(pfs),
@@ -811,114 +768,62 @@ impl InnerAgent {
             None
         }
     }
+}
 
-    fn hospital_step(
-        &mut self,
-        back_to: Point,
-        hist_info: &mut Option<HistInfo>,
-        health_diff: &mut Option<HealthDiff>,
-        pfs: &ParamsForStep,
-    ) -> Option<WarpParam> {
-        self.health
-            .hospital_step(back_to, hist_info, health_diff, pfs)
+pub struct Agent(Box<InnerAgent>);
+
+impl Agent {
+    pub fn new() -> Self {
+        Self(Box::new(InnerAgent::default()))
     }
+}
 
-    fn replace_gathering(
-        &mut self,
-        gat_freq: &DistInfo<Percentage>,
-        gathering: Weak<RwLock<Gathering>>,
-    ) {
-        if !self.health.is_symptomatic()
-            && rand::thread_rng().gen::<f64>() < random::modified_prob(self.gat_freq, gat_freq).r()
-        {
-            self.gathering = gathering;
+impl Deref for Agent {
+    type Target = Box<InnerAgent>;
+
+    fn deref(&self) -> &Self::Target {
+        &self.0
+    }
+}
+
+impl DerefMut for Agent {
+    fn deref_mut(&mut self) -> &mut Self::Target {
+        &mut self.0
+    }
+}
+
+pub struct AgentRef {
+    pub testing: Arc<RwLock<TestState>>,
+    pub health: Arc<RwLock<AgentHealth>>,
+    pub location: Arc<RwLock<Location>>,
+}
+
+impl AgentRef {
+    pub fn new(
+        testing: Arc<RwLock<TestState>>,
+        health: Arc<RwLock<AgentHealth>>,
+        location: Arc<RwLock<Location>>,
+    ) -> Self {
+        Self {
+            testing,
+            health,
+            location,
         }
     }
 }
 
-#[derive(Clone)]
-pub struct Agent(Arc<RwLock<InnerAgent>>);
-
-impl Agent {
-    pub fn new() -> Self {
-        Agent(Arc::new(RwLock::new(InnerAgent::default())))
-    }
-
-    pub fn reset_all(
-        agents: &[Self],
-        n_pop: usize,
-        n_infected: usize,
-        n_recovered: usize,
-        n_dist: usize,
-        wp: &WorldParams,
-        rp: &RuntimeParams,
-    ) -> (Vec<HealthType>, u32) {
-        let mut cats = 'block: {
-            let r = n_pop - n_infected;
-            if r == 0 {
-                break 'block vec![HealthType::Asymptomatic; n_pop];
-            }
-            let mut cats = if r == n_recovered {
-                vec![HealthType::Recovered; n_pop]
-            } else {
-                vec![HealthType::Susceptible; n_pop]
-            };
-            let m = {
-                let idxs_inf = reservoir_sampling(n_pop, n_infected);
-                let mut m = usize::MAX;
-                for idx in idxs_inf {
-                    cats[idx] = HealthType::Asymptomatic;
-                    if m > idx {
-                        m = idx;
-                    }
-                }
-                m
-            };
-            let cnts_inf = {
-                let mut is = vec![0; r];
-                let mut c = 0;
-                let mut k = m;
-                for i in is.iter_mut().take(r).skip(m) {
-                    if let HealthType::Asymptomatic = cats[k] {
-                        c += 1;
-                        k += 1;
-                    }
-                    *i = c;
-                    k += 1;
-                }
-                is
-            };
-            if r > n_recovered {
-                for i in reservoir_sampling(r, n_recovered) {
-                    cats[i + cnts_inf[i]] = HealthType::Recovered;
-                }
-            }
-            cats
-        };
-
-        let mut n_symptomatic = 0;
-        for (i, h) in cats.iter_mut().enumerate() {
-            let mut a = agents[i].0.write();
-            a.reset(wp, rp, i, i < n_dist);
-            match h {
-                HealthType::Susceptible => a.health.force_susceptible(),
-                HealthType::Asymptomatic => {
-                    a.health.force_infected();
-                    if a.health.is_symptomatic() {
-                        n_symptomatic += 1;
-                        *h = HealthType::Symptomatic;
-                    }
-                }
-                HealthType::Recovered => a.health.force_recovered(rp),
-                _ => {}
-            }
-        }
-        (cats, n_symptomatic)
+impl From<&Agent> for AgentRef {
+    fn from(value: &Agent) -> Self {
+        AgentRef::new(
+            value.testing.clone(),
+            value.health.clone(),
+            value.location.clone(),
+        )
     }
 }
 
 #[derive(Default)]
-struct TestState {
+pub struct TestState {
     reserved: bool,
     last_tested: Option<u32>,
     unread_result: Option<TestResult>,
@@ -929,7 +834,7 @@ impl TestState {
         *self = Self::default();
     }
 
-    fn is_reservable(&self, pfs: &ParamsForStep) -> bool {
+    pub fn is_reservable(&self, pfs: &ParamsForStep) -> bool {
         /*|| todo!("self.for_vcn == VcnNoTest") */
         if self.reserved {
             return false;
@@ -942,30 +847,22 @@ impl TestState {
         ds >= pfs.rp.tst_interval * pfs.wp.steps_per_day()
     }
 
-    fn reserve(&mut self) {
+    pub fn reserve(&mut self) {
         self.reserved = true;
     }
 
-    fn notify_result(&mut self, time_stamp: u32, result: TestResult) {
+    pub fn notify_result(&mut self, time_stamp: u32, result: TestResult) {
         self.reserved = false;
         self.last_tested = Some(time_stamp);
         self.unread_result = Some(result);
     }
 
-    fn cancel(&mut self) {
+    pub fn cancel(&mut self) {
         self.reserved = false;
     }
 
     fn read_result(&mut self) -> Option<TestResult> {
         self.unread_result.take()
-    }
-}
-
-impl Deref for Agent {
-    type Target = Arc<RwLock<InnerAgent>>;
-
-    fn deref(&self) -> &Self::Target {
-        &self.0
     }
 }
 
@@ -978,10 +875,17 @@ pub enum Location {
     Warp,
 }
 
+impl Location {
+    #[inline]
+    pub fn in_field(&self) -> bool {
+        matches!(self, Self::Field)
+    }
+}
+
 trait LocationLabel {
     const LABEL: Location;
     fn label(agent: Agent) -> Agent {
-        agent.write().location = Self::LABEL;
+        *agent.location.write() = Self::LABEL;
         agent
     }
 }
@@ -1030,43 +934,155 @@ impl WarpParam {
     }
 }
 
-fn reservoir_sampling(n: usize, k: usize) -> Vec<usize> {
-    use rand_distr::Open01;
+pub(super) mod allocation {
+    use math::Point;
+    use rand::Rng;
 
-    assert!(n >= k);
-    let mut r = Vec::from_iter(0..k);
-    if n == k || k == 0 {
-        return r;
+    use super::{field::Field, hospital::Hospital, Agent};
+    use crate::world::commons::{RuntimeParams, WorldParams};
+
+    #[derive(Clone)]
+    pub enum InitialHealth {
+        Susceptible,
+        Infected { symptomatic: bool },
+        Recovered,
     }
 
-    let rng = &mut rand::thread_rng();
-    let kf = k as f64;
-    // exp(log(random())/k)
-    let mut w = (f64::ln(rng.sample(Open01)) / kf).exp();
-    let mut i = k - 1;
-    loop {
-        i += 1 + (f64::ln(rng.sample(Open01)) / (1.0 - w).ln()).floor() as usize;
-        if i < n {
-            r[rng.gen_range(0..k)] = i;
-            w *= (f64::ln(rng.sample(Open01)) / kf).exp()
-        } else {
-            break;
+    fn make_categories(n_pop: usize, n_infected: usize, n_recovered: usize) -> Vec<InitialHealth> {
+        let r = n_pop - n_infected;
+        if r == 0 {
+            return vec![InitialHealth::Infected { symptomatic: false }; n_pop];
         }
+        let mut cats = if r == n_recovered {
+            vec![InitialHealth::Recovered; n_pop]
+        } else {
+            vec![InitialHealth::Susceptible; n_pop]
+        };
+        let m = {
+            let idxs_inf = reservoir_sampling(n_pop, n_infected);
+            let mut m = usize::MAX;
+            for idx in idxs_inf {
+                cats[idx] = InitialHealth::Infected { symptomatic: false };
+                if m > idx {
+                    m = idx;
+                }
+            }
+            m
+        };
+        let cnts_inf = {
+            let mut is = vec![0; r];
+            let mut c = 0;
+            let mut k = m;
+            for i in is.iter_mut().take(r).skip(m) {
+                if let InitialHealth::Infected { .. } = cats[k] {
+                    c += 1;
+                    k += 1;
+                }
+                *i = c;
+                k += 1;
+            }
+            is
+        };
+        if r > n_recovered {
+            for i in reservoir_sampling(r, n_recovered) {
+                cats[i + cnts_inf[i]] = InitialHealth::Recovered;
+            }
+        }
+        cats
     }
-    r
-}
 
-#[cfg(test)]
-mod tests {
-    #[test]
-    fn test_reservoir_sampling() {
-        use super::reservoir_sampling;
-        for k in 0..10 {
-            let s = reservoir_sampling(10, k);
-            println!("{s:?}");
-            assert!(s.len() == k, "s.len() = {}, k = {}", s.len(), k);
-            for i in s {
-                assert!(i < 10);
+    /// Returns the number of symptomatic agents
+    pub fn allocate_agents(
+        agents: &mut Vec<Agent>,
+        field: &mut Field,
+        hospital: &mut Hospital,
+        origins: &mut Vec<Point>,
+        n_pop: usize,
+        n_infected: usize,
+        n_recovered: usize,
+        mut n_dist: usize,
+        wp: &WorldParams,
+        rp: &RuntimeParams,
+    ) -> usize {
+        let mut cats = make_categories(n_pop, n_infected, n_recovered);
+        let mut n_symptomatic = 0;
+        for (ih, agent) in cats.iter_mut().zip(agents.iter_mut()) {
+            agent.reset(wp, rp, n_dist > 0, ih);
+            if let Some(p) = agent.origin {
+                origins.push(p);
+            }
+            if n_dist > 0 {
+                n_dist -= 1;
+            }
+            if matches!(ih, InitialHealth::Infected { symptomatic: true }) {
+                n_symptomatic += 1;
+            }
+        }
+
+        let mut n_q_symptomatic = (n_symptomatic as f64 * wp.q_symptomatic.r()) as u32;
+        let mut n_q_asymptomatic =
+            ((n_infected - n_symptomatic) as f64 * wp.q_asymptomatic.r()) as u32;
+
+        for (ih, agent) in cats.iter().zip(agents.drain(..)) {
+            match ih {
+                InitialHealth::Infected { symptomatic: true } if n_q_symptomatic > 0 => {
+                    n_q_symptomatic -= 1;
+                    let back_to = agent.get_back_to();
+                    hospital.add(agent, back_to);
+                }
+                InitialHealth::Infected { symptomatic: false } if n_q_asymptomatic > 0 => {
+                    n_q_asymptomatic -= 1;
+                    let back_to = agent.get_back_to();
+                    hospital.add(agent, back_to);
+                }
+                _ => {
+                    let idx = wp.into_grid_index(&agent.get_pt());
+                    field.add(agent, idx);
+                }
+            }
+        }
+
+        n_symptomatic
+    }
+
+    fn reservoir_sampling(n: usize, k: usize) -> Vec<usize> {
+        use rand_distr::Open01;
+
+        assert!(n >= k);
+        let mut r = Vec::from_iter(0..k);
+        if n == k || k == 0 {
+            return r;
+        }
+
+        let rng = &mut rand::thread_rng();
+        let kf = k as f64;
+        // exp(log(random())/k)
+        let mut w = (f64::ln(rng.sample(Open01)) / kf).exp();
+        let mut i = k - 1;
+        loop {
+            i += 1 + (f64::ln(rng.sample(Open01)) / (1.0 - w).ln()).floor() as usize;
+            if i < n {
+                r[rng.gen_range(0..k)] = i;
+                w *= (f64::ln(rng.sample(Open01)) / kf).exp()
+            } else {
+                break;
+            }
+        }
+        r
+    }
+
+    #[cfg(test)]
+    mod tests {
+        #[test]
+        fn test_reservoir_sampling() {
+            use super::reservoir_sampling;
+            for k in 0..10 {
+                let s = reservoir_sampling(10, k);
+                println!("{s:?}");
+                assert!(s.len() == k, "s.len() = {}, k = {}", s.len(), k);
+                for i in s {
+                    assert!(i < 10);
+                }
             }
         }
     }

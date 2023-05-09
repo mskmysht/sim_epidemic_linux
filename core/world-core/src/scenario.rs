@@ -42,7 +42,7 @@ impl Scenario {
 
 pub struct EnvMut<'a> {
     runtime: &'a mut RuntimeParams,
-    world: &'a mut WorldParams,
+    _world: &'a mut WorldParams,
 }
 
 scenario_operation::impl_accessor!(

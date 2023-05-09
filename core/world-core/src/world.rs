@@ -3,7 +3,8 @@ pub mod commons;
 mod contact;
 pub(super) mod testing;
 
-use enum_map::EnumMap;
+use enum_map::{enum_map, Enum, EnumMap};
+use rand::seq::SliceRandom;
 use std::path::Path;
 
 use self::{
@@ -11,7 +12,10 @@ use self::{
         cemetery::Cemetery, field::Field, gathering::Gatherings, hospital::Hospital, warp::Warps,
         Agent,
     },
-    commons::{HealthType, ParamsForStep, RuntimeParams, VaccineInfo, VariantInfo, WorldParams},
+    commons::{
+        HealthType, ParamsForStep, RuntimeParams, VaccineInfo, VaccinePriority, VariantInfo,
+        WorldParams,
+    },
     testing::TestQueue,
 };
 use crate::{
@@ -25,6 +29,7 @@ pub struct World {
     pub runtime_params: RuntimeParams,
     pub world_params: WorldParams,
     agents: Vec<Agent>,
+    agent_origins: Vec<Point>,
     field: Field,
     warps: Warps,
     hospital: Hospital,
@@ -41,6 +46,7 @@ pub struct World {
     //[todo] n_pop: usize,
     variant_info: Vec<VariantInfo>,
     vaccine_info: Vec<VaccineInfo>,
+    vaccine_queue: EnumMap<VaccinePriority, Vec<usize>>,
 }
 
 impl World {
@@ -50,24 +56,27 @@ impl World {
         world_params: WorldParams,
         scenario: Scenario,
     ) -> World {
+        let n_pop = world_params.init_n_pop as usize;
         let mut w = World {
             id,
             runtime_params,
-            world_params,
             scenario,
-            agents: Vec::with_capacity(world_params.init_n_pop as usize),
+            agents: Vec::with_capacity(n_pop),
+            field: Field::new(world_params.mesh),
+            world_params,
+            warps: Warps::new(n_pop),
+            hospital: Hospital::new(n_pop),
+            cemetery: Cemetery::new(n_pop),
+            agent_origins: Vec::with_capacity(n_pop),
+            gat_spots_fixed: Vec::new(),
             health_count: Default::default(),
             stat: Stat::default(),
             scenario_index: 0,
             gatherings: Gatherings::new(),
             variant_info: VariantInfo::default_list(),
             vaccine_info: VaccineInfo::default_list(),
-            field: Field::new(world_params.mesh),
-            warps: Warps::new(),
-            hospital: Hospital::new(),
-            cemetery: Cemetery::new(),
             test_queue: TestQueue::new(),
-            gat_spots_fixed: Vec::new(),
+            vaccine_queue: enum_map!(VaccinePriority { _ => vec![0; n_pop],}),
         };
 
         w.reset();
@@ -76,6 +85,12 @@ impl World {
 
     pub fn reset(&mut self) {
         //[todo] set runtime params of scenario != None
+        self.field.clear(&mut self.agents);
+        self.hospital.clear(&mut self.agents);
+        self.cemetery.clear(&mut self.agents);
+        self.warps.clear(&mut self.agents);
+        self.agent_origins.clear();
+
         let n_pop = self.world_params.init_n_pop as usize;
         let n_dist = (self.runtime_params.dst_ob.r() * self.world_params.init_n_pop()) as usize;
         let n_infected = (self.world_params.init_n_pop() * self.world_params.infected.r()) as usize;
@@ -90,8 +105,8 @@ impl World {
 
         let cur_len = self.agents.len();
         if n_pop < cur_len {
-            for i in (n_pop..cur_len).rev() {
-                self.agents.swap_remove(i);
+            for _ in 0..(cur_len - n_pop) {
+                self.agents.pop();
             }
         } else {
             for _ in 0..(n_pop - cur_len) {
@@ -99,14 +114,11 @@ impl World {
             }
         }
 
-        self.gatherings.clear();
-        self.field.clear();
-        self.hospital.clear();
-        self.cemetery.clear();
-        self.warps.clear();
-
-        let (cats, n_symptomatic) = Agent::reset_all(
-            &self.agents,
+        let n_symptomatic = agent::allocation::allocate_agents(
+            &mut self.agents,
+            &mut self.field,
+            &mut self.hospital,
+            &mut self.agent_origins,
             n_pop,
             n_infected,
             n_recovered,
@@ -115,38 +127,34 @@ impl World {
             &self.runtime_params,
         );
 
-        let mut n_q_symptomatic =
-            (n_symptomatic as f64 * self.world_params.q_symptomatic.r()) as u32;
-        let mut n_q_asymptomatic = ((n_infected as u32 - n_symptomatic) as f64
-            * self.world_params.q_asymptomatic.r()) as u32;
-        for (i, t) in cats.into_iter().enumerate() {
-            let agent = self.agents[i].clone();
-            match t {
-                HealthType::Symptomatic if n_q_symptomatic > 0 => {
-                    n_q_symptomatic -= 1;
-                    let back_to = agent.read().get_back_to();
-                    self.hospital.add(agent, back_to);
-                }
-                HealthType::Asymptomatic if n_q_asymptomatic > 0 => {
-                    n_q_asymptomatic -= 1;
-                    let back_to = agent.read().get_back_to();
-                    self.hospital.add(agent, back_to);
-                }
-                _ => {
-                    let idx = self.world_params.into_grid_index(&agent.read().get_pt());
-                    self.field.add(agent, idx);
-                }
-            }
-        }
-
         // reset test queue
         self.runtime_params.step = 0;
         self.health_count[&HealthType::Susceptible] = (n_pop - n_infected) as u32;
-        self.health_count[&HealthType::Symptomatic] = n_symptomatic;
-        self.health_count[&HealthType::Asymptomatic] = n_infected as u32 - n_symptomatic;
+        self.health_count[&HealthType::Symptomatic] = n_symptomatic as u32;
+        self.health_count[&HealthType::Asymptomatic] = (n_infected - n_symptomatic) as u32;
         self.stat.reset();
         self.scenario_index = 0;
         //[todo] self.exec_scenario();
+
+        self.gatherings.clear();
+
+        // reset vaccine queue
+        let q = {
+            let mut q: Vec<usize> = (0..n_pop).collect();
+            q.shuffle(&mut rand::thread_rng());
+            q
+        };
+        for key in &VaccinePriority::ALL {
+            if matches!(key, VaccinePriority::Random | VaccinePriority::Booster) {
+                for (idx, i) in self.vaccine_queue[key].iter_mut().enumerate() {
+                    *i = q[idx];
+                }
+            } else {
+                for (idx, i) in self.vaccine_queue[key].iter_mut().enumerate() {
+                    *i = idx
+                }
+            }
+        }
     }
 
     pub fn step(&mut self) {
@@ -164,11 +172,10 @@ impl World {
 
         if !pfs.go_home_back() {
             self.gatherings.step(
-                &self.field,
+                &mut self.field,
                 &self.gat_spots_fixed,
-                &self.agents,
-                pfs.wp,
-                pfs.rp,
+                &self.agent_origins,
+                &pfs,
             );
         }
 

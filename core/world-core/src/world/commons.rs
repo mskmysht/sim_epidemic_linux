@@ -85,6 +85,23 @@ pub struct RuntimeParams {
     //[todo] pub recov: DistInfo<f64>,
     //[todo] pub immun: DistInfo<f64>,
     pub vcn_p_rate: Permille,
+    pub vcn_info: Vec<VaccinationInfo>,
+}
+
+#[derive(Debug)]
+pub struct VaccinationInfo {
+    pub perform_rate: Permille,
+    pub regularity: Percentage,
+    pub priority: VaccinePriority,
+}
+
+#[derive(Debug, Enum, Clone)]
+pub enum VaccinePriority {
+    Random,
+    Older,
+    Central,
+    PopulationDensity,
+    Booster,
 }
 
 impl RuntimeParams {
@@ -109,7 +126,7 @@ pub enum HealthType {
     Vaccinated,
 }
 
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone, Debug)]
 pub struct WorldParams {
     pub init_n_pop: u32,
     pub field_size: usize,
@@ -119,7 +136,7 @@ pub struct WorldParams {
     pub recovered: Percentage,
     pub q_asymptomatic: Percentage,
     pub q_symptomatic: Percentage,
-    pub wrk_plc_mode: WrkPlcMode,
+    pub wrk_plc_mode: Option<WorkPlaceMode>,
     //[todo] pub av_clstr_rate: Percentage, // Anti-Vax
     //[todo] pub av_clstr_gran: Percentage, // Anti-Vax
     //[todo] pub av_test_rate: Percentage, // Anti-Vax
@@ -153,7 +170,7 @@ impl WorldParams {
         recovered: Percentage,
         q_asymptomatic: Percentage,
         q_symptomatic: Percentage,
-        wrk_plc_mode: WrkPlcMode,
+        wrk_plc_mode: Option<WorkPlaceMode>,
         rcv_bias: Percentage,
         rcv_temp: f64,
         rcv_upper: Percentage,
@@ -274,12 +291,11 @@ impl CenteredBias for Point {
     }
 }
 
-#[derive(PartialEq, Clone, Copy, Debug)]
-pub enum WrkPlcMode {
-    WrkPlcNone,
-    WrkPlcUniform,
-    WrkPlcCentered,
-    //[todo] WrkPlcPopDistImg,
+#[derive(Clone, Debug)]
+pub enum WorkPlaceMode {
+    Uniform,
+    Centered,
+    //[todo] PopDistImg,
 }
 
 pub struct VariantInfo {
@@ -322,7 +338,6 @@ pub struct ParamsForStep<'a> {
     pub rp: &'a RuntimeParams,
     pub vr_info: &'a [VariantInfo],
     pub vx_info: &'a [VaccineInfo],
-    go_home_back: bool,
 }
 
 impl<'a> ParamsForStep<'a> {
@@ -337,13 +352,12 @@ impl<'a> ParamsForStep<'a> {
             wp,
             vr_info,
             vx_info,
-            go_home_back: wp.wrk_plc_mode != WrkPlcMode::WrkPlcNone && Self::is_daytime(wp, rp),
         }
     }
 
+    #[inline]
     pub fn go_home_back(&self) -> bool {
-        self.go_home_back
-        //[todo] wp.wrk_plc_mode != WrkPlcMode::WrkPlcNone && self.is_daytime()
+        self.wp.wrk_plc_mode.is_some() && Self::is_daytime(self.wp, self.rp)
     }
 
     fn is_daytime(wp: &WorldParams, rp: &RuntimeParams) -> bool {

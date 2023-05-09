@@ -1,4 +1,6 @@
-use super::{agent::Agent, commons::ParamsForStep};
+use crate::util::random;
+
+use super::{agent::AgentRef, commons::ParamsForStep};
 use enum_map::{macros::Enum, EnumMap};
 
 use std::collections::VecDeque;
@@ -29,13 +31,13 @@ impl From<bool> for TestResult {
 }
 
 pub struct Testee {
-    agent: Agent,
+    agent: AgentRef,
     reason: TestReason,
     time_stamp: u32,
 }
 
 impl Testee {
-    pub fn new(agent: Agent, reason: TestReason, time_stamp: u32) -> Self {
+    pub fn new(agent: AgentRef, reason: TestReason, time_stamp: u32) -> Self {
         Self {
             agent,
             reason,
@@ -44,14 +46,28 @@ impl Testee {
     }
 
     fn conduct(self, pfs: &ParamsForStep) -> (TestReason, TestResult) {
-        (
-            self.reason,
-            self.agent.write().get_test(self.time_stamp, pfs),
-        )
+        // let mut agent = self.agent.write();
+        let rng = &mut rand::thread_rng();
+        let b = if let Some(ip) = self.agent.health.read().get_infected() {
+            // P(U < 1 - (1-p)^x) = 1 - (1-p)^x = P(U > (1-p)^x)
+            random::at_least_once_hit_in(
+                pfs.vr_info[ip.virus_variant].reproductivity,
+                pfs.rp.tst_sens.r(),
+            )
+        } else {
+            rng.gen::<f64>() > pfs.rp.tst_spec.r()
+        };
+
+        let result = TestResult::from(b);
+        self.agent
+            .testing
+            .write()
+            .notify_result(self.time_stamp, result.clone());
+        (self.reason, result)
     }
 
     fn cancel(self) {
-        self.agent.write().cancel_test();
+        self.agent.testing.write().cancel();
     }
 }
 
@@ -98,7 +114,7 @@ impl TestQueue {
                 break;
             }
             let t = self.0.pop_front().unwrap();
-            if t.time_stamp > oldest && t.agent.read().is_in_field() {
+            if t.time_stamp > oldest && t.agent.location.read().in_field() {
                 max_tests -= 1;
                 let (reason, result) = t.conduct(pfs);
                 count_reason[&reason] += 1;

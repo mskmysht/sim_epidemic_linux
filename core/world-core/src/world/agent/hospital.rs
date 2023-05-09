@@ -29,9 +29,14 @@ impl HospitalAgent {
     }
 
     fn step(&mut self, pfs: &ParamsForStep) -> (HospitalStepInfo, Option<WarpParam>) {
-        let agent = &mut self.agent.write();
+        // let agent = &mut self.agent.write();
         let mut hsi = HospitalStepInfo::default();
-        let warp = agent.hospital_step(self.back_to, &mut hsi.hist_info, &mut hsi.health_diff, pfs);
+        let warp = self.agent.health.write().hospital_step(
+            self.back_to,
+            &mut hsi.hist_info,
+            &mut hsi.health_diff,
+            pfs,
+        );
 
         (hsi, warp)
     }
@@ -40,12 +45,14 @@ impl HospitalAgent {
 pub struct Hospital(Vec<HospitalAgent>);
 
 impl Hospital {
-    pub fn new() -> Self {
-        Self(Vec::new())
+    pub fn new(capacity: usize) -> Self {
+        Self(Vec::with_capacity(capacity))
     }
 
-    pub fn clear(&mut self) {
-        self.0.clear();
+    pub fn clear(&mut self, agents: &mut Vec<Agent>) {
+        for ha in self.0.drain(..) {
+            agents.push(ha.agent);
+        }
     }
 
     pub fn add(&mut self, agent: Agent, back_to: Point) {
@@ -69,7 +76,7 @@ impl Hospital {
                 health_count.apply_difference(hd);
             }
             if let Some((param, ha)) = opt {
-                warps.add(ha.agent.clone(), param);
+                warps.add(ha.agent, param);
             }
         }
     }

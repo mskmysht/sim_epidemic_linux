@@ -8,7 +8,7 @@ use world_core::{
     scenario::Scenario,
     util::{self, random::DistInfo},
     world::{
-        commons::{RuntimeParams, WorldParams, WrkPlcMode},
+        commons::{RuntimeParams, WorldParams},
         World,
     },
 };
@@ -170,7 +170,7 @@ fn new_world_params(param: &api::job::WorldParams) -> WorldParams {
         0.0.into(),
         20.0.into(),
         50.0.into(),
-        WrkPlcMode::WrkPlcNone,
+        None,
         150.0.into(),
         50.0,
         500.0.into(),

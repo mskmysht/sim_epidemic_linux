@@ -1,3 +1,5 @@
+use std::sync::Arc;
+
 use super::{
     super::{
         commons::ParamsForStep,
@@ -5,30 +7,30 @@ use super::{
     },
     gathering::Gathering,
     warp::Warps,
-    Agent, AgentHealth, Body, Location, LocationLabel, WarpParam,
+    Agent, AgentHealth, AgentRef, Body, Location, LocationLabel, WarpParam,
 };
 use crate::{
     stat::{HealthCount, HealthDiff, HistInfo, InfectionCntInfo, Stat},
     util::{
-        random::{self, DistInfo},
+        random::{self},
         DrainMap,
     },
+    world::testing::TestReason,
 };
 
-use std::{ops::DerefMut, sync::Arc};
-
-use math::{Percentage, Point};
+use math::Point;
+use parking_lot::RwLock;
+use rand::Rng;
 use table::{Table, TableIndex};
 
-use parking_lot::RwLock;
-use rayon::iter::ParallelIterator;
+use rayon::{iter::ParallelIterator, prelude::IntoParallelIterator};
 
 #[derive(Default)]
 struct TempParam {
     force: Point,
     best: Option<(Point, f64)>,
     new_n_infects: u32,
-    new_contacts: Vec<Agent>,
+    new_contacts: Vec<AgentRef>,
     infected: Option<(f64, usize)>,
 }
 
@@ -46,7 +48,7 @@ impl TempParam {
         if d < pfs.rp.infec_dst
             && random::at_least_once_hit_in(pfs.wp.days_per_step(), pfs.rp.cntct_trc.r())
         {
-            self.new_contacts.push(b.clone());
+            self.new_contacts.push(b.into());
         }
     }
 
@@ -62,7 +64,7 @@ impl TempParam {
 }
 
 pub struct FieldAgent {
-    agent: Agent,
+    pub agent: Agent,
     idx: TableIndex,
     temp: TempParam,
 }
@@ -96,35 +98,56 @@ impl FieldAgent {
 
     fn step(&mut self, pfs: &ParamsForStep) -> (FieldStepInfo, Option<Transfer>) {
         let mut fsi = FieldStepInfo::default();
-        let mut agent = self.agent.write();
+        // let agent = &mut self.agent; //.write();
 
         let temp = std::mem::replace(&mut self.temp, TempParam::default());
-        agent.contacts.append(temp.new_contacts, pfs.rp.step);
-        agent
+        self.agent.contacts.append(temp.new_contacts, pfs.rp.step);
+        self.agent
             .log
             .update_n_infects(temp.new_n_infects, &mut fsi.infct_info);
 
         let transfer = 'block: {
-            let agent = agent.deref_mut();
-            if let Some((w, testees)) = agent.check_quarantine(pfs) {
+            // let agent = agent.deref_mut();
+            if let Some((w, testees)) = self.agent.check_quarantine(pfs) {
                 fsi.contacted_testees = Some(testees);
                 break 'block Some(Transfer::Extra(w));
             }
-            fsi.testee = agent.reserve_test_in_field(self.agent.clone(), pfs);
-            if let Some(w) = agent.health.field_step(
+            if self.agent.testing.read().is_reservable(pfs) {
+                let mut r = None;
+                if let Some(ip) = self.agent.health.read().get_symptomatic() {
+                    if ip.days_diseased >= pfs.rp.tst_delay
+                        && random::at_least_once_hit_in(
+                            pfs.wp.days_per_step(),
+                            pfs.rp.tst_sbj_sym.r(),
+                        )
+                    {
+                        r = Some(TestReason::AsSymptom);
+                    }
+                } else if random::at_least_once_hit_in(
+                    pfs.wp.days_per_step(),
+                    pfs.rp.tst_sbj_asy.r(),
+                ) {
+                    r = Some(TestReason::AsSuspected);
+                }
+                if let Some(r) = r {
+                    self.agent.testing.write().reserve();
+                    fsi.testee = Some(Testee::new((&self.agent).into(), r, pfs.rp.step));
+                }
+            }
+            if let Some(w) = self.agent.health.write().field_step(
                 temp.infected,
-                agent.activeness,
-                agent.age,
+                self.agent.activeness,
+                self.agent.age,
                 &mut fsi.hist_info,
                 &mut fsi.health_diff,
                 pfs,
             ) {
                 break 'block Some(Transfer::Extra(w));
             }
-            if let Some(w) = agent.warp_inside(pfs) {
+            if let Some(w) = self.agent.warp_inside(pfs) {
                 break 'block Some(Transfer::Extra(w));
             }
-            agent
+            self.agent
                 .move_internal(temp.force, temp.best, &self.idx, pfs)
                 .map(Transfer::Intra)
         };
@@ -133,19 +156,21 @@ impl FieldAgent {
     }
 
     fn interacts(&mut self, fb: &mut Self, pfs: &ParamsForStep) {
-        let a = &mut self.agent.write();
-        let b = &mut fb.agent.write();
+        let a = &mut self.agent; //.write();
+        let b = &mut fb.agent; //.write();
         if let Some((df, d)) = a.body.calc_force_delta(&b.body, pfs) {
             self.temp.force -= df;
             fb.temp.force += df;
             self.temp.update_best(&a.body, &b.body);
             fb.temp.update_best(&b.body, &a.body);
 
-            self.temp.infected(&a.health, &b.health, d, pfs);
-            fb.temp.infected(&b.health, &a.health, d, pfs);
+            let a_health = a.health.read();
+            let b_health = b.health.read();
+            self.temp.infected(&a_health, &b_health, d, pfs);
+            fb.temp.infected(&b_health, &a_health, d, pfs);
 
-            self.temp.record_contact(&fb.agent, d, pfs);
-            fb.temp.record_contact(&self.agent, d, pfs);
+            self.temp.record_contact(&b, d, pfs);
+            fb.temp.record_contact(&a, d, pfs);
         }
     }
 }
@@ -161,12 +186,13 @@ impl Field {
         }
     }
 
-    pub fn clear(&mut self) {
+    pub fn clear(&mut self, agents: &mut Vec<Agent>) {
         //[todo] fix mesh size
-        self.table
-            .par_iter_mut()
-            .horizontal()
-            .for_each(|(_, c)| c.clear());
+        for (_, c) in self.table.iter_mut().horizontal() {
+            for fa in c.drain(..) {
+                agents.push(fa.agent);
+            }
+        }
     }
 
     pub fn step(
@@ -177,6 +203,23 @@ impl Field {
         health_count: &mut HealthCount,
         pfs: &ParamsForStep,
     ) {
+        // give vaccine ticket
+        let mut vcn_subj_rem = 0.0;
+        // let mut trc_vcn_set = Vec::new();
+        for vp in &pfs.rp.vcn_info {
+            if vp.perform_rate.r() <= 0.0 {
+                continue;
+            }
+            vcn_subj_rem += pfs.wp.init_n_pop() * vp.perform_rate.r() * pfs.wp.days_per_step();
+            let cnt = vcn_subj_rem.floor() as usize;
+            if cnt == 0 {
+                continue;
+            }
+            vcn_subj_rem = vcn_subj_rem.fract();
+            // for num in &trc_vcn_set {}
+            // for k in (0..)
+        }
+
         self.interact(&pfs);
         let tmp = self
             .table
@@ -208,6 +251,21 @@ impl Field {
                 }
             }
         }
+    }
+
+    pub fn replace_gathering(&self, gathering: &Arc<RwLock<Gathering>>, pfs: &ParamsForStep) {
+        let locs = gathering.read().get_locations(pfs.wp);
+        locs.into_par_iter().for_each(|loc| {
+            for fa in &self.table[loc] {
+                if !fa.agent.health.read().is_symptomatic()
+                    && rand::thread_rng().gen::<f64>()
+                        < random::modified_prob(fa.agent.gat_info.read().gat_freq, &pfs.rp.gat_freq)
+                            .r()
+                {
+                    fa.agent.gat_info.write().gathering = Arc::downgrade(gathering);
+                }
+            }
+        });
     }
 
     pub fn add(&mut self, agent: Agent, idx: TableIndex) {
@@ -297,20 +355,6 @@ impl Field {
             for fb in b_ags.iter_mut() {
                 fa.interacts(fb, pfs);
             }
-        }
-    }
-
-    pub fn replace_gathering(
-        &self,
-        row: usize,
-        column: usize,
-        gat_freq: &DistInfo<Percentage>,
-        gat: &Arc<RwLock<Gathering>>,
-    ) {
-        for fa in self.table[(row, column)].iter() {
-            fa.agent
-                .write()
-                .replace_gathering(gat_freq, Arc::downgrade(gat));
         }
     }
 }

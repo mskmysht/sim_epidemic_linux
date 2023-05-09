@@ -23,7 +23,7 @@ pub enum InfMode {
 }
 
 #[derive(Debug)]
-pub(super) struct InfectionParam {
+pub struct InfectionParam {
     pub virus_variant: usize,
     pub days_infected: f64,
     pub days_diseased: f64,
@@ -85,7 +85,7 @@ impl InfectionParam {
         true
     }
 
-    pub fn step<const IS_IN_HOSPITAL: bool>(
+    pub(crate) fn step<const IS_IN_HOSPITAL: bool>(
         &mut self,
         days_to: &mut DaysTo,
         inf_mode: &mut InfMode,
@@ -187,7 +187,7 @@ impl InfectionParam {
 }
 
 #[derive(Debug)]
-pub(super) struct RecoverParam {
+pub struct RecoverParam {
     pub virus_variant: usize,
     pub days_recovered: f64,
     pub immunity: f64,
@@ -219,7 +219,7 @@ impl RecoverParam {
 }
 
 #[derive(Debug)]
-pub(super) struct VaccinationParam {
+pub struct VaccinationParam {
     pub vaccine_type: usize,
     pub dose_date: f64,
     pub immunity: f64,
