@@ -3,18 +3,17 @@ pub mod commons;
 mod contact;
 pub(super) mod testing;
 
-use enum_map::{enum_map, Enum, EnumMap};
-use rand::seq::SliceRandom;
+use enum_map::{enum_map, EnumMap};
+use rand::{seq::SliceRandom, Rng};
 use std::path::Path;
 
 use self::{
     agent::{
         cemetery::Cemetery, field::Field, gathering::Gatherings, hospital::Hospital, warp::Warps,
-        Agent,
+        Agent, AgentRef,
     },
     commons::{
-        HealthType, ParamsForStep, RuntimeParams, VaccineInfo, VaccinePriority, VariantInfo,
-        WorldParams,
+        FiniteTypePool, HealthType, ParamsForStep, RuntimeParams, VaccinePriority, WorldParams,
     },
     testing::TestQueue,
 };
@@ -28,8 +27,8 @@ pub struct World {
     pub id: String,
     pub runtime_params: RuntimeParams,
     pub world_params: WorldParams,
-    agents: Vec<Agent>,
     agent_origins: Vec<Point>,
+    agents: Vec<Agent>,
     field: Field,
     warps: Warps,
     hospital: Hospital,
@@ -38,15 +37,14 @@ pub struct World {
     //[todo] predicate_to_stop: bool,
     pub health_count: HealthCount,
     stat: Stat,
-    scenario_index: i32,
     scenario: Scenario,
     gatherings: Gatherings,
     gat_spots_fixed: Vec<Point>,
     //[todo] n_mesh: usize,
     //[todo] n_pop: usize,
-    variant_info: Vec<VariantInfo>,
-    vaccine_info: Vec<VaccineInfo>,
-    vaccine_queue: EnumMap<VaccinePriority, Vec<usize>>,
+    // variant_info: Vec<VariantInfo>,
+    vaccine_queue: EnumMap<VaccinePriority, Vec<AgentRef>>,
+    vaccine_queue_idx: EnumMap<VaccinePriority, usize>,
 }
 
 impl World {
@@ -55,9 +53,9 @@ impl World {
         runtime_params: RuntimeParams,
         world_params: WorldParams,
         scenario: Scenario,
-    ) -> World {
+    ) -> Self {
         let n_pop = world_params.init_n_pop as usize;
-        let mut w = World {
+        let mut w = Self {
             id,
             runtime_params,
             scenario,
@@ -71,12 +69,10 @@ impl World {
             gat_spots_fixed: Vec::new(),
             health_count: Default::default(),
             stat: Stat::default(),
-            scenario_index: 0,
             gatherings: Gatherings::new(),
-            variant_info: VariantInfo::default_list(),
-            vaccine_info: VaccineInfo::default_list(),
             test_queue: TestQueue::new(),
-            vaccine_queue: enum_map!(VaccinePriority { _ => vec![0; n_pop],}),
+            vaccine_queue: enum_map!(VaccinePriority { _ => Vec::new(),}),
+            vaccine_queue_idx: enum_map!(VaccinePriority { _ => 0,}),
         };
 
         w.reset();
@@ -132,10 +128,9 @@ impl World {
         self.health_count[&HealthType::Susceptible] = (n_pop - n_infected) as u32;
         self.health_count[&HealthType::Symptomatic] = n_symptomatic as u32;
         self.health_count[&HealthType::Asymptomatic] = (n_infected - n_symptomatic) as u32;
-        self.stat.reset();
-        self.scenario_index = 0;
-        //[todo] self.exec_scenario();
 
+        self.stat.reset();
+        self.scenario.reset();
         self.gatherings.clear();
 
         // reset vaccine queue
@@ -144,26 +139,50 @@ impl World {
             q.shuffle(&mut rand::thread_rng());
             q
         };
-        for key in &VaccinePriority::ALL {
-            if matches!(key, VaccinePriority::Random | VaccinePriority::Booster) {
-                for (idx, i) in self.vaccine_queue[key].iter_mut().enumerate() {
-                    *i = q[idx];
+        for (key, queue) in &mut self.vaccine_queue {
+            queue.clear();
+            match key {
+                VaccinePriority::Random | VaccinePriority::Booster => {
+                    for idx in 0..n_pop {
+                        queue.push((&self.agents[q[idx]]).into());
+                    }
                 }
-            } else {
-                for (idx, i) in self.vaccine_queue[key].iter_mut().enumerate() {
-                    *i = idx
+                VaccinePriority::Central => {
+                    let cx = self.world_params.field_size() / 2.0;
+                    let mut q = match self.world_params.wrk_plc_mode {
+                        None => (0..n_pop)
+                            .map(|i| {
+                                let p = self.agents[i].get_pt();
+                                (i, (p.x + cx).hypot(p.y + cx))
+                            })
+                            .collect::<Vec<_>>(),
+                        Some(_) => (0..n_pop)
+                            .map(|i| {
+                                let p = &self.agent_origins[i];
+                                (i, (p.x + cx).hypot(p.y + cx))
+                            })
+                            .collect::<Vec<_>>(),
+                    };
+                    q.sort_by(|a, b| a.1.partial_cmp(&b.1).unwrap());
+                    for (idx, _) in q {
+                        queue.push((&self.agents[idx]).into());
+                    }
+                }
+                _ => {
+                    for idx in 0..n_pop {
+                        queue.push((&self.agents[idx]).into());
+                    }
                 }
             }
+        }
+
+        for idx in self.vaccine_queue_idx.values_mut() {
+            *idx = 0;
         }
     }
 
     pub fn step(&mut self) {
-        let pfs = ParamsForStep::new(
-            &self.world_params,
-            &self.runtime_params,
-            &self.variant_info,
-            &self.vaccine_info,
-        );
+        let pfs = ParamsForStep::new(&self.world_params, &self.runtime_params);
 
         let mut count_reason = EnumMap::default();
         let mut count_result = EnumMap::default();
@@ -177,6 +196,60 @@ impl World {
                 &self.agent_origins,
                 &pfs,
             );
+        }
+
+        // distribute vaccines
+        let mut vcn_subj_rem = vec![0.0];
+        // let mut trc_vcn_set = Vec::new();
+        let n_pop = pfs.wp.init_n_pop as usize;
+        for (&index, vp) in &pfs.rp.vx_stg {
+            if vp.perform_rate.r() <= 0.0 {
+                continue;
+            }
+            let v = &mut vcn_subj_rem[index];
+            let f = pfs.wp.init_n_pop() * vp.perform_rate.r() * pfs.wp.days_per_step() + *v;
+            let mut cnt = f.floor() as usize;
+            *v = f.fract();
+            if cnt == 0 {
+                continue;
+            }
+
+            // tracing vaccination targets
+            let idx = &mut self.vaccine_queue_idx[&vp.priority];
+            let queue = &self.vaccine_queue[&vp.priority];
+            let vaccine = pfs.rp.vaccine_pool.get(index);
+
+            if matches!(vp.priority, VaccinePriority::Random) || vp.regularity.r() >= 1.0 {
+                let (ql, qr) = queue.split_at(*idx);
+                let q_iter = qr.into_iter().chain(ql.into_iter());
+                for a in q_iter {
+                    if a.try_give_vaccine_ticket(vaccine.clone()) {
+                        cnt -= 1;
+                    }
+                    *idx += 1;
+                    if cnt == 0 {
+                        break;
+                    }
+                }
+            } else {
+                let mut rng = rand::thread_rng();
+                for _ in 0..n_pop {
+                    let d = if rng.gen::<f64>() > vp.regularity.r() {
+                        rng.gen_range(0..(n_pop / 2)) + 1
+                    } else {
+                        0
+                    };
+                    let j = (*idx + d) % n_pop;
+                    if queue[j].try_give_vaccine_ticket(vaccine.clone()) {
+                        cnt -= 1;
+                    }
+                    *idx += 1;
+                    if cnt == 0 {
+                        break;
+                    }
+                }
+            }
+            *idx = *idx % n_pop;
         }
 
         self.field.step(
@@ -201,14 +274,8 @@ impl World {
         );
 
         self.stat.health_stat.push(self.health_count.clone());
+        self.scenario.exec(&mut self.runtime_params);
         self.runtime_params.step += 1;
-        //[todo] self.predicate_to_stop
-        //    if loop_mode == LoopMode::LoopEndByCondition
-        //        && world.scenario_index < self.scenario.len() as i32
-        //    {
-        //        world.exec_scenario();
-        //        loop_mode = LoopMode::LoopRunning;
-        //    }
     }
 
     #[inline]
@@ -223,10 +290,3 @@ impl World {
             .export(&path.join(&self.id).with_extension("arrow"))
     }
 }
-
-/*
-- (void)startTimeLimitTimer {
-    runtimeTimer = [NSTimer scheduledTimerWithTimeInterval:maxRuntime repeats:NO
-        block:^(NSTimer * _Nonnull timer) { [self stop:LoopEndByTimeLimit]; }];
-}
-*/

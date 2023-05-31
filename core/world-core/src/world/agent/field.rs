@@ -15,7 +15,7 @@ use crate::{
         random::{self},
         DrainMap,
     },
-    world::testing::TestReason,
+    world::{commons::Variant, testing::TestReason},
 };
 
 use math::Point;
@@ -31,7 +31,7 @@ struct TempParam {
     best: Option<(Point, f64)>,
     new_n_infects: u32,
     new_contacts: Vec<AgentRef>,
-    infected: Option<(f64, usize)>,
+    infected: Option<(f64, Variant)>,
 }
 
 impl TempParam {
@@ -203,23 +203,6 @@ impl Field {
         health_count: &mut HealthCount,
         pfs: &ParamsForStep,
     ) {
-        // give vaccine ticket
-        let mut vcn_subj_rem = 0.0;
-        // let mut trc_vcn_set = Vec::new();
-        for vp in &pfs.rp.vcn_info {
-            if vp.perform_rate.r() <= 0.0 {
-                continue;
-            }
-            vcn_subj_rem += pfs.wp.init_n_pop() * vp.perform_rate.r() * pfs.wp.days_per_step();
-            let cnt = vcn_subj_rem.floor() as usize;
-            if cnt == 0 {
-                continue;
-            }
-            vcn_subj_rem = vcn_subj_rem.fract();
-            // for num in &trc_vcn_set {}
-            // for k in (0..)
-        }
-
         self.interact(&pfs);
         let tmp = self
             .table

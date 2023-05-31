@@ -32,7 +32,7 @@ mod tests {
     use poem_openapi::types::ParseFromJSON;
     use serde_json::json;
 
-    use scenario_operation::{AssignmentField, Condition};
+    use scenario_operation::{Assignment, Condition, ConditionField, MyField};
 
     #[test]
     fn test_scenario() {
@@ -45,8 +45,8 @@ mod tests {
             ]
         });
         let s: super::Operation = ParseFromJSON::parse_from_json(Some(v)).unwrap();
-        let cond = s.condition.parse::<Condition>().unwrap();
-        let ops: Vec<AssignmentField> = serde_json::from_value(s.assignments.clone()).unwrap();
+        let cond = s.condition.parse::<Condition<ConditionField>>().unwrap();
+        let ops: Vec<Assignment<MyField>> = serde_json::from_value(s.assignments.clone()).unwrap();
         println!("{:?}, {:?}", cond, ops);
     }
 }

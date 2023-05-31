@@ -7,7 +7,10 @@ pub(super) mod warp;
 
 use self::{allocation::InitialHealth, gathering::Gathering, param::*};
 use super::{
-    commons::{HealthType, ParamsForStep, RuntimeParams, WorkPlaceMode, WorldParams},
+    commons::{
+        FiniteTypePool, HealthType, ParamsForStep, RuntimeParams, Vaccine, Variant, WorkPlaceMode,
+        WorldParams,
+    },
     contact::Contacts,
     testing::{TestResult, Testee},
 };
@@ -88,7 +91,7 @@ impl From<&HealthState> for HealthType {
 #[derive(Default)]
 struct VaccineState {
     pub param: Option<VaccinationParam>,
-    pub vaccine_ticket: Option<usize>,
+    pub vaccine_ticket: Option<Vaccine>,
 }
 
 impl VaccineState {
@@ -98,23 +101,23 @@ impl VaccineState {
         days_to: &mut DaysTo,
         pfs: &ParamsForStep,
     ) -> Option<HealthState> {
-        let vaccine_type = self.vaccine_ticket.take()?;
+        let vaccine = self.vaccine_ticket.take()?;
         let vp = {
             let today = pfs.rp.step as f64 * pfs.wp.days_per_step();
             if let Some(mut vp) = self.param.take() {
-                if (vp.dose_date + pfs.vx_info[vaccine_type].interval as f64) < today {
+                if (vp.dose_date + vaccine.interval as f64) < today {
                     // first done
                     days_to.update_recover(pfs.wp);
                 }
                 vp.dose_date = today;
-                vp.vaccine_type = vaccine_type;
+                vp.vaccine = vaccine;
                 vp
             } else {
                 // first done
                 days_to.update_recover(pfs.wp);
                 VaccinationParam {
                     dose_date: today,
-                    vaccine_type,
+                    vaccine,
                     immunity,
                 }
             }
@@ -215,14 +218,14 @@ impl AgentHealth {
         age: f64,
         wp: &WorldParams,
         rp: &RuntimeParams,
-        it: &mut InitialHealth,
+        ih: &mut InitialHealth,
     ) {
         self.days_to.reset(activeness, age, wp, rp);
         self.vaccine_state = VaccineState::default();
-        self.state = match it {
+        self.state = match ih {
             InitialHealth::Susceptible => HealthState::Susceptible,
             InitialHealth::Infected { symptomatic } => {
-                let mut ip = InfectionParam::new(0.0, 0);
+                let mut ip = InfectionParam::new(0.0, rp.variant_pool.get(0));
                 ip.days_infected =
                     rand::thread_rng().gen::<f64>() * self.days_to.recover.min(self.days_to.die);
                 let d = ip.days_infected - self.days_to.onset;
@@ -239,31 +242,32 @@ impl AgentHealth {
                 let rng = &mut rand::thread_rng();
                 self.days_to.expire_immunity = rng.gen::<f64>() * rp.imn_max_dur;
                 let days_recovered = rng.gen::<f64>() * self.days_to.expire_immunity;
-                let mut rcp = RecoverParam::new(0.0, 0);
+                let mut rcp = RecoverParam::new(0.0, rp.variant_pool.get(0));
                 rcp.days_recovered = days_recovered;
                 HealthState::Recovered(rcp)
             }
         }
     }
 
-    fn infected_by(&self, b: &Self, d: f64, pfs: &ParamsForStep) -> Option<(f64, usize)> {
+    fn infected_by(&self, b: &Self, d: f64, pfs: &ParamsForStep) -> Option<(f64, Variant)> {
         let ip = b.get_infected()?;
-        let immunity = self.get_immune_factor(ip.virus_variant, pfs)?;
+        let immunity = self.get_immune_factor(&ip.virus_variant, pfs)?;
         if ip.check_infection(immunity, d, b.days_to.onset, pfs) {
-            Some((immunity, ip.virus_variant))
+            Some((immunity, ip.virus_variant.clone()))
         } else {
             None
         }
     }
 
-    fn get_immune_factor(&self, virus_variant: usize, pfs: &ParamsForStep) -> Option<f64> {
+    fn get_immune_factor(&self, virus_variant: &Variant, pfs: &ParamsForStep) -> Option<f64> {
         let immune_factor = match &self.state {
             HealthState::Susceptible => 0.0,
             HealthState::Recovered(rp) => {
-                rp.immunity * pfs.vr_info[rp.virus_variant].efficacy[virus_variant]
+                rp.immunity
+                    * pfs.rp.variant_pool.efficacy[rp.virus_variant.index][virus_variant.index]
             }
             HealthState::Vaccinated(vp) => {
-                vp.immunity * pfs.vx_info[vp.vaccine_type].efficacy[virus_variant]
+                vp.immunity * pfs.rp.vaccine_pool.efficacy[vp.vaccine.index][virus_variant.index]
             }
             _ => return None,
         };
@@ -299,7 +303,7 @@ impl AgentHealth {
 
     fn field_step(
         &mut self,
-        infected: Option<(f64, usize)>,
+        infected: Option<(f64, Variant)>,
         activeness: f64,
         age: f64,
         hist_info: &mut Option<HistInfo>,
@@ -808,6 +812,25 @@ impl AgentRef {
             testing,
             health,
             location,
+        }
+    }
+
+    pub fn try_give_vaccine_ticket(&self, vaccine: Vaccine) -> bool {
+        if !self.location.read().in_field() {
+            return false;
+        }
+        match self.health.read().state {
+            HealthState::Susceptible
+            | HealthState::Infected(_, InfMode::Asym)
+            | HealthState::Vaccinated(_) => {
+                let ticket = &mut self.health.write().vaccine_state.vaccine_ticket;
+                if ticket.is_some() {
+                    return false;
+                };
+                *ticket = Some(vaccine);
+                true
+            }
+            _ => false,
         }
     }
 }

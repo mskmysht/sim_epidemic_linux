@@ -50,10 +50,7 @@ impl Testee {
         let rng = &mut rand::thread_rng();
         let b = if let Some(ip) = self.agent.health.read().get_infected() {
             // P(U < 1 - (1-p)^x) = 1 - (1-p)^x = P(U > (1-p)^x)
-            random::at_least_once_hit_in(
-                pfs.vr_info[ip.virus_variant].reproductivity,
-                pfs.rp.tst_sens.r(),
-            )
+            random::at_least_once_hit_in(ip.virus_variant.reproductivity, pfs.rp.tst_sens.r())
         } else {
             rng.gen::<f64>() > pfs.rp.tst_spec.r()
         };

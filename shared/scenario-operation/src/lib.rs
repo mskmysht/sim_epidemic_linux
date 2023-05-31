@@ -1,9 +1,113 @@
-use std::{ops::AddAssign, str::FromStr};
+use std::str::FromStr;
 
 use nom::{branch::alt, character::complete::u32, combinator::map, error::Error, IResult, Parser};
 
 pub use predicate::EvalField;
 use predicate::{binary_relation, FieldCombinator, Predicate};
+
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct Container<I, T> {
+    pub index: I,
+    pub value: T,
+}
+
+pub trait CloneWith<T> {
+    fn clone_with(&self, value: T) -> Self;
+}
+
+impl<I: Clone, T> CloneWith<T> for Container<I, T> {
+    fn clone_with(&self, value: T) -> Self {
+        Container {
+            index: self.index.clone(),
+            value,
+        }
+    }
+}
+
+impl<T> CloneWith<T> for T {
+    #[inline]
+    fn clone_with(&self, value: T) -> Self {
+        value
+    }
+}
+
+pub trait Interpolate<U> {
+    type Target;
+    fn interpolate<C: FromIterator<Self::Target>>(from: &Self, to: &U, n: &u32) -> C;
+}
+
+impl<I, T, U> Interpolate<Container<I, U>> for T
+where
+    T: Interpolate<U>,
+{
+    type Target = T::Target;
+    fn interpolate<C: FromIterator<Self::Target>>(from: &Self, to: &Container<I, U>, n: &u32) -> C {
+        T::interpolate::<C>(from, &to.value, n)
+    }
+}
+
+#[macro_export]
+macro_rules! impl_primitive_interpolate {
+    ($type:ty) => {
+        impl Interpolate<$type> for $type {
+            type Target = $type;
+            fn interpolate<C: FromIterator<Self::Target>>(from: &Self, to: &$type, n: &u32) -> C {
+                let d = (*to - *from) / (*n as $type);
+                (0..*n)
+                    .scan(from.clone(), move |s, _| {
+                        *s += d.clone();
+                        Some(s.clone())
+                    })
+                    .collect::<C>()
+            }
+        }
+    };
+}
+
+pub trait Assign<T> {
+    fn assign(to: &mut Self, value: T);
+}
+
+#[macro_export]
+macro_rules! accessor {
+    ($env:ident: $env_type:ty, $accessor:ident {
+        $(
+        $item:ident($v:ident) =>
+            get { $get:expr }
+            set $set:block
+        )+
+    }) => {
+        impl $crate::Interpolate<$accessor> for $env_type {
+            type Target = $accessor;
+            fn interpolate<C: FromIterator<Self::Target>>($env: &Self, to: &$accessor, n: &u32) -> C {
+                match to {$(
+                    $accessor::$item($v) => {
+                        $crate::Interpolate::interpolate::<Vec<_>>($get, $v, n)
+                            .into_iter()
+                            .map(|k| $accessor::$item($crate::CloneWith::clone_with($v, k)))
+                            .collect::<C>()
+                    },
+                )+}
+            }
+        }
+
+        impl $crate::Assign<$accessor> for $env_type {
+            fn assign($env: &mut Self, value: $accessor) {
+                match value {$(
+                    $accessor::$item($v) => $set
+                )+}
+            }
+        }
+    }
+}
+
+#[derive(Debug, serde::Deserialize, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub enum Assignment<T> {
+    Value(T),
+    Interpolate(T, u32),
+}
 
 #[derive(Debug, PartialEq, PartialOrd)]
 pub enum ConditionField {
@@ -23,161 +127,53 @@ impl FieldCombinator for ConditionField {
     }
 }
 
-trait Delta {
-    fn delta(s: &Self, t: &Self, n: u32) -> Self;
-}
-
-fn linear_space<T: Clone + AddAssign<T> + Delta, U, F: Fn(T) -> U>(
-    u: &T,
-    v: &T,
-    k: &u32,
-    f: F,
-) -> std::collections::VecDeque<U> {
-    let n = k + 1;
-    let d = Delta::delta(u, v, n);
-    (0..n)
-        .scan(u.clone(), |s, _| {
-            *s += d.clone();
-            Some(f(s.clone()))
-        })
-        .collect()
-}
-
-pub trait Getter<T> {
-    fn get(&self, item: &T) -> T;
-}
-
-pub trait Setter<T> {
-    fn set(&mut self, item: T);
-}
-
-macro_rules! define_assignment_field {
-    ($enum_name:ident{$($enum_item:ident($type:ty)),+$(,)?}) => {
-        #[derive(Debug, Clone, serde::Deserialize, serde::Serialize)]
-        #[serde(rename_all = "camelCase")]
-        pub enum $enum_name {
-            $(
-                $enum_item($type),
-            )+
-        }
-
-        impl $enum_name {
-            pub fn assign<E: $crate::Setter<$enum_name>>(self, env: &mut E) {
-                env.set(self);
-            }
-        }
-
-        pub type AssignmentQueue = std::collections::VecDeque<$enum_name>;
-
-        #[derive(Debug, serde::Deserialize, serde::Serialize)]
-        #[serde(rename_all = "camelCase")]
-        pub enum Assignment {
-            Immediate($enum_name),
-            Linear($enum_name, u32),
-        }
-
-        impl Assignment {
-            pub fn expand<E: Getter<$enum_name>>(&self, env: &E) -> std::collections::VecDeque<$enum_name> {
-                match self {
-                    Self::Immediate(item) => {
-                        let mut vs = std::collections::VecDeque::with_capacity(1);
-                        vs.push_front(item.clone());
-                        vs
-                    },
-                    Self::Linear(item, k) => {
-                        match (item, env.get(item)) {
-                            $(
-                                ($enum_name::$enum_item(u), $enum_name::$enum_item(v)) => linear_space(u, &v, k, $enum_name::$enum_item),
-                            )+
-                            _ => unreachable!()
-                        }
-                    }
-                }
-            }
-        }
-    };
-}
-
-#[macro_export]
-macro_rules! impl_accessor {
-    ($self_:ident: $env:ty; $enum_name:ident {
-        $(
-            $name:ident =>
-                get {$get:expr}
-                set($v:ident) {$set:expr;}
-        )+
-    }) => {
-        impl $crate::Getter<$enum_name> for $env {
-            fn get(&$self_, item: &$enum_name) -> $enum_name {
-                match item {
-                    $(
-                        $enum_name::$name(_) => $enum_name::$name($get),
-                    )+
-                }
-            }
-        }
-
-        impl $crate::Setter<$enum_name> for $env {
-            fn set(&mut $self_, item: $enum_name) {
-                match item {
-                    $(
-                        $enum_name::$name($v) => {
-                            $set
-                        },
-                    )+
-                }
-            }
-        }
-    };
-}
-
-macro_rules! impl_delta {
-    ($num_type:ty) => {
-        impl Delta for $num_type {
-            fn delta(s: &Self, t: &Self, n: u32) -> Self {
-                (*t - *s) / n as Self
-            }
-        }
-    };
-}
-
-impl_delta!(f64);
-impl_delta!(f32);
-impl_delta!(u32);
-impl_delta!(i32);
-
-define_assignment_field!(
-    AssignmentField {
-        GatheringFrequency(f64),
-        VaccinePerformRate(f64),
-    }
-);
-
 #[derive(Debug)]
-pub struct Condition(Predicate<ConditionField>);
+pub struct Condition<F>(Predicate<F>);
 
-impl FromStr for Condition {
-    type Err = <Predicate<ConditionField> as FromStr>::Err;
+impl<F: FieldCombinator> FromStr for Condition<F> {
+    type Err = <Predicate<F> as FromStr>::Err;
 
     fn from_str(s: &str) -> Result<Self, Self::Err> {
         Ok(Condition(Predicate::from_str(s)?))
     }
 }
 
-impl Condition {
-    pub fn eval<E: EvalField<ConditionField>>(&self, env: &E) -> bool {
+impl<F: FieldCombinator + PartialEq + PartialOrd> Condition<F> {
+    pub fn eval<E: EvalField<F>>(&self, env: &E) -> bool {
         self.0.eval(env)
     }
 }
 
+// implement (todo: extract above codes as a library)
+impl_primitive_interpolate!(i32);
+impl_primitive_interpolate!(u32);
+impl_primitive_interpolate!(f32);
+impl_primitive_interpolate!(f64);
+
+#[derive(Debug, Clone, serde::Deserialize, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub enum VaccinationStrategy {
+    PerformRate(f64),
+}
+
+#[derive(Debug, Clone, serde::Deserialize, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub enum MyField {
+    GatheringFrequency(f64),
+    Vaccination(Container<usize, VaccinationStrategy>),
+}
+
 #[derive(Debug)]
 pub struct Operation {
-    pub condition: Condition,
-    pub assignments: Vec<Assignment>,
+    pub condition: Condition<ConditionField>,
+    pub assignments: Vec<Assignment<MyField>>,
 }
 
 impl Operation {
-    pub fn new(condition: Condition, assignments: Vec<Assignment>) -> Self {
+    pub fn new(
+        condition: Condition<ConditionField>,
+        assignments: Vec<Assignment<MyField>>,
+    ) -> Self {
         Self {
             condition,
             assignments,

@@ -1,13 +1,18 @@
-use math::Permille;
-use scenario_operation::{AssignmentField, AssignmentQueue, ConditionField, EvalField, Operation};
+use std::collections::VecDeque;
 
-use crate::world::commons::{RuntimeParams, WorldParams};
+use math::Permille;
+use scenario_operation::{
+    accessor, Assign, Assignment, ConditionField, EvalField, Interpolate, MyField, Operation,
+    VaccinationStrategy,
+};
+
+use crate::world::commons::{self, RuntimeParams};
 
 #[derive(Debug, Default)]
 pub struct Scenario {
     index: usize,
     operations: Vec<Operation>,
-    curr: Vec<AssignmentQueue>,
+    curr: Vec<VecDeque<MyField>>,
 }
 
 impl Scenario {
@@ -19,17 +24,22 @@ impl Scenario {
         }
     }
 
-    pub fn exec(&mut self, env: &mut EnvMut) {
+    pub fn exec(&mut self, rp: &mut RuntimeParams) {
         let op = &self.operations[self.index];
-        if op.condition.eval(env) {
+        if op.condition.eval(rp) {
             for a in &op.assignments {
-                self.curr.push(a.expand(env));
+                match a {
+                    Assignment::Value(v) => self.curr.push(VecDeque::from([v.clone()])),
+                    Assignment::Interpolate(v, n) => {
+                        self.curr.push(Interpolate::interpolate(rp, v, n));
+                    }
+                }
             }
         }
 
         for i in (0..self.curr.len()).rev() {
             let queue = self.curr.get_mut(i).unwrap();
-            queue.pop_front().unwrap().assign(env);
+            Assign::assign(rp, queue.pop_front().unwrap());
             if !queue.is_empty() {
                 continue;
             }
@@ -38,29 +48,36 @@ impl Scenario {
             self.curr.swap_remove(i);
         }
     }
-}
 
-pub struct EnvMut<'a> {
-    runtime: &'a mut RuntimeParams,
-    _world: &'a mut WorldParams,
-}
-
-scenario_operation::impl_accessor!(
-    self: EnvMut<'_>;
-    AssignmentField {
-        GatheringFrequency =>
-            get { self.runtime.gat_fr }
-            set(v) { self.runtime.gat_fr = v; }
-        VaccinePerformRate =>
-            get { self.runtime.vcn_p_rate.0 }
-            set(v) { self.runtime.vcn_p_rate = Permille(v); }
+    pub fn reset(&mut self) {
+        self.index = 0;
+        self.curr.clear();
     }
-);
+}
 
-impl<'b> EvalField<ConditionField> for EnvMut<'b> {
+accessor!(env: commons::VaccinationStrategy, VaccinationStrategy {
+    PerformRate(v) =>
+        get { &env.perform_rate.0 }
+        set { env.perform_rate = Permille(v); }
+});
+
+accessor!(rp: RuntimeParams, MyField {
+    GatheringFrequency(v) =>
+        get { &rp.gat_fr }
+        set { rp.gat_fr = v }
+    Vaccination(v) =>
+        get { &rp.vx_stg[&v.index] }
+        set {
+            if let Some(t) = rp.vx_stg.get_mut(&v.index) {
+                Assign::assign(t, v.value);
+            }
+        }
+});
+
+impl EvalField<ConditionField> for RuntimeParams {
     fn eval<'a>(&self, field: &'a ConditionField) -> (ConditionField, &'a ConditionField) {
         match field {
-            ConditionField::Days(_) => (ConditionField::Days(self.runtime.days_elapsed), field),
+            ConditionField::Days(_) => (ConditionField::Days(self.days_elapsed), field),
         }
     }
 }
