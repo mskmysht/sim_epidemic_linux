@@ -5,6 +5,7 @@ use std::{
 };
 
 use world_core::{
+    scenario::Scenario,
     util,
     world::{
         commons::{RuntimeParams, WorldParams},
@@ -238,7 +239,7 @@ impl WorldSpawner {
         runtime_params: RuntimeParams,
         world_params: WorldParams,
     ) -> Self {
-        let world = World::new(id, runtime_params, world_params);
+        let world = World::new(id, runtime_params, world_params, Scenario::default());
         let spawner = Self {
             world,
             info: WorldStepInfo::default(),

@@ -1,12 +1,13 @@
 [package]
-name = "api"
+name = "scenario-operation"
 version = "0.1.0"
 edition = "2021"
 
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 
 [dependencies]
-poem-openapi = { version = "2", features = ["rapidoc"] }
-serde = { workspace = true, features = ["derive"] }
+predicate = { workspace = true }
+serde = { workspace = true }
 serde_json = { workspace = true }
-scenario-operation = { workspace = true }
+nom = "7.1"
+math = { workspace = true }

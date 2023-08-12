@@ -33,15 +33,14 @@ impl WarpAgent {
     }
 
     fn step(&mut self, pfs: &ParamsForStep) -> (WarpStepInfo, bool) {
-        let mut agent = self.agent.write();
         let mut wsi = WarpStepInfo::default();
         if let WarpMode::Inside = self.param.mode {
-            if let Some((w, testees)) = agent.check_quarantine(pfs) {
+            if let Some((w, testees)) = self.agent.check_quarantine(pfs) {
                 wsi.contacted_testees = Some(testees);
                 self.param = w;
             }
         }
-        let at_goal = agent.body.warp_update(self.param.goal, pfs.wp);
+        let at_goal = self.agent.body.warp_update(self.param.goal, pfs.wp);
 
         (wsi, at_goal)
     }
@@ -50,12 +49,14 @@ impl WarpAgent {
 pub struct Warps(Vec<WarpAgent>);
 
 impl Warps {
-    pub fn new() -> Self {
-        Self(Vec::new())
+    pub fn new(capacity: usize) -> Self {
+        Self(Vec::with_capacity(capacity))
     }
 
-    pub fn clear(&mut self) {
-        self.0.clear();
+    pub fn clear(&mut self, agents: &mut Vec<Agent>) {
+        for wa in self.0.drain(..) {
+            agents.push(wa.agent);
+        }
     }
 
     pub fn add(&mut self, agent: Agent, param: WarpParam) {

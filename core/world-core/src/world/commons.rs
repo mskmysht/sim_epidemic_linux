@@ -1,14 +1,14 @@
-use crate::util::{
-    math::{self, Percentage, Permille, Point},
-    random::DistInfo,
-};
+use std::{collections::BTreeMap, ops::Deref, sync::Arc};
+
+use crate::util::random::DistInfo;
 
 use enum_map::macros::Enum;
+use math::{Percentage, Permille, Point};
 use table::TableIndex;
 
 use rand::Rng;
 
-#[derive(Debug)]
+#[derive(Debug, Default)]
 pub struct RuntimeParams {
     pub mass: Percentage,
     pub friction: Percentage,
@@ -82,9 +82,42 @@ pub struct RuntimeParams {
     //[todo] pub trc_ope: TracingOperation, // How to treat the contacts, tests or vaccination, or both
     //[todo] pub trc_vcn_type: u32, // vaccine type for tracing vaccination
     pub step: u32,
+    pub local_step: u32,
+    pub days_elapsed: u32,
     //[todo] pub recov: DistInfo<f64>,
     //[todo] pub immun: DistInfo<f64>,
-    //[todo] pub vcn_p_rate: f64,
+    pub vcn_p_rate: Permille,
+    pub variant_pool: VariantPool,
+    pub vaccine_pool: VaccinePool,
+    pub vx_stg: BTreeMap<usize, VaccinationStrategy>,
+}
+
+#[derive(Debug)]
+pub struct VaccinationStrategy {
+    pub perform_rate: Permille,
+    pub regularity: Percentage,
+    pub priority: VaccinePriority,
+}
+
+#[derive(Debug, Enum, Clone)]
+pub enum VaccinePriority {
+    Random,
+    Older,
+    Central,
+    PopulationDensity,
+    Booster,
+}
+
+impl RuntimeParams {
+    pub fn step(&mut self, wp: &WorldParams) {
+        self.step += 1;
+        if wp.steps_per_day == self.local_step + 1 {
+            self.days_elapsed += 1;
+            self.local_step = 0;
+        } else {
+            self.local_step += 1;
+        }
+    }
 }
 
 #[derive(Eq, Hash, Enum, Clone, Copy, PartialEq, Debug, strum::Display)]
@@ -97,7 +130,7 @@ pub enum HealthType {
     Vaccinated,
 }
 
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone, Debug)]
 pub struct WorldParams {
     pub init_n_pop: u32,
     pub field_size: usize,
@@ -107,7 +140,7 @@ pub struct WorldParams {
     pub recovered: Percentage,
     pub q_asymptomatic: Percentage,
     pub q_symptomatic: Percentage,
-    pub wrk_plc_mode: WrkPlcMode,
+    pub wrk_plc_mode: Option<WorkPlaceMode>,
     //[todo] pub av_clstr_rate: Percentage, // Anti-Vax
     //[todo] pub av_clstr_gran: Percentage, // Anti-Vax
     //[todo] pub av_test_rate: Percentage, // Anti-Vax
@@ -141,7 +174,7 @@ impl WorldParams {
         recovered: Percentage,
         q_asymptomatic: Percentage,
         q_symptomatic: Percentage,
-        wrk_plc_mode: WrkPlcMode,
+        wrk_plc_mode: Option<WorkPlaceMode>,
         rcv_bias: Percentage,
         rcv_temp: f64,
         rcv_upper: Percentage,
@@ -219,8 +252,8 @@ impl WorldParams {
     #[inline]
     pub fn into_grid_index(&self, p: &Point) -> TableIndex {
         TableIndex::new(
-            math::quantize(p.y, self.res_rate(), self.mesh),
-            math::quantize(p.x, self.res_rate(), self.mesh),
+            quantize(p.y, self.res_rate(), self.mesh),
+            quantize(p.x, self.res_rate(), self.mesh),
         )
     }
 
@@ -248,76 +281,174 @@ impl WorldParams {
     }
 }
 
-#[derive(PartialEq, Clone, Copy, Debug)]
-pub enum WrkPlcMode {
-    WrkPlcNone,
-    WrkPlcUniform,
-    WrkPlcCentered,
-    //[todo] WrkPlcPopDistImg,
+pub(crate) trait CenteredBias {
+    const CENTERED_BIAS: f64;
+    fn centered_bias(&self) -> f64;
 }
 
+impl CenteredBias for Point {
+    const CENTERED_BIAS: f64 = 0.25;
+
+    fn centered_bias(&self) -> f64 {
+        let a = Self::CENTERED_BIAS / (1.0 - Self::CENTERED_BIAS);
+        a / (1.0 - (1.0 - a) * self.x.abs().max(self.y.abs()))
+    }
+}
+
+#[derive(Clone, Debug)]
+pub enum WorkPlaceMode {
+    Uniform,
+    Centered,
+    //[todo] PopDistImg,
+}
+
+#[derive(Debug)]
+pub struct FiniteType<T> {
+    pub index: usize,
+    _value: Arc<T>,
+}
+
+impl<T> Clone for FiniteType<T> {
+    fn clone(&self) -> Self {
+        Self {
+            index: self.index.clone(),
+            _value: self._value.clone(),
+        }
+    }
+}
+
+impl<T> Deref for FiniteType<T> {
+    type Target = T;
+
+    fn deref(&self) -> &Self::Target {
+        &self._value
+    }
+}
+
+pub trait FiniteTypePool: Sized {
+    type Target;
+    fn index(&self, index: usize) -> Arc<Self::Target>;
+    fn get(&self, index: usize) -> FiniteType<Self::Target> {
+        FiniteType {
+            index,
+            _value: self.index(index),
+        }
+    }
+}
+
+#[derive(Debug)]
 pub struct VariantInfo {
     pub reproductivity: f64,
     pub toxicity: f64,
-    pub efficacy: Vec<f64>,
+    // pub efficacy: Vec<f64>,
 }
 
 impl VariantInfo {
-    fn new(reproductivity: f64, toxicity: f64, efficacy: Vec<f64>) -> Self {
+    pub fn new(reproductivity: f64, toxicity: f64) -> Self {
         Self {
             reproductivity,
             toxicity,
-            efficacy,
         }
-    }
-
-    pub fn default_list() -> Vec<Self> {
-        vec![VariantInfo::new(1.0, 1.0, vec![1.0])]
     }
 }
 
+pub type Variant = FiniteType<VariantInfo>;
+
+#[derive(Debug)]
+pub struct VariantPool {
+    pool: Vec<Arc<VariantInfo>>,
+    pub efficacy: Vec<Vec<f64>>,
+}
+
+impl Default for VariantPool {
+    fn default() -> Self {
+        Self {
+            pool: vec![Arc::new(VariantInfo::new(1.0, 1.0))],
+            efficacy: vec![vec![1.0]],
+        }
+    }
+}
+
+impl VariantPool {
+    pub fn new<const N: usize>(pool: [Arc<VariantInfo>; N], efficacy: [[f64; N]; N]) -> Self {
+        Self {
+            pool: Vec::from(pool),
+            efficacy: Vec::from(efficacy.map(Vec::from)),
+        }
+    }
+}
+
+impl FiniteTypePool for VariantPool {
+    type Target = VariantInfo;
+
+    fn index(&self, index: usize) -> Arc<Self::Target> {
+        self.pool[index].clone()
+    }
+}
+
+#[derive(Debug)]
 pub struct VaccineInfo {
     pub interval: usize,
-    pub efficacy: Vec<f64>,
+    // pub efficacy: Vec<f64>,
 }
 
 impl VaccineInfo {
-    fn new(interval: usize, efficacy: Vec<f64>) -> Self {
-        Self { interval, efficacy }
+    pub fn new(interval: usize) -> Self {
+        Self { interval }
     }
 
-    pub fn default_list() -> Vec<Self> {
-        vec![VaccineInfo::new(21, vec![1.0])]
+    pub fn interval(&self) -> f64 {
+        self.interval as f64
+    }
+}
+
+pub type Vaccine = FiniteType<VaccineInfo>;
+
+#[derive(Debug)]
+pub struct VaccinePool {
+    pool: Vec<Arc<VaccineInfo>>,
+    pub efficacy: Vec<Vec<f64>>,
+}
+
+impl Default for VaccinePool {
+    fn default() -> Self {
+        Self {
+            pool: vec![Arc::new(VaccineInfo::new(21))],
+            efficacy: vec![vec![1.0]],
+        }
+    }
+}
+
+impl VaccinePool {
+    pub fn new<const N: usize>(pool: [Arc<VaccineInfo>; N], efficacy: [[f64; N]; N]) -> Self {
+        Self {
+            pool: Vec::from(pool),
+            efficacy: Vec::from(efficacy.map(Vec::from)),
+        }
+    }
+}
+
+impl FiniteTypePool for VaccinePool {
+    type Target = VaccineInfo;
+
+    fn index(&self, index: usize) -> Arc<Self::Target> {
+        self.pool[index].clone()
     }
 }
 
 pub struct ParamsForStep<'a> {
     pub wp: &'a WorldParams,
     pub rp: &'a RuntimeParams,
-    pub vr_info: &'a [VariantInfo],
-    pub vx_info: &'a [VaccineInfo],
-    go_home_back: bool,
 }
 
 impl<'a> ParamsForStep<'a> {
-    pub fn new(
-        wp: &'a WorldParams,
-        rp: &'a RuntimeParams,
-        vr_info: &'a [VariantInfo],
-        vx_info: &'a [VaccineInfo],
-    ) -> Self {
-        ParamsForStep {
-            rp,
-            wp,
-            vr_info,
-            vx_info,
-            go_home_back: wp.wrk_plc_mode != WrkPlcMode::WrkPlcNone && Self::is_daytime(wp, rp),
-        }
+    pub fn new(wp: &'a WorldParams, rp: &'a RuntimeParams) -> Self {
+        ParamsForStep { rp, wp }
     }
 
+    #[inline]
     pub fn go_home_back(&self) -> bool {
-        self.go_home_back
-        //[todo] wp.wrk_plc_mode != WrkPlcMode::WrkPlcNone && self.is_daytime()
+        self.wp.wrk_plc_mode.is_some() && Self::is_daytime(self.wp, self.rp)
     }
 
     fn is_daytime(wp: &WorldParams, rp: &RuntimeParams) -> bool {
@@ -327,4 +458,17 @@ impl<'a> ParamsForStep<'a> {
             rp.step % wp.steps_per_day < wp.steps_per_day * 2 / 3
         }
     }
+}
+
+pub fn quantize(p: f64, res_rate: f64, n: usize) -> usize {
+    let i = (p * res_rate).floor() as usize;
+    if i >= n {
+        n - 1
+    } else {
+        i
+    }
+}
+
+pub fn dequantize(i: usize, res_rate: f64) -> f64 {
+    (i as f64) / res_rate
 }

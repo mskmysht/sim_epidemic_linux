@@ -17,3 +17,6 @@ chrono = { version = "0.4", features = ["serde"] }
 arrow2 = { workspace = true, features = ["io_ipc", "io_ipc_compression"] }
 rand = { version = "0.8", features = ["alloc"] }
 rand_distr = "0.4"
+nom = "7.1"
+scenario-operation = { workspace = true }
+math = { workspace = true }

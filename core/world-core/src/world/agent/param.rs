@@ -5,6 +5,7 @@ use super::{
 use crate::{
     stat::{HistInfo, HistgramType},
     util::random,
+    world::commons::{Vaccine, Variant},
 };
 
 use std::f64;
@@ -23,8 +24,8 @@ pub enum InfMode {
 }
 
 #[derive(Debug)]
-pub(super) struct InfectionParam {
-    pub virus_variant: usize,
+pub struct InfectionParam {
+    pub virus_variant: Variant,
     pub days_infected: f64,
     pub days_diseased: f64,
     pub immunity: f64,
@@ -33,7 +34,7 @@ pub(super) struct InfectionParam {
 }
 
 impl InfectionParam {
-    pub fn new(immunity: f64, virus_variant: usize) -> Self {
+    pub fn new(immunity: f64, virus_variant: Variant) -> Self {
         Self {
             virus_variant,
             days_infected: 0.0,
@@ -52,7 +53,7 @@ impl InfectionParam {
         pfs: &ParamsForStep,
     ) -> bool {
         // check contact and infection
-        let virus_x = pfs.vr_info[self.virus_variant].reproductivity;
+        let virus_x = self.virus_variant.reproductivity;
         let infec_d_max = pfs.rp.infec_dst * virus_x.sqrt();
         if d > infec_d_max {
             return false;
@@ -85,7 +86,7 @@ impl InfectionParam {
         true
     }
 
-    pub fn step<const IS_IN_HOSPITAL: bool>(
+    pub(crate) fn step<const IS_IN_HOSPITAL: bool>(
         &mut self,
         days_to: &mut DaysTo,
         inf_mode: &mut InfMode,
@@ -93,14 +94,6 @@ impl InfectionParam {
         hist_info: &mut Option<HistInfo>,
         pfs: &ParamsForStep,
     ) -> Option<HealthState> {
-        fn new_recover(
-            days_to: &mut DaysTo,
-            rp: &RuntimeParams,
-            virus_variant: usize,
-        ) -> RecoverParam {
-            RecoverParam::new(days_to.setup_acquired_immunity(&rp), virus_variant)
-        }
-
         self.days_infected += pfs.wp.days_per_step();
         if inf_mode == &InfMode::Sym {
             self.days_diseased += pfs.wp.days_per_step();
@@ -114,26 +107,23 @@ impl InfectionParam {
                     // SET_HIST(hist_recov, days_diseased);
                     *hist_info = Some(HistInfo::new(HistgramType::HistRecov, self.days_diseased));
                 }
-                return Some(HealthState::Recovered(new_recover(
-                    days_to,
-                    pfs.rp,
-                    self.virus_variant,
+                return Some(HealthState::Recovered(RecoverParam::new(
+                    days_to.setup_acquired_immunity(&pfs.rp),
+                    self.virus_variant.clone(),
                 )));
             }
             return None;
         }
 
-        let vr_info = &pfs.vr_info[self.virus_variant];
-        let excrbt = exacerbation(vr_info.reproductivity);
+        let excrbt = exacerbation(self.virus_variant.reproductivity);
 
         let days_to_recov = self.get_days_to_recov::<IS_IN_HOSPITAL>(days_to, pfs.rp);
         if inf_mode == &InfMode::Asym {
             if self.days_infected < days_to.onset / excrbt {
                 if self.days_infected > days_to_recov {
-                    return Some(HealthState::Recovered(new_recover(
-                        days_to,
-                        pfs.rp,
-                        self.virus_variant,
+                    return Some(HealthState::Recovered(RecoverParam::new(
+                        days_to.setup_acquired_immunity(&pfs.rp),
+                        self.virus_variant.clone(),
                     )));
                 }
                 return None;
@@ -146,7 +136,7 @@ impl InfectionParam {
                 v /= vp.vax_sv_effc(pfs);
             }
             if self.severity > TOXICITY_LEVEL {
-                v *= vr_info.toxicity;
+                v *= self.virus_variant.toxicity;
             }
             v
         };
@@ -187,14 +177,14 @@ impl InfectionParam {
 }
 
 #[derive(Debug)]
-pub(super) struct RecoverParam {
-    pub virus_variant: usize,
+pub struct RecoverParam {
+    pub virus_variant: Variant,
     pub days_recovered: f64,
     pub immunity: f64,
 }
 
 impl RecoverParam {
-    pub fn new(immunity: f64, virus_variant: usize) -> Self {
+    pub fn new(immunity: f64, virus_variant: Variant) -> Self {
         Self {
             immunity,
             virus_variant,
@@ -219,8 +209,8 @@ impl RecoverParam {
 }
 
 #[derive(Debug)]
-pub(super) struct VaccinationParam {
-    pub vaccine_type: usize,
+pub struct VaccinationParam {
+    pub vaccine: Vaccine,
     pub dose_date: f64,
     pub immunity: f64,
     //[todo] days_vaccinated: f64,
@@ -230,7 +220,7 @@ pub(super) struct VaccinationParam {
 impl VaccinationParam {
     fn vax_sv_effc(&self, pfs: &ParamsForStep) -> f64 {
         let days_vaccinated = self.days_vaccinated(pfs);
-        let span = self.vx_span(pfs);
+        let span = self.vaccine.interval();
         let vcn_sv_effc = pfs.wp.vcn_sv_effc.r();
         if days_vaccinated < span {
             1.0 + days_vaccinated / span * vcn_sv_effc
@@ -244,17 +234,13 @@ impl VaccinationParam {
         }
     }
 
-    fn vx_span(&self, pfs: &ParamsForStep) -> f64 {
-        pfs.vx_info[self.vaccine_type].interval as f64
-    }
-
     fn days_vaccinated(&self, pfs: &ParamsForStep) -> f64 {
         pfs.rp.step as f64 * pfs.wp.days_per_step() - self.dose_date
     }
 
     fn new_immunity(&self, pfs: &ParamsForStep) -> Option<f64> {
         let days_vaccinated = self.days_vaccinated(pfs);
-        let span = self.vx_span(pfs);
+        let span = self.vaccine.interval();
         if days_vaccinated < span {
             // only the first dose
             Some(days_vaccinated * pfs.wp.vcn_1st_effc.r() / span)

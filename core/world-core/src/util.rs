@@ -1,4 +1,3 @@
-pub mod math;
 pub mod random;
 
 use std::time::{SystemTime, UNIX_EPOCH};

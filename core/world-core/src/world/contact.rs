@@ -1,10 +1,15 @@
 use super::{
-    agent::Agent,
+    agent::AgentRef,
     commons::ParamsForStep,
     testing::{TestReason, Testee},
 };
 
 use std::collections::VecDeque;
+
+struct ContactInfo {
+    agent: AgentRef,
+    time_stamp: u32,
+}
 
 /// a vector guarantees the ascending order of `time_stamp`
 #[derive(Default)]
@@ -13,9 +18,12 @@ pub struct Contacts(VecDeque<ContactInfo>);
 impl Contacts {
     const RETENTION_PERIOD: u32 = 14; // two weeks
 
-    pub fn append(&mut self, agents: Vec<Agent>, step: u32) {
-        for agent in agents.into_iter() {
-            self.0.push_back(ContactInfo::new(agent, step))
+    pub fn append(&mut self, ars: Vec<AgentRef>, time_stamp: u32) {
+        for ar in ars {
+            self.0.push_back(ContactInfo {
+                agent: ar,
+                time_stamp,
+            });
         }
     }
 
@@ -24,27 +32,19 @@ impl Contacts {
         self.0
             .drain(..)
             .filter_map(|ci| {
-                ci.agent
-                    .write()
-                    .reserve_test_with(ci.agent.clone(), pfs, |a| {
-                        if a.is_in_field() && pfs.rp.step - ci.time_stamp < retention_steps {
-                            Some(TestReason::AsContact)
-                        } else {
-                            None
-                        }
-                    })
+                if pfs.rp.step - ci.time_stamp >= retention_steps {
+                    return None;
+                }
+                // let a = ci.agent.read();
+                // drop(a);
+                if !ci.agent.testing.read().is_reservable(pfs)
+                    || !ci.agent.location.read().in_field()
+                {
+                    return None;
+                }
+                ci.agent.testing.write().reserve();
+                Some(Testee::new(ci.agent, TestReason::AsContact, pfs.rp.step))
             })
             .collect()
-    }
-}
-
-struct ContactInfo {
-    pub agent: Agent,
-    pub time_stamp: u32,
-}
-
-impl ContactInfo {
-    fn new(agent: Agent, time_stamp: u32) -> Self {
-        Self { agent, time_stamp }
     }
 }

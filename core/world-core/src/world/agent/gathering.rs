@@ -1,18 +1,18 @@
 use super::{
-    super::commons::{RuntimeParams, WorldParams, WrkPlcMode},
+    super::commons::{CenteredBias, RuntimeParams, WorkPlaceMode, WorldParams},
     field::Field,
-    Agent,
 };
-use crate::util::{
-    math::{self, Point},
-    random,
+use crate::{
+    util::random,
+    world::commons::{self, ParamsForStep},
 };
 
 use std::{f64, ops, sync::Arc};
 
+use math::{self, Point};
+
 use parking_lot::RwLock;
 use rand::{seq::SliceRandom, Rng};
-use rayon::iter::{IntoParallelIterator, ParallelIterator};
 
 const SURROUND: f64 = 5.;
 const GATHERING_FORCE: f64 = 5.;
@@ -28,7 +28,7 @@ pub struct Gathering {
 impl Gathering {
     pub fn new(
         gat_spots_fixed: &[Point],
-        agents: &[Agent],
+        agent_origins: &Vec<Point>,
         wp: &WorldParams,
         rp: &RuntimeParams,
     ) -> Self {
@@ -36,15 +36,14 @@ impl Gathering {
         let p = if !gat_spots_fixed.is_empty() && rp.gat_rnd_rt.r() < rng.gen::<f64>() {
             *gat_spots_fixed.choose(rng).unwrap()
         } else {
-            //[todo] wp.wrk_plc_mode == WrkPlcMode::WrkPlcNone
-            agents.choose(rng).unwrap().read().origin.unwrap_or(Point {
+            *agent_origins.choose(rng).unwrap_or(&Point {
                 x: rng.gen::<f64>() * wp.field_size(),
                 y: rng.gen::<f64>() * wp.field_size(),
             })
         };
         let size = {
             let size = random::my_random(rng, &rp.gat_sz);
-            if wp.wrk_plc_mode == WrkPlcMode::WrkPlcCentered {
+            if matches!(wp.wrk_plc_mode, Some(WorkPlaceMode::Centered)) {
                 size * p.map(|c| c / wp.field_size() * 2.0 - 1.0).centered_bias()
                     * f64::consts::SQRT_2
             } else {
@@ -89,19 +88,19 @@ impl Gathering {
         }
     }*/
     fn get_range(r: f64, row: usize, p: &Point, wp: &WorldParams) -> ops::RangeInclusive<usize> {
-        let dy = p.y - math::dequantize(row, wp.res_rate());
+        let dy = p.y - commons::dequantize(row, wp.res_rate());
         let dx = (r * r - dy * dy).sqrt();
-        let left = math::quantize(0f64.max(p.x - dx), wp.res_rate(), wp.mesh);
-        let right = math::quantize(p.x.min(p.x + dx), wp.res_rate(), wp.mesh);
+        let left = commons::quantize(0f64.max(p.x - dx), wp.res_rate(), wp.mesh);
+        let right = commons::quantize(p.x.min(p.x + dx), wp.res_rate(), wp.mesh);
         left..=right
     }
 
-    fn get_allocations(&self, wp: &WorldParams) -> Vec<(usize, usize)> {
+    pub fn get_locations(&self, wp: &WorldParams) -> Vec<(usize, usize)> {
         let r = self.size + SURROUND;
         let p = self.p;
-        let bottom = math::quantize(0f64.max(p.y - r), wp.res_rate(), wp.mesh);
-        let top = math::quantize(wp.field_size().min(p.y + r), wp.res_rate(), wp.mesh);
-        let center = math::quantize(p.y + 0.5, wp.res_rate(), wp.mesh); // rounding
+        let bottom = commons::quantize(0f64.max(p.y - r), wp.res_rate(), wp.mesh);
+        let top = commons::quantize(wp.field_size().min(p.y + r), wp.res_rate(), wp.mesh);
+        let center = commons::quantize(p.y + 0.5, wp.res_rate(), wp.mesh); // rounding
 
         let mut locs = Vec::new();
         for row in bottom..center {
@@ -134,27 +133,29 @@ impl Gatherings {
         &mut self,
         field: &Field,
         gat_spots_fixed: &[Point],
-        agents: &[Agent],
-        wp: &WorldParams,
-        rp: &RuntimeParams,
+        agent_origins: &Vec<Point>,
+        pfs: &ParamsForStep,
     ) {
         self.0
-            .retain_mut(|gat| !gat.write().step(wp.days_per_step()));
+            .retain_mut(|gat| !gat.write().step(pfs.wp.days_per_step()));
 
         // caliculate the number of gathering circles
         // using random number in exponetial distribution.
         let rng = &mut rand::thread_rng();
-        let n_new_gat =
-            (rp.gat_fr / wp.steps_per_day as f64 * (wp.field_size * wp.field_size) as f64 / 1e5
-                * (-(rng.gen::<f64>() * 0.9999 + 0.0001).ln()))
-            .round() as usize;
+        let n_new_gat = (pfs.rp.gat_fr
+            * pfs.wp.days_per_step()
+            * (pfs.wp.field_size * pfs.wp.field_size) as f64
+            / 1e5
+            * (-(rng.gen::<f64>() * 0.9999 + 0.0001).ln()))
+        .round() as usize;
         for _ in 0..n_new_gat {
-            let gat = Gathering::new(gat_spots_fixed, agents, wp, rp);
-            let locs = gat.get_allocations(wp);
-            let gat = Arc::new(RwLock::new(gat));
-            locs.into_par_iter().for_each(|(row, range)| {
-                field.replace_gathering(row, range, &rp.gat_freq, &gat);
-            });
+            let gat = Arc::new(RwLock::new(Gathering::new(
+                gat_spots_fixed,
+                agent_origins,
+                pfs.wp,
+                pfs.rp,
+            )));
+            field.replace_gathering(&gat, pfs);
             self.0.push(gat);
         }
     }

@@ -1,12 +1,14 @@
 use ipc_channel::ipc::IpcSender;
+use scenario_operation::Operation;
 use world_if::{
     api, IpcBiConnection, Request, Response, ResponseError, ResponseOk, WorldState, WorldStatus,
 };
 
 use world_core::{
+    scenario::Scenario,
     util::{self, random::DistInfo},
     world::{
-        commons::{RuntimeParams, WorldParams, WrkPlcMode},
+        commons::{RuntimeParams, WorldParams},
         World,
     },
 };
@@ -24,7 +26,7 @@ struct WorldStepInfo {
 
 pub struct WorldSpawner {
     world: World,
-    param: api::job::JobParam,
+    stop_at: u32,
     info: WorldStepInfo,
     bicon: IpcBiConnection,
     stream: IpcSender<WorldStatus>,
@@ -43,10 +45,16 @@ impl WorldSpawner {
             id,
             new_runtime_params(),
             new_world_params(&param.world_params),
+            Scenario::new(param.scenario, |s| {
+                Operation::new(
+                    s.condition.parse().unwrap(),
+                    serde_json::from_value(s.assignments).unwrap(),
+                )
+            }),
         );
         let spawner = Self {
             world,
-            param,
+            stop_at: param.stop_at,
             info: WorldStepInfo::default(),
             bicon,
             stream,
@@ -98,7 +106,7 @@ impl WorldSpawner {
     }
 
     fn execute(&mut self) -> anyhow::Result<()> {
-        let step_to_end = self.param.stop_at * self.world.world_params.steps_per_day;
+        let step_to_end = self.stop_at * self.world.world_params.steps_per_day;
         self.res_ok()?;
         while self.step(step_to_end)? {
             if let Some(msg) = self.bicon.try_recv()? {
@@ -162,7 +170,7 @@ fn new_world_params(param: &api::job::WorldParams) -> WorldParams {
         0.0.into(),
         20.0.into(),
         50.0.into(),
-        WrkPlcMode::WrkPlcNone,
+        None,
         150.0.into(),
         50.0,
         500.0.into(),
@@ -221,6 +229,6 @@ fn new_runtime_params() -> RuntimeParams {
         tst_sbj_sym: 99.0.into(),
         tst_capa: 50.0.into(),
         tst_dly_lim: 3.0,
-        step: 0,
+        ..Default::default()
     }
 }

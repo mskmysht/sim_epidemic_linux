@@ -23,6 +23,7 @@ impl Example for Config {
                     population_size: 1000,
                     infected: 1.0,
                 },
+                scenario: Vec::new(),
             },
             iteration_count: 3,
             output_fields: Vec::new(),

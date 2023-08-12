@@ -115,7 +115,13 @@ impl HealthStat {
                 .map(|h| Field::new(h.to_string(), DataType::UInt32, false))
                 .collect::<Vec<_>>(),
         );
-        let chunk = Chunk::try_new(self.0.iter_value_mut().map(|v| v.as_box()).collect())?;
+        let chunk = Chunk::try_new(
+            self.0
+                .values_mut()
+                .into_iter()
+                .map(|v| v.as_box())
+                .collect(),
+        )?;
         let mut writer = FileWriter::try_new(
             File::create(path)?,
             schema,

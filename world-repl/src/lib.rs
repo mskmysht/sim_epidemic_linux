@@ -9,7 +9,7 @@ use spawner::{MpscPublisher, MpscSubscriber, Response, ResponseOk, WorldSpawner}
 
 use world_core::{
     util::random::DistInfo,
-    world::commons::{RuntimeParams, WorldParams, WrkPlcMode},
+    world::commons::{RuntimeParams, WorldParams},
 };
 
 pub fn run(runtime_params: RuntimeParams, world_params: WorldParams) {
@@ -62,7 +62,7 @@ pub fn new_world_params(init_n_pop: u32, infected: f64) -> WorldParams {
         0.0.into(),
         20.0.into(),
         50.0.into(),
-        WrkPlcMode::WrkPlcNone,
+        None,
         150.0.into(),
         50.0,
         500.0.into(),
@@ -121,6 +121,6 @@ pub fn new_runtime_params() -> RuntimeParams {
         tst_sbj_sym: 99.0.into(),
         tst_capa: 50.0.into(),
         tst_dly_lim: 3.0,
-        step: 0,
+        ..Default::default()
     }
 }
